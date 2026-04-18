@@ -1,0 +1,32 @@
+# 环境变量文件（包含敏感信息）
+.env
+.mindcli/*
+!.mindcli/
+!.mindcli/PAI.md
+PAI.local.md
+
+# 编译输出
+target/
+*.class
+
+# 文档与技能（非项目源代码）
+docs/
+src/main/resources/skills/superpowers/
+
+# Claude Code
+.claude/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# 日志
+*.log
+
+# 操作系统
+.DS_Store
+Thumbs.db
+/reports
+temp_articles.json
+todo-report.md
