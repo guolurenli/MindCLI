@@ -44,7 +44,9 @@ import com.mindcli.runtime.task.TaskCommandFormatter;
 import com.mindcli.snapshot.RestoreResult;
 import com.mindcli.snapshot.SnapshotService;
 import com.mindcli.snapshot.TurnSnapshot;
+import com.mindcli.skill.Skill;
 import com.mindcli.skill.SkillRegistry;
+import java.util.stream.Collectors;
 import com.mindcli.tool.ToolRegistry;
 import com.mindcli.util.AnsiStyle;
 import com.mindcli.wechat.IlinkClient;
@@ -194,6 +196,7 @@ public class Main {
             int mcpTools,
             int skillsEnabled,
             int skillsTotal,
+            String skillsSummary,
             String note
     ) {
     }
@@ -2422,6 +2425,9 @@ public class Main {
                 .sum();
         int skillTotal = skillRegistry.allSkills().size();
         int skillEnabled = skillRegistry.enabledSkills().size();
+        String skillsSummary = skillRegistry.enabledSkills().stream()
+                .map(Skill::name)
+                .collect(Collectors.joining(","));
         return new StartupScreenInfo(
                 llmClient.getModelName(),
                 llmClient.getProviderName(),
@@ -2430,6 +2436,7 @@ public class Main {
                 tools,
                 skillEnabled,
                 skillTotal,
+                skillsSummary,
                 note == null ? "" : note.trim()
         );
     }
@@ -2809,6 +2816,7 @@ public class Main {
                 0,
                 0,
                 0,
+                "",
                 ""));
     }
 
@@ -2820,7 +2828,7 @@ public class Main {
                 : "MCP " + info.mcpReady() + "/" + info.mcpTotal() + " · " + info.mcpTools() + " tools";
         String skills = info.skillsTotal() <= 0
                 ? "0 skills"
-                : info.skillsEnabled() + "/" + info.skillsTotal() + " skills/superpowers";
+                : info.skillsEnabled() + "/" + info.skillsTotal() + " skills/" + info.skillsSummary();
         String ready = "Model " + model + " (" + provider + ")";
         String state = mcp + " · " + skills + " · ReAct";
         List<String> lines = new ArrayList<>(List.of(
