@@ -2425,9 +2425,9 @@ public class Main {
                 .sum();
         int skillTotal = skillRegistry.allSkills().size();
         int skillEnabled = skillRegistry.enabledSkills().size();
-        String skillsSummary = skillRegistry.enabledSkills().stream()
-                .map(Skill::name)
-                .collect(Collectors.joining(","));
+        String skillsSummary = skillEnabled <= 2
+                ? skillRegistry.enabledSkills().stream().map(Skill::name).collect(Collectors.joining(","))
+                : "";
         return new StartupScreenInfo(
                 llmClient.getModelName(),
                 llmClient.getProviderName(),
@@ -2828,7 +2828,8 @@ public class Main {
                 : "MCP " + info.mcpReady() + "/" + info.mcpTotal() + " · " + info.mcpTools() + " tools";
         String skills = info.skillsTotal() <= 0
                 ? "0 skills"
-                : info.skillsEnabled() + "/" + info.skillsTotal() + " skills/" + info.skillsSummary();
+                : info.skillsEnabled() + "/" + info.skillsTotal() + " skills"
+                  + (info.skillsSummary().isEmpty() ? "" : "/" + info.skillsSummary());
         String ready = "Model " + model + " (" + provider + ")";
         String state = mcp + " · " + skills + " · ReAct";
         List<String> lines = new ArrayList<>(List.of(
