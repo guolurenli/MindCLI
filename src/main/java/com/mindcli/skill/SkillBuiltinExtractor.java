@@ -17,10 +17,9 @@ import java.util.List;
 public final class SkillBuiltinExtractor {
 
     /** 内置 skill 版本，有增删 skill 时上调以触发缓存重建。 */
-    public static final String CURRENT_VERSION = "2.0.0";
+    public static final String CURRENT_VERSION = "3.0.0";
 
     private static final List<BuiltinSkillSpec> BUILTIN_SKILLS = List.of(
-            // ---- 独立内置 skills ----
             new BuiltinSkillSpec("web-access", List.of(
                     "SKILL.md",
                     "references/cdp-cheatsheet.md",
@@ -30,84 +29,6 @@ public final class SkillBuiltinExtractor {
                     "references/site-patterns/x.com.md",
                     "references/site-patterns/xiaohongshu.com.md",
                     "references/site-patterns/zhuanlan.zhihu.com.md"
-            )),
-
-            // ---- superpowers 子 skills ----
-            new BuiltinSkillSpec("brainstorming", "skills/superpowers/brainstorming/", List.of(
-                    "SKILL.md",
-                    "scripts/frame-template.html",
-                    "scripts/helper.js",
-                    "scripts/server.cjs",
-                    "scripts/start-server.sh",
-                    "scripts/stop-server.sh",
-                    "spec-document-reviewer-prompt.md",
-                    "visual-companion.md"
-            )),
-            new BuiltinSkillSpec("dispatching-parallel-agents", "skills/superpowers/dispatching-parallel-agents/", List.of(
-                    "SKILL.md"
-            )),
-            new BuiltinSkillSpec("executing-plans", "skills/superpowers/executing-plans/", List.of(
-                    "SKILL.md"
-            )),
-            new BuiltinSkillSpec("finishing-a-development-branch", "skills/superpowers/finishing-a-development-branch/", List.of(
-                    "SKILL.md"
-            )),
-            new BuiltinSkillSpec("receiving-code-review", "skills/superpowers/receiving-code-review/", List.of(
-                    "SKILL.md"
-            )),
-            new BuiltinSkillSpec("requesting-code-review", "skills/superpowers/requesting-code-review/", List.of(
-                    "SKILL.md",
-                    "code-reviewer.md"
-            )),
-            new BuiltinSkillSpec("subagent-driven-development", "skills/superpowers/subagent-driven-development/", List.of(
-                    "SKILL.md",
-                    "implementer-prompt.md",
-                    "scripts/review-package",
-                    "scripts/sdd-workspace",
-                    "scripts/task-brief",
-                    "task-reviewer-prompt.md"
-            )),
-            new BuiltinSkillSpec("systematic-debugging", "skills/superpowers/systematic-debugging/", List.of(
-                    "CREATION-LOG.md",
-                    "SKILL.md",
-                    "condition-based-waiting-example.ts",
-                    "condition-based-waiting.md",
-                    "defense-in-depth.md",
-                    "find-polluter.sh",
-                    "root-cause-tracing.md",
-                    "test-academic.md",
-                    "test-pressure-1.md",
-                    "test-pressure-2.md",
-                    "test-pressure-3.md"
-            )),
-            new BuiltinSkillSpec("test-driven-development", "skills/superpowers/test-driven-development/", List.of(
-                    "SKILL.md",
-                    "testing-anti-patterns.md"
-            )),
-            new BuiltinSkillSpec("using-git-worktrees", "skills/superpowers/using-git-worktrees/", List.of(
-                    "SKILL.md"
-            )),
-            new BuiltinSkillSpec("using-superpowers", "skills/superpowers/using-superpowers/", List.of(
-                    "SKILL.md",
-                    "references/antigravity-tools.md",
-                    "references/codex-tools.md",
-                    "references/pi-tools.md"
-            )),
-            new BuiltinSkillSpec("verification-before-completion", "skills/superpowers/verification-before-completion/", List.of(
-                    "SKILL.md"
-            )),
-            new BuiltinSkillSpec("writing-plans", "skills/superpowers/writing-plans/", List.of(
-                    "SKILL.md",
-                    "plan-document-reviewer-prompt.md"
-            )),
-            new BuiltinSkillSpec("writing-skills", "skills/superpowers/writing-skills/", List.of(
-                    "SKILL.md",
-                    "anthropic-best-practices.md",
-                    "examples/CLAUDE_MD_TESTING.md",
-                    "graphviz-conventions.dot",
-                    "persuasion-principles.md",
-                    "render-graphs.js",
-                    "testing-skills-with-subagents.md"
             ))
     );
 
