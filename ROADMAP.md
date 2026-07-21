@@ -375,8 +375,8 @@
 **功能迭代**（详细开发任务见 `docs/phase-15-skill-system.md`）：
 - Skill 加载机制：三层目录扫描（jar 内置 / 用户级 `~/.mindcli/skills/` / 项目级 `<project>/.mindcli/skills/`），按 name 整体覆盖，frontmatter 走手写 YAML 子集解析（不引 SnakeYAML）
 - 启动期把启用 skill 的 `name` + `description` 注入 system prompt 索引段（单 description ≤ 500 codepoint，启用上限 20 个，索引段 ≤ 4KB）
-- 内置工具 `load_skill(name)`：LLM 主动调用以把 SKILL.md 正文写入 `SkillContextBuffer`，下一轮 user message 自动前置注入（lazy 展开，节省 token）
-- `SkillContextBuffer`：一次性消费、最多保留 3 个 skill body、`/clear` 可 reset
+- 内置工具 `load_skill(name)`：LLM 主动调用以获取 SKILL.md 正文，tool_result 直接返回全文，同一 turn 内立即生效（lazy 展开，节省 token）
+- `load_skill` 工具回调直接将 body 作为 tool_result 返回，LLM 在 ReAct 下一轮迭代即可看到
 - 内置 web-access Skill：决策手册（浏览哲学四步法 + 工具选择表 + 浏览器优先级 + Jina 兜底说明）+ 6 个站点经验文件（mp.weixin / zhuanlan.zhihu / x.com / xiaohongshu / github / juejin）+ cdp-cheatsheet
 - 启动期 `SkillBuiltinExtractor` 把 jar 内置 skill 解压到 `~/.mindcli/skills-cache/`，按 `.version` 文件控制重建
 - CLI 命令：`/skill` / `/skill list` / `/skill show <name>` / `/skill on <name>` / `/skill off <name>` / `/skill reload`

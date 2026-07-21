@@ -9,9 +9,8 @@ PAI.local.md
 target/
 *.class
 
-# 文档与技能（非项目源代码）
+# 文档（非项目源代码）
 docs/
-src/main/resources/skills/superpowers/
 
 # Claude Code
 .claude/

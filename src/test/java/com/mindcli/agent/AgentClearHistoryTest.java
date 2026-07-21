@@ -1,7 +1,6 @@
 package com.mindcli.agent;
 
 import com.mindcli.llm.LlmClient;
-import com.mindcli.skill.SkillContextBuffer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -22,7 +21,7 @@ class AgentClearHistoryTest {
     Path tempDir;
 
     @Test
-    void clearHistoryRebuildsSystemPromptAndDropsPendingSkillContext() {
+    void clearHistoryRebuildsSystemPromptAndDropsContext() {
         String oldMemoryDir = System.getProperty("mindcli.memory.dir");
         System.setProperty("mindcli.memory.dir", tempDir.toString());
         try {
@@ -30,8 +29,6 @@ class AgentClearHistoryTest {
                     new LlmClient.ChatResponse("assistant", "ok", null, 50_000, 1_000)
             ));
             Agent agent = new Agent(llmClient);
-            SkillContextBuffer skillContextBuffer = new SkillContextBuffer();
-            agent.setSkillContextBuffer(skillContextBuffer);
             agent.getMemoryManager().storeFact("CLEAR_MARKER should only appear when retrieved", "project");
 
             agent.run("CLEAR_MARKER");
@@ -40,7 +37,6 @@ class AgentClearHistoryTest {
                     "sanity check: the first turn should inject query-specific long-term memory");
             long beforeClearTokens = agent.currentStatus("idle").totalTokens();
 
-            skillContextBuffer.push("demo", "pending skill body");
             agent.clearHistory();
 
             List<LlmClient.Message> history = agent.getConversationHistory();
@@ -48,7 +44,6 @@ class AgentClearHistoryTest {
             assertFalse(history.get(0).content().contains("CLEAR_MARKER"),
                     "/clear must not preserve the previous query's retrieved memory in system prompt");
             assertFalse(history.get(0).content().contains("## 相关长期记忆"));
-            assertEquals("", skillContextBuffer.drain(), "/clear should drop pending skill injection");
             assertTrue(agent.currentStatus("idle").totalTokens() < beforeClearTokens,
                     "status ctx should reflect the cleared conversation instead of the previous LLM usage");
         } finally {

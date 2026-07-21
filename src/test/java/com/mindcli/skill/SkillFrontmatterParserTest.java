@@ -110,4 +110,17 @@ class SkillFrontmatterParserTest {
         assertEquals("foo", r.frontmatter().get("name"));
         assertEquals("", r.body());
     }
+
+    @Test
+    void parsesWhenToUseField() {
+        String input = """
+                ---
+                name: web-access
+                when_to_use: 当需要联网搜索或访问网页时
+                ---
+                body
+                """;
+        SkillFrontmatterParser.ParseResult r = SkillFrontmatterParser.parse(input);
+        assertEquals("当需要联网搜索或访问网页时", r.frontmatter().get("when_to_use"));
+    }
 }
