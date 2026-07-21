@@ -155,7 +155,7 @@ class MindCliCompleterTest {
     }
 
     private static Skill skill(String name, String description) {
-        return new Skill(name, description, "1.0.0", null, List.of(), Skill.Source.USER, "body", null, null);
+        return new Skill(name, description, "1.0.0", null, List.of(), Skill.Source.USER, "body", null, null, "");
     }
 
     private static ParsedLine parsed(String line, String word) {

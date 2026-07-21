@@ -63,7 +63,23 @@ class SkillIndexFormatterTest {
         assertTrue(truncated.endsWith("..."));
     }
 
+    @Test
+    void formatsSkillWithWhenToUse() {
+        Skill skill = new Skill("web-access", "联网工具决策手册", "1.0.0", null, List.of(),
+                Skill.Source.BUILTIN, "body", null, null, "当需要联网搜索或访问网页时触发");
+        String out = SkillIndexFormatter.format(List.of(skill));
+        assertTrue(out.contains("触发场景："));
+        assertTrue(out.contains("当需要联网搜索或访问网页时触发"));
+    }
+
+    @Test
+    void footerMentionsToolResultImmediate() {
+        Skill skill = mockSkill("web-access", "desc", Skill.Source.BUILTIN);
+        String out = SkillIndexFormatter.format(List.of(skill));
+        assertTrue(out.contains("tool result 立即返回"));
+    }
+
     private static Skill mockSkill(String name, String desc, Skill.Source source) {
-        return new Skill(name, desc, "1.0.0", null, List.of(), source, "body", null, null);
+        return new Skill(name, desc, "1.0.0", null, List.of(), source, "body", null, null, "");
     }
 }

@@ -11,7 +11,6 @@ import com.mindcli.prompt.PromptAssembler;
 import com.mindcli.prompt.PromptContext;
 import com.mindcli.prompt.PromptMode;
 import com.mindcli.prompt.ProjectMemoryLoader;
-import com.mindcli.skill.SkillContextBuffer;
 import com.mindcli.skill.SkillIndexFormatter;
 import com.mindcli.skill.SkillRegistry;
 import com.mindcli.tool.ToolRegistry;
@@ -49,7 +48,6 @@ public class SubAgent {
     private final List<LlmClient.Message> conversationHistory;
     private Supplier<String> externalContextSupplier = () -> "";
     private SkillRegistry skillRegistry;
-    private SkillContextBuffer skillContextBuffer;
     private final ConversationHistoryCompactor historyCompactor;
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
 
@@ -72,10 +70,6 @@ public class SubAgent {
     public void setSkillRegistry(SkillRegistry skillRegistry) {
         this.skillRegistry = skillRegistry;
         refreshSystemPrompt();
-    }
-
-    public void setSkillContextBuffer(SkillContextBuffer skillContextBuffer) {
-        this.skillContextBuffer = skillContextBuffer;
     }
 
     /**
@@ -122,15 +116,6 @@ public class SubAgent {
         }
     }
 
-    private String prependSkillBodies(String content) {
-        if (skillContextBuffer == null || skillContextBuffer.isEmpty()) {
-            return content;
-        }
-        String drained = skillContextBuffer.drain();
-        if (drained.isEmpty()) return content;
-        return drained + "\n" + content;
-    }
-
     private void refreshSystemPrompt() {
         if (!conversationHistory.isEmpty()) {
             conversationHistory.set(0, LlmClient.Message.system(getSystemPrompt()));
@@ -174,7 +159,7 @@ public class SubAgent {
         log.info("[{}] executing task from {}: type={}", name, task.fromAgent(), task.type());
         pruneHistoricalImagePayloads();
         refreshSystemPrompt();
-        String taskContent = prependSkillBodies(task.content());
+        String taskContent = task.content();
 
         // 将任务注入对话
         conversationHistory.add(ImageReferenceParser.userMessage(

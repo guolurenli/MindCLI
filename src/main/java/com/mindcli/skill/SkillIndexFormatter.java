@@ -40,13 +40,19 @@ public final class SkillIndexFormatter {
         sb.append("## 可用 Skills（按需调用 load_skill 加载完整指引）\n\n");
 
         for (Skill skill : effective) {
-            String desc = truncateByCodepoint(skill.description().trim(), MAX_DESCRIPTION_CODEPOINTS);
-            sb.append("- **").append(skill.name()).append("**：").append(desc).append('\n');
+            StringBuilder line = new StringBuilder();
+            line.append("- **").append(skill.name()).append("**：")
+                    .append(truncateByCodepoint(skill.description().trim(), MAX_DESCRIPTION_CODEPOINTS));
+            String when = skill.whenToUse();
+            if (when != null && !when.isBlank()) {
+                line.append('\n').append("  触发场景：").append(truncateByCodepoint(when.trim(), MAX_DESCRIPTION_CODEPOINTS));
+            }
+            sb.append(line).append('\n');
         }
 
         sb.append('\n');
         sb.append("判断准则：当任务描述匹配某个 skill 的触发场景时，调用 load_skill(name) 加载完整指引；")
-                .append("已加载的 skill 会在下一轮以 \"## 已加载 Skill\" 段落出现在你的 user message 中。")
+                .append("skill 全文会作为 tool result 立即返回，同一 turn 内即可生效。")
                 .append("不要重复加载同一 skill；同一会话内一次足够。\n");
 
         if (sb.length() > MAX_INDEX_BYTES) {

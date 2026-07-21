@@ -16,7 +16,6 @@ import com.mindcli.render.PlainRenderer;
 import com.mindcli.render.Renderer;
 import com.mindcli.render.StatusInfo;
 import com.mindcli.runtime.CancellationContext;
-import com.mindcli.skill.SkillContextBuffer;
 import com.mindcli.skill.SkillIndexFormatter;
 import com.mindcli.skill.SkillRegistry;
 import com.mindcli.util.AnsiStyle;
@@ -58,8 +57,6 @@ public class Agent {
     private Supplier<String> externalContextSupplier = () -> "";
     //skill注册表
     private SkillRegistry skillRegistry;
-    //skill注册缓冲区
-    private SkillContextBuffer skillContextBuffer;
     //界面渲染器
     private Renderer renderer;
     //HITL状态提供者
@@ -100,10 +97,6 @@ public class Agent {
 
     public void setSkillRegistry(SkillRegistry skillRegistry) {
         this.skillRegistry = skillRegistry;
-    }
-
-    public void setSkillContextBuffer(SkillContextBuffer skillContextBuffer) {
-        this.skillContextBuffer = skillContextBuffer;
     }
 
     public void setRenderer(Renderer renderer) {
@@ -148,8 +141,8 @@ public class Agent {
         String memoryContext = memoryManager.buildContextForQuery(userInput, contextProfile.memoryContextTokens());
         updateSystemPromptWithMemory(memoryContext);
 
-        // 添加用户输入到历史（如有 skill body 注入，前置到原文之前）
-        String userMessageContent = prependSkillBodies(userInput);
+        // 添加用户输入到历史
+        String userMessageContent = userInput;
         conversationHistory.add(ImageReferenceParser.userMessage(
                 userMessageContent,
                 Path.of(toolRegistry.getProjectPath())));
@@ -280,9 +273,6 @@ public class Agent {
 
         // 清空短期记忆
         memoryManager.clearShortTerm();
-        if (skillContextBuffer != null) {
-            skillContextBuffer.clear();
-        }
     }
 
     /**
@@ -382,15 +372,6 @@ public class Agent {
             log.warn("Failed to build skill index", e);
             return "";
         }
-    }
-
-    private String prependSkillBodies(String userInput) {
-        if (skillContextBuffer == null || skillContextBuffer.isEmpty()) {
-            return userInput;
-        }
-        String drained = skillContextBuffer.drain();
-        if (drained.isEmpty()) return userInput;
-        return drained + "\n用户输入：\n" + userInput;
     }
 
     private String buildExternalContext() {

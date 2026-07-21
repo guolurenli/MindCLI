@@ -133,6 +133,8 @@ public final class SkillRegistry {
         String version = stringField(fm, "version");
         String author = stringField(fm, "author");
         List<String> tags = listField(fm, "tags");
+        String whenToUse = stringField(fm, "when_to_use");
+        if (whenToUse == null) whenToUse = "";
 
         Path referencesDir = skillDir.resolve("references");
         if (!Files.isDirectory(referencesDir)) {
@@ -148,7 +150,8 @@ public final class SkillRegistry {
                 source,
                 parsed.body(),
                 skillMd,
-                referencesDir
+                referencesDir,
+                whenToUse
         );
     }
 

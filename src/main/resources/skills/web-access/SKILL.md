@@ -2,7 +2,8 @@
 name: web-access
 description: |
   所有联网与浏览器操作的决策手册：搜索、网页抓取、读 SPA / 防爬墙站点、访问需要登录的页面、抓取社交媒体内容（微信公众号、知乎专栏、Twitter、小红书等）。
-  触发场景：用户要求搜索信息、阅读网页、调研话题、看公众号 / 知乎文章、读 GitHub 仓库内容、查看登录后的页面、抓取动态渲染站点。先调 load_skill 再决定用哪条工具链。
+when_to_use: |
+  当用户要求搜索信息、阅读网页、调研话题、看公众号/知乎文章、读 GitHub 仓库内容、查看登录后的页面、抓取动态渲染站点时加载。先调 load_skill 再决定用哪条工具链。
 version: "1.0.0"
 author: MindCLI
 tags: [web, browser, fetch]

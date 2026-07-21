@@ -13,7 +13,6 @@ import com.mindcli.prompt.PromptContext;
 import com.mindcli.prompt.PromptMode;
 import com.mindcli.prompt.ProjectMemoryLoader;
 import com.mindcli.runtime.CancellationContext;
-import com.mindcli.skill.SkillContextBuffer;
 import com.mindcli.skill.SkillIndexFormatter;
 import com.mindcli.skill.SkillRegistry;
 import com.mindcli.util.AnsiStyle;
@@ -109,7 +108,6 @@ public class PlanExecuteAgent {
     private final PrintStream out;
     private Supplier<String> externalContextSupplier = () -> "";
     private SkillRegistry skillRegistry;
-    private SkillContextBuffer skillContextBuffer;
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
 
     public PlanExecuteAgent(LlmClient llmClient) {
@@ -179,10 +177,6 @@ public class PlanExecuteAgent {
         this.skillRegistry = skillRegistry;
     }
 
-    public void setSkillContextBuffer(SkillContextBuffer skillContextBuffer) {
-        this.skillContextBuffer = skillContextBuffer;
-    }
-
     private void maybeCompactHistory(List<LlmClient.Message> messages, PrintStream out) {
         if (historyCompactor == null) return;
         int trigger = memoryManager.getContextProfile().compressionTriggerTokens();
@@ -204,15 +198,6 @@ public class PlanExecuteAgent {
             log.warn("Failed to build skill index", e);
             return "";
         }
-    }
-
-    private String prependSkillBodies(String content) {
-        if (skillContextBuffer == null || skillContextBuffer.isEmpty()) {
-            return content;
-        }
-        String drained = skillContextBuffer.drain();
-        if (drained.isEmpty()) return content;
-        return drained + "\n" + content;
     }
 
     /**
@@ -460,7 +445,6 @@ public class PlanExecuteAgent {
         if (!memoryContext.isEmpty()) {
             taskInput = taskInput + "\n\n" + memoryContext;
         }
-        taskInput = prependSkillBodies(taskInput);
 
         List<LlmClient.Message> messages = new ArrayList<>(Arrays.asList(
                 LlmClient.Message.system(prompt),
