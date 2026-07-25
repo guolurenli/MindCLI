@@ -36,19 +36,19 @@ class MemoryEntryTest {
 
     @Test
     void shouldCreateEntryWithMetadata() {
-        MemoryEntry entry = new MemoryEntry("test-1", "内容", MemoryEntry.MemoryType.FACT,
+        MemoryEntry entry = new MemoryEntry("test-1", "内容", MemoryEntry.MemoryType.PROJECT_FACT,
                 Map.of("source", "user"), 5);
 
         assertEquals("test-1", entry.getId());
-        assertEquals(MemoryEntry.MemoryType.FACT, entry.getType());
+        assertEquals(MemoryEntry.MemoryType.PROJECT_FACT, entry.getType());
         assertEquals("user", entry.getMetadata().get("source"));
     }
 
     @Test
     void shouldProvideStringRepresentation() {
-        MemoryEntry entry = new MemoryEntry("test-1", "这是一段很长的内容用来测试toString方法是否正确截断显示", MemoryEntry.MemoryType.CONVERSATION, null, 10);
+        MemoryEntry entry = new MemoryEntry("test-1", "这是一段很长的内容用来测试toString方法是否正确截断显示", MemoryEntry.MemoryType.PROJECT_FACT, null, 10);
         String str = entry.toString();
-        assertTrue(str.contains("CONVERSATION"));
+        assertTrue(str.contains("PROJECT_FACT"));
         assertTrue(str.contains("test-1"));
     }
 }

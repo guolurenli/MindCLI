@@ -161,6 +161,13 @@ public class LongTermMemory implements Memory {
                 .collect(Collectors.toList());
     }
 
+    /**
+     * 暴露存储目录，供 MemoryManager/Agent 读取 MEMORY.md 索引等文件。
+     */
+    public File getStorageDir() {
+        return memoryDir;
+    }
+
     public static boolean isVisibleInProject(MemoryEntry entry, String projectKey) {
         String scope = scopeOf(entry);
         if ("global".equals(scope)) {
@@ -188,6 +195,7 @@ public class LongTermMemory implements Memory {
         try {
             StringBuilder md = new StringBuilder();
             md.append("---\n");
+            md.append("name: ").append(entry.getName() != null ? entry.getName() : "").append("\n");
             md.append("type: ").append(entry.getType()).append("\n");
             md.append("timestamp: ").append(entry.getTimestamp()).append("\n");
             entry.getMetadata().forEach((k, v) ->
@@ -206,9 +214,11 @@ public class LongTermMemory implements Memory {
             int count = 0;
             for (MemoryEntry entry : entries.values()) {
                 if (count >= MAX_INDEX_ENTRIES) break;
-                String preview = entry.getContent().length() > 80
-                        ? entry.getContent().substring(0, 80).replace("\n", " ") + "..."
-                        : entry.getContent().replace("\n", " ");
+                String preview = entry.getName() != null && !entry.getName().isBlank()
+                        ? entry.getName()
+                        : (entry.getContent().length() > 80
+                            ? entry.getContent().substring(0, 80).replace("\n", " ") + "..."
+                            : entry.getContent().replace("\n", " "));
                 index.append("- [").append(preview).append("](")
                      .append(sanitize(entry.getId())).append(".md)  — ").append(entry.getType()).append("\n");
                 count++;
@@ -254,7 +264,8 @@ public class LongTermMemory implements Memory {
         String body = content.substring(endFrontmatter + 3).trim();
 
         Map<String, String> metadata = new HashMap<>();
-        String typeStr = "FACT";
+        String typeStr = "PROJECT_FACT";
+        String name = null;
         Instant timestamp = Instant.now();
         String entryId = file.getName().replaceFirst("\\.md$", "");
 
@@ -264,7 +275,9 @@ public class LongTermMemory implements Memory {
             String key = line.substring(0, colonIdx).trim();
             String value = line.substring(colonIdx + 1).trim();
 
-            if ("type".equals(key)) {
+            if ("name".equals(key)) {
+                name = value.isEmpty() ? null : value;
+            } else if ("type".equals(key)) {
                 typeStr = value;
             } else if ("timestamp".equals(key)) {
                 try {
@@ -281,10 +294,10 @@ public class LongTermMemory implements Memory {
         try {
             type = MemoryEntry.MemoryType.valueOf(typeStr);
         } catch (IllegalArgumentException e) {
-            type = MemoryEntry.MemoryType.FACT;
+            type = MemoryEntry.MemoryType.PROJECT_FACT;
         }
 
-        return new MemoryEntry(entryId, body, type, timestamp, metadata,
+        return new MemoryEntry(entryId, name, body, type, timestamp, metadata,
                 MemoryEntry.estimateTokens(body));
     }
 
@@ -303,8 +316,13 @@ public class LongTermMemory implements Memory {
                 try {
                     String id = (String) data.get("id");
                     String body = (String) data.get("content");
-                    MemoryEntry.MemoryType type = MemoryEntry.MemoryType.valueOf(
-                            (String) data.getOrDefault("type", "FACT"));
+                    MemoryEntry.MemoryType type;
+                    try {
+                        type = MemoryEntry.MemoryType.valueOf(
+                                (String) data.getOrDefault("type", "PROJECT_FACT"));
+                    } catch (IllegalArgumentException e) {
+                        type = MemoryEntry.MemoryType.PROJECT_FACT;
+                    }
                     Instant timestamp = Instant.now();
                     Object ts = data.get("timestamp");
                     if (ts instanceof String tsStr && !tsStr.isBlank()) {
@@ -344,7 +362,10 @@ public class LongTermMemory implements Memory {
 
     /**
      * 定期整合长期记忆，合并重复、删除矛盾、更新过时事实。
+     *
      * 对齐 Claude Code Auto Dream 机制，适配个人开发者场景（≥2 天 + ≥5 条）。
+     * 采用增量合并模式：LLM 输出 MERGE/DELETE/KEEP 指令，代码逐条执行。
+     * 安全原则：只有 LLM 明确标记删除的条目才删除，未提及的条目保持不动。
      * 异步执行，不阻塞启动。
      */
     public void consolidateIfNeeded(LlmClient llmClient) {
@@ -369,43 +390,94 @@ public class LongTermMemory implements Memory {
         CompletableFuture.runAsync(() -> {
             try {
                 String allFacts = snapshot.stream()
-                        .map(e -> e.getId() + ": " + e.getContent())
+                        .map(e -> String.format("%s [%s] %s: %s",
+                                e.getId(), e.getType(),
+                                e.getName() != null ? e.getName() : "",
+                                e.getContent()))
                         .collect(Collectors.joining("\n"));
 
                 String prompt = """
-                    以下是记忆系统的当前所有条目。请做以下整合工作：
-                    1. 合并表达相同意思的重复条目
-                    2. 删除明显矛盾的旧事实（保留最新的）
-                    3. 删除不再准确或已过时的信息
-                    4. 输出保留的条目，每行一条，格式与输入相同
+                    以下是记忆系统的当前所有条目。请输出操作指令，每行一条：
+
+                    MERGE id1 id2 → 新内容   # 合并两条重复记忆
+                    DELETE id3                # 删除过时/矛盾的记忆
+                    KEEP id4                  # 保留不需要改的记忆
+
+                    规则：
+                    1. 表达相同意思的重复条目用 MERGE 合并
+                    2. 明显矛盾/过时的条目用 DELETE 删除
+                    3. 未提及的条目默认保留
+                    4. 只对确实需要变更的条目输出指令，不要逐条 KEEP
 
                     当前记忆：
                     %s
 
-                    请输出整合后的记忆（每行一条：id: 内容）。
+                    请输出操作指令：
                     """.formatted(allFacts);
 
                 List<LlmClient.Message> req = List.of(
-                    LlmClient.Message.system("你是一个记忆整合助手。"),
+                    LlmClient.Message.system("你是一个记忆整合助手。只输出 MERGE/DELETE/KEEP 指令。"),
                     LlmClient.Message.user(prompt)
                 );
                 LlmClient.ChatResponse response = client.chat(req, null);
 
-                // 清除旧记忆，写入整合后的
-                clear();
+                // 增量执行指令：只操作明确标记的条目
+                int merged = 0;
+                int deleted = 0;
+                Set<String> processedIds = new HashSet<>();
+
                 for (String line : response.content().split("\n")) {
-                    String fact = line.replaceFirst("^[^:]*:\\s*", "").trim();
-                    if (fact.length() > 5) {
-                        store(new MemoryEntry("fact-" + UUID.randomUUID().toString().substring(0, 8),
-                            fact, MemoryEntry.MemoryType.FACT,
-                            Map.of("source", "consolidation"), MemoryEntry.estimateTokens(fact)));
+                    String instr = line.trim();
+                    if (instr.isEmpty()) continue;
+
+                    if (instr.startsWith("MERGE")) {
+                        // 格式: MERGE id1 id2 → new_content
+                        String[] parts = instr.substring(5).split("→", 2);
+                        if (parts.length >= 2) {
+                            String[] ids = parts[0].trim().split("\\s+");
+                            String newContent = parts[1].trim();
+                            if (ids.length >= 2 && newContent.length() > 5) {
+                                // 保留 meta 和 type 均从第一条继承
+                                MemoryEntry first = entries.get(ids[0].trim());
+                                MemoryEntry.MemoryType mergeType = first != null
+                                        ? first.getType() : MemoryEntry.MemoryType.PROJECT_FACT;
+                                Map<String, String> mergeMeta = first != null
+                                        ? first.getMetadata() : Map.of("source", "consolidation");
+                                // 删除被合并的条目
+                                for (String id : ids) {
+                                    String trimmedId = id.trim();
+                                    delete(trimmedId);
+                                    processedIds.add(trimmedId);
+                                }
+                                // 写入合并后的新条目
+                                store(new MemoryEntry(
+                                        "fact-" + UUID.randomUUID().toString().substring(0, 8),
+                                        newContent, mergeType,
+                                        mergeMeta, MemoryEntry.estimateTokens(newContent)));
+                                merged++;
+                            }
+                        }
+                    } else if (instr.startsWith("DELETE")) {
+                        String id = instr.substring(6).trim();
+                        if (!id.isEmpty() && delete(id)) {
+                            processedIds.add(id);
+                            deleted++;
+                        }
+                    } else if (instr.startsWith("KEEP")) {
+                        String id = instr.substring(4).trim();
+                        if (!id.isEmpty()) {
+                            processedIds.add(id);
+                        }
                     }
+                    // 无法识别的行静默跳过（防御性解析）
                 }
+
                 Files.writeString(lastConsolidationFile.toPath(),
                     String.valueOf(System.currentTimeMillis()));
-                log.info("记忆整合完成，整合后: {} 条", entries.size());
+                log.info("记忆整合完成: 合并 {} 组, 删除 {} 条, 整合后共 {} 条",
+                        merged, deleted, entries.size());
             } catch (Exception e) {
-                log.warn("记忆整合失败: {}", e.getMessage());
+                log.warn("记忆整合失败（记忆数据未受影响）: {}", e.getMessage());
             }
         });
     }
@@ -434,10 +506,11 @@ public class LongTermMemory implements Memory {
         Map<MemoryEntry.MemoryType, Long> typeCounts = entries.values().stream()
                 .collect(Collectors.groupingBy(MemoryEntry::getType, Collectors.counting()));
 
-        return String.format("长期记忆: %d条 / %d tokens (事实: %d, 摘要: %d, 工具结果: %d)",
+        return String.format("长期记忆: %d条 / %d tokens (偏好: %d, 反馈: %d, 事实: %d, 参考: %d)",
                 entries.size(), tokenCounter.get(),
-                typeCounts.getOrDefault(MemoryEntry.MemoryType.FACT, 0L),
-                typeCounts.getOrDefault(MemoryEntry.MemoryType.SUMMARY, 0L),
-                typeCounts.getOrDefault(MemoryEntry.MemoryType.TOOL_RESULT, 0L));
+                typeCounts.getOrDefault(MemoryEntry.MemoryType.USER_PREFERENCE, 0L),
+                typeCounts.getOrDefault(MemoryEntry.MemoryType.FEEDBACK, 0L),
+                typeCounts.getOrDefault(MemoryEntry.MemoryType.PROJECT_FACT, 0L),
+                typeCounts.getOrDefault(MemoryEntry.MemoryType.REFERENCE, 0L));
     }
 }

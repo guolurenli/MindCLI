@@ -53,9 +53,9 @@ class MemoryManagerTest {
         LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
         MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 128000, longTermMemory);
         memoryManager.setProjectPath("/repo/current");
-        longTermMemory.store(new MemoryEntry("current", "当前项目使用 Java 17", MemoryEntry.MemoryType.FACT,
+        longTermMemory.store(new MemoryEntry("current", "当前项目使用 Java 17", MemoryEntry.MemoryType.PROJECT_FACT,
                 java.util.Map.of("scope", "project", "project", memoryManager.getCurrentProject()), 10));
-        longTermMemory.store(new MemoryEntry("other", "其他项目使用 Java 8", MemoryEntry.MemoryType.FACT,
+        longTermMemory.store(new MemoryEntry("other", "其他项目使用 Java 8", MemoryEntry.MemoryType.PROJECT_FACT,
                 java.util.Map.of("scope", "project", "project", "/repo/other"), 10));
 
         List<MemoryEntry> results = memoryManager.searchLongTerm("Java", 10);

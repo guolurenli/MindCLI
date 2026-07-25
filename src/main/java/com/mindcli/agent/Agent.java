@@ -127,9 +127,23 @@ public class Agent {
         log.info("ReAct run started: inputLength={}", userInput == null ? 0 : userInput.length());
         pruneHistoricalImagePayloads();
 
-        // 检索相关长期记忆，注入到 system prompt
+        // 重置本轮已注入记忆的去重集合
+        memoryManager.resetSurfaced();
+
+        // 检索相关长期记忆，注入到 system prompt（支持工具感知过滤）
         ContextProfile contextProfile = memoryManager.getContextProfile();
-        String memoryContext = memoryManager.buildContextForQuery(userInput, contextProfile.memoryContextTokens());
+        java.util.Set<String> activeToolNames = toolRegistry.getToolDefinitions().stream()
+                .map(LlmClient.Tool::name)
+                .collect(java.util.stream.Collectors.toSet());
+        String memoryContext = memoryManager.buildContextForQuery(
+                userInput, contextProfile.memoryContextTokens(), activeToolNames);
+
+        // 预加载 MEMORY.md 索引（会话级缓存，只在首次运行时加载）
+        String memoryIndexSection = buildMemoryIndexSection();
+        if (!memoryIndexSection.isEmpty()) {
+            memoryContext = memoryIndexSection + "\n" + memoryContext;
+        }
+
         updateSystemPromptWithMemory(memoryContext);
 
         // 添加用户输入到历史
@@ -224,8 +238,8 @@ public class Agent {
                 appendReasoning(reasoningTranscript, response.reasoningContent());
                 conversationHistory.add(LlmClient.Message.assistant(response.content()));
 
-                // 提取本轮对话中的长期记忆事实
-                memoryManager.extractFacts(conversationHistory);
+                // 异步提取本轮对话中的长期记忆事实（fire-and-forget，不阻塞响应）
+                memoryManager.extractFactsAsync(conversationHistory);
 
                 // 记录 token 使用
                 memoryManager.recordTokenUsage(budget.totalInputTokens(), budget.totalOutputTokens(), budget.totalCachedInputTokens());
@@ -403,6 +417,33 @@ public class Agent {
             return ProjectMemoryLoader.createDefault(Path.of(toolRegistry.getProjectPath())).loadForPrompt();
         } catch (Exception e) {
             log.warn("Failed to load PAI.md project memory", e);
+            return "";
+        }
+    }
+
+    /**
+     * 读取 MEMORY.md 索引文件，注入到 system prompt。
+     * 对齐 Claude Code：会话启动时预加载记忆索引（≤200 行 / 25KB），
+     * 让 LLM 在全局层面知道有哪些已知信息域。
+     */
+    private String buildMemoryIndexSection() {
+        try {
+            java.io.File storageDir = memoryManager.getLongTermMemory().getStorageDir();
+            java.io.File indexFile = new java.io.File(storageDir, "MEMORY.md");
+            if (!indexFile.exists() || indexFile.length() == 0) return "";
+
+            String content = java.nio.file.Files.readString(indexFile.toPath());
+            String[] lines = content.split("\n");
+            if (lines.length > 200) {
+                content = String.join("\n", java.util.Arrays.copyOf(lines, 200))
+                        + "\n\n<!-- 索引已截断，更多记忆通过查询检索 -->";
+            }
+            if (content.length() > 25000) {
+                content = content.substring(0, 25000) + "\n<!-- 索引已截断 -->";
+            }
+            return "\n## 长期记忆索引\n" + content + "\n";
+        } catch (Exception e) {
+            log.warn("读取 MEMORY.md 索引失败: {}", e.getMessage());
             return "";
         }
     }
