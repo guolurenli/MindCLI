@@ -183,6 +183,18 @@ public interface LlmClient {
 
     record Tool(String name, String description, JsonNode parameters) {}
 
+    /**
+     * 轻量查询——用于记忆路由等非主对话任务。
+     * 默认回退到主模型 chat()，子类可覆写以使用更便宜/更快的模型。
+     *
+     * @param messages  查询消息（通常只有 system + user）
+     * @param maxTokens 输出 token 上限
+     * @return LLM 响应
+     */
+    default ChatResponse lightQuery(List<Message> messages, int maxTokens) throws IOException {
+        return chat(messages, null);
+    }
+
     interface StreamListener {
         StreamListener NO_OP = new StreamListener() {};
 

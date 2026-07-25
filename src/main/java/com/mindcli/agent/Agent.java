@@ -5,8 +5,6 @@ import com.mindcli.llm.LlmTraceLogger;
 import com.mindcli.context.ContextProfile;
 import com.mindcli.context.TokenUsageFormatter;
 import com.mindcli.lsp.LspDiagnosticReport;
-import com.mindcli.memory.ConversationHistoryCompactor;
-import com.mindcli.memory.ExplicitMemoryHints;
 import com.mindcli.memory.MemoryManager;
 import com.mindcli.prompt.PromptAssembler;
 import com.mindcli.prompt.PromptContext;
@@ -49,10 +47,8 @@ public class Agent {
     private final ToolRegistry toolRegistry;
     //对话历史（核心数据结构）
     private final List<LlmClient.Message> conversationHistory;
-    //记忆管理器（长期+短期记忆门店）
+    //记忆管理器（长期记忆门店）
     private final MemoryManager memoryManager;
-    //对话历史压缩器
-    private final ConversationHistoryCompactor historyCompactor;
     //外部上下文提供者
     private Supplier<String> externalContextSupplier = () -> "";
     //skill注册表
@@ -75,7 +71,6 @@ public class Agent {
         this.toolRegistry = toolRegistry;
         this.conversationHistory = new ArrayList<>();
         this.memoryManager = new MemoryManager(llmClient);
-        this.historyCompactor = new ConversationHistoryCompactor(llmClient);
         this.toolRegistry.setContextProfile(memoryManager.getContextProfile());
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
         this.memoryManager.setProjectPath(this.toolRegistry.getProjectPath());
@@ -86,7 +81,6 @@ public class Agent {
     public void setLlmClient(LlmClient llmClient) {
         this.llmClient = llmClient;
         this.memoryManager.setLlmClient(llmClient);
-        this.historyCompactor.setLlmClient(llmClient);
         this.toolRegistry.setContextProfile(memoryManager.getContextProfile());
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
     }
@@ -132,13 +126,24 @@ public class Agent {
     public String run(String userInput) {
         log.info("ReAct run started: inputLength={}", userInput == null ? 0 : userInput.length());
         pruneHistoricalImagePayloads();
-        // 存入短期记忆
-        memoryManager.addUserMessage(userInput);
-        storeExplicitBrowserMemoryHint(userInput);
 
-        // 检索相关长期记忆，注入到 system prompt
+        // 重置本轮已注入记忆的去重集合
+        memoryManager.resetSurfaced();
+
+        // 检索相关长期记忆，注入到 system prompt（支持工具感知过滤）
         ContextProfile contextProfile = memoryManager.getContextProfile();
-        String memoryContext = memoryManager.buildContextForQuery(userInput, contextProfile.memoryContextTokens());
+        java.util.Set<String> activeToolNames = toolRegistry.getToolDefinitions().stream()
+                .map(LlmClient.Tool::name)
+                .collect(java.util.stream.Collectors.toSet());
+        String memoryContext = memoryManager.buildContextForQuery(
+                userInput, contextProfile.memoryContextTokens(), activeToolNames);
+
+        // 预加载 MEMORY.md 索引（会话级缓存，只在首次运行时加载）
+        String memoryIndexSection = buildMemoryIndexSection();
+        if (!memoryIndexSection.isEmpty()) {
+            memoryContext = memoryIndexSection + "\n" + memoryContext;
+        }
+
         updateSystemPromptWithMemory(memoryContext);
 
         // 添加用户输入到历史
@@ -165,7 +170,7 @@ public class Agent {
             // 这是与第 3 期 Memory 短期记忆压缩并行的另一道压缩——后者只压 shortTermMemory，
             // 真正决定下一轮 LLM input token 的是这里。
             injectPendingLspDiagnostics();
-            maybeCompactHistory();
+            trimConversationHistory();
             AgentBudget.ExitReason exitReason = budget.check();
             if (exitReason != AgentBudget.ExitReason.WITHIN_BUDGET) {
                 String description = budget.describeExit(exitReason);
@@ -220,7 +225,6 @@ public class Agent {
 
                     List<ToolExecutionResult> toolResults = executeToolCalls(response.toolCalls(), iteration);
                     for (ToolExecutionResult toolResult : toolResults) {
-                        memoryManager.addToolResult(toolResult.name(), toolResult.result());
                         conversationHistory.add(LlmClient.Message.tool(toolResult.id(), toolResult.result()));
                     }
                     appendImageToolMessages(toolResults);
@@ -234,8 +238,8 @@ public class Agent {
                 appendReasoning(reasoningTranscript, response.reasoningContent());
                 conversationHistory.add(LlmClient.Message.assistant(response.content()));
 
-                // 存入记忆
-                memoryManager.addAssistantMessage(response.content());
+                // 异步提取本轮对话中的长期记忆事实（fire-and-forget，不阻塞响应）
+                memoryManager.extractFactsAsync(conversationHistory);
 
                 // 记录 token 使用
                 memoryManager.recordTokenUsage(budget.totalInputTokens(), budget.totalOutputTokens(), budget.totalCachedInputTokens());
@@ -270,23 +274,17 @@ public class Agent {
     public void clearHistory() {
         conversationHistory.clear();
         conversationHistory.add(LlmClient.Message.system(buildSystemPrompt("")));
-
-        // 清空短期记忆
-        memoryManager.clearShortTerm();
     }
 
     /**
-     * 手动压缩当前 ReAct 对话历史，不等待上下文窗口阈值触发。
+     * 手动截断过长对话历史，不等待上下文窗口阈值触发。
      */
     public CompactionResult compactHistoryNow() {
         long beforeTokens = estimateCurrentContextTokens();
-        try {
-            boolean compacted = historyCompactor.compactNow(conversationHistory);
-            return new CompactionResult(compacted, beforeTokens, estimateCurrentContextTokens(), null);
-        } catch (Exception e) {
-            log.warn("manual conversationHistory compaction failed", e);
-            return new CompactionResult(false, beforeTokens, estimateCurrentContextTokens(), e.getMessage());
-        }
+        long beforeSize = conversationHistory.size();
+        trimConversationHistory();
+        boolean trimmed = conversationHistory.size() < beforeSize;
+        return new CompactionResult(trimmed, beforeTokens, estimateCurrentContextTokens(), null);
     }
 
     public record CompactionResult(boolean compacted, long beforeTokens, long afterTokens, String error) {
@@ -322,17 +320,44 @@ public class Agent {
                 .build());
     }
 
-    private void maybeCompactHistory() {
-        if (historyCompactor == null) return;
-        int trigger = memoryManager.getContextProfile().compressionTriggerTokens();
-        try {
-            boolean compacted = historyCompactor.compactIfNeeded(conversationHistory, trigger);
-            if (compacted) {
-                renderer().stream().println("📦 上下文接近窗口上限，已把早期对话压缩为摘要后继续。");
+    /**
+     * 截断过长的对话历史，保留 system prompt + 最近用户轮次的消息。
+     * 替代旧版 ConversationHistoryCompactor 的 LLM 摘要压缩方案。
+     *
+     * 关键约束：分割点必须落在 user message 边界，避免切断 tool_call / tool_result
+     * 的成对协议（LLM API 要求 tool_call 和 tool_result 成对出现，切断会导致 400 错误）。
+     */
+    private void trimConversationHistory() {
+        final int maxMessages = 60;
+        if (conversationHistory.size() <= maxMessages) return;
+
+        // 找到所有 user message 的索引
+        int systemEnd = "system".equals(conversationHistory.get(0).role()) ? 1 : 0;
+        List<Integer> userIndices = new ArrayList<>();
+        for (int i = systemEnd; i < conversationHistory.size(); i++) {
+            if ("user".equals(conversationHistory.get(i).role())) {
+                userIndices.add(i);
             }
-        } catch (Exception e) {
-            log.warn("conversationHistory compaction failed", e);
         }
+
+        // 保留最近 3 个 user 轮次（不够则不做）
+        final int retainUserRounds = 3;
+        if (userIndices.size() <= retainUserRounds) return;
+
+        int splitIdx = userIndices.get(userIndices.size() - retainUserRounds);
+        if (splitIdx <= systemEnd) return;
+
+        // 在 user message 边界处分割，保护 tool_call/tool_result 不被切断
+        List<LlmClient.Message> toKeep = new ArrayList<>();
+        // 保留 system prompt
+        for (int i = 0; i < systemEnd; i++) {
+            toKeep.add(conversationHistory.get(i));
+        }
+        // 保留从分割点（user message 边界）开始的所有消息
+        toKeep.addAll(conversationHistory.subList(splitIdx, conversationHistory.size()));
+
+        conversationHistory.clear();
+        conversationHistory.addAll(toKeep);
     }
 
     private void pruneHistoricalImagePayloads() {
@@ -397,6 +422,33 @@ public class Agent {
     }
 
     /**
+     * 读取 MEMORY.md 索引文件，注入到 system prompt。
+     * 对齐 Claude Code：会话启动时预加载记忆索引（≤200 行 / 25KB），
+     * 让 LLM 在全局层面知道有哪些已知信息域。
+     */
+    private String buildMemoryIndexSection() {
+        try {
+            java.io.File storageDir = memoryManager.getLongTermMemory().getStorageDir();
+            java.io.File indexFile = new java.io.File(storageDir, "MEMORY.md");
+            if (!indexFile.exists() || indexFile.length() == 0) return "";
+
+            String content = java.nio.file.Files.readString(indexFile.toPath());
+            String[] lines = content.split("\n");
+            if (lines.length > 200) {
+                content = String.join("\n", java.util.Arrays.copyOf(lines, 200))
+                        + "\n\n<!-- 索引已截断，更多记忆通过查询检索 -->";
+            }
+            if (content.length() > 25000) {
+                content = content.substring(0, 25000) + "\n<!-- 索引已截断 -->";
+            }
+            return "\n## 长期记忆索引\n" + content + "\n";
+        } catch (Exception e) {
+            log.warn("读取 MEMORY.md 索引失败: {}", e.getMessage());
+            return "";
+        }
+    }
+
+    /**
      * 获取对话历史（用于调试）
      */
     public List<LlmClient.Message> getConversationHistory() {
@@ -410,21 +462,9 @@ public class Agent {
         return memoryManager;
     }
 
-    private void storeExplicitBrowserMemoryHint(String userInput) {
-        List<String> recentTexts = conversationHistory.stream()
-                .map(LlmClient.Message::content)
-                .filter(content -> content != null && !content.isBlank())
-                .toList();
-        String fact = ExplicitMemoryHints.browserLoginFact(userInput, recentTexts);
-        if (fact != null && !fact.isBlank()) {
-            memoryManager.storeFact(fact, "global");
-        }
-    }
-
     public String getContextStatus() {
         com.mindcli.context.ContextProfile profile = memoryManager.getContextProfile();
         int window = profile.maxContextWindow();
-        int triggerTokens = profile.compressionTriggerTokens();
 
         // 分类估算 token 占用
         int systemTokens = 0, userTokens = 0, assistantTokens = 0, toolTokens = 0;
@@ -442,7 +482,6 @@ public class Agent {
         int toolsSchemaTokens = estimateToolsSchemaTokens();
         int total = systemTokens + messagesTokens + toolsSchemaTokens;
         double ratio = window > 0 ? (double) total / window : 0;
-        int triggerRemaining = Math.max(0, triggerTokens - total);
 
         StringBuilder sb = new StringBuilder();
         sb.append(String.format("📊 Context Usage   %s   window: %s%n",
@@ -458,10 +497,6 @@ public class Agent {
         sb.append("    ─────────────────────────────────\n");
         sb.append(String.format("    合计:              %8s  (%4.1f%%)%n",
                 formatTokens(total), ratio * 100));
-        sb.append(String.format("%n  压缩阈值: %s (%d%%)   距压缩还有: %s%n",
-                formatTokens(triggerTokens),
-                (int) (profile.compressionTriggerRatio() * 100),
-                formatTokens(triggerRemaining)));
         sb.append("  MCP resources 自动索引: ")
                 .append(profile.mcpResourceIndexEnabled() ? "开启" : "关闭（window 不足 32k）")
                 .append("\n");

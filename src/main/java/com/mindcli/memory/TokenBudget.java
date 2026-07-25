@@ -10,7 +10,7 @@ import java.util.List;
  * 策略：
  * 1. 设定总 token 预算（系统提示 + 工具定义 + 对话历史 + 回复预留）
  * 2. 每次调用 LLM 前检查预算
- * 3. 超出预算时触发压缩或裁剪
+ * 3. 超出预算时触发裁剪
  */
 public class TokenBudget {
     private final int contextWindow;    // 模型上下文窗口大小
@@ -58,21 +58,6 @@ public class TokenBudget {
     public boolean isWithinBudget(List<LlmClient.Message> messages) {
         int estimatedTokens = estimateMessagesTokens(messages);
         return estimatedTokens <= getAvailableForConversation();
-    }
-
-    /**
-     * 检查是否需要压缩。
-     *
-     * @param triggerRatio 触发压缩的占用率（0.0–1.0）；通常由 {@code ContextProfile.compressionTriggerRatio()} 提供
-     */
-    public boolean needsCompression(ConversationMemory memory, double triggerRatio) {
-        int compressionBudget = Math.min(memory.getMaxTokens(), getAvailableForConversation());
-        return memory.getTokenCount() >= compressionBudget * triggerRatio;
-    }
-
-    /** 兼容旧调用方：默认 0.9 触发率。 */
-    public boolean needsCompression(ConversationMemory memory) {
-        return needsCompression(memory, 0.9);
     }
 
     /**

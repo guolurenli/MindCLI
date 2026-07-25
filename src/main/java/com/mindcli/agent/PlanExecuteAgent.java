@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.llm.LlmClient;
 import com.mindcli.llm.LlmTraceLogger;
 import com.mindcli.lsp.LspDiagnosticReport;
-import com.mindcli.memory.ConversationHistoryCompactor;
 import com.mindcli.memory.MemoryManager;
 import com.mindcli.plan.*;
 import com.mindcli.prompt.PromptAssembler;
@@ -104,7 +103,6 @@ public class PlanExecuteAgent {
     private final Planner planner;
     private final PlanReviewHandler reviewHandler;
     private final MemoryManager memoryManager;
-    private final ConversationHistoryCompactor historyCompactor;
     private final PrintStream out;
     private Supplier<String> externalContextSupplier = () -> "";
     private SkillRegistry skillRegistry;
@@ -142,7 +140,6 @@ public class PlanExecuteAgent {
         this.planner = planner != null ? planner : new Planner(llmClient, this.out);
         this.reviewHandler = reviewHandler == null ? (goal, plan) -> PlanReviewDecision.execute() : reviewHandler;
         this.memoryManager = memoryManager != null ? memoryManager : new MemoryManager(llmClient);
-        this.historyCompactor = new ConversationHistoryCompactor(llmClient);
         this.toolRegistry.setContextProfile(this.memoryManager.getContextProfile());
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
         this.memoryManager.setProjectPath(this.toolRegistry.getProjectPath());
@@ -177,17 +174,36 @@ public class PlanExecuteAgent {
         this.skillRegistry = skillRegistry;
     }
 
-    private void maybeCompactHistory(List<LlmClient.Message> messages, PrintStream out) {
-        if (historyCompactor == null) return;
-        int trigger = memoryManager.getContextProfile().compressionTriggerTokens();
-        try {
-            boolean compacted = historyCompactor.compactIfNeeded(messages, trigger);
-            if (compacted && out != null) {
-                out.println("📦 上下文接近窗口上限，已把早期对话压缩为摘要后继续。");
+    /**
+     * 截断过长的对话历史，保留 system prompt + 最近 3 个 user 轮次。
+     * 分割点必须在 user message 边界上，保护 tool_call/tool_result 成对协议。
+     */
+    private void trimConversationHistory(List<LlmClient.Message> messages) {
+        final int maxMessages = 60;
+        if (messages.size() <= maxMessages) return;
+
+        int systemEnd = !messages.isEmpty() && "system".equals(messages.get(0).role()) ? 1 : 0;
+        List<Integer> userIndices = new ArrayList<>();
+        for (int i = systemEnd; i < messages.size(); i++) {
+            if ("user".equals(messages.get(i).role())) {
+                userIndices.add(i);
             }
-        } catch (Exception e) {
-            log.warn("conversationHistory compaction failed", e);
         }
+
+        final int retainUserRounds = 3;
+        if (userIndices.size() <= retainUserRounds) return;
+
+        int splitIdx = userIndices.get(userIndices.size() - retainUserRounds);
+        if (splitIdx <= systemEnd) return;
+
+        List<LlmClient.Message> toKeep = new ArrayList<>();
+        for (int i = 0; i < systemEnd; i++) {
+            toKeep.add(messages.get(i));
+        }
+        toKeep.addAll(messages.subList(splitIdx, messages.size()));
+
+        messages.clear();
+        messages.addAll(toKeep);
     }
 
     private String buildSkillIndex() {
@@ -205,25 +221,19 @@ public class PlanExecuteAgent {
      */
     public String run(String userInput) {
         log.info("Plan run started: inputLength={}", userInput == null ? 0 : userInput.length());
-        memoryManager.addUserMessage(userInput);
         StreamState streamState = new StreamState();
         try {
             if (CancellationContext.isCancelled()) {
                 return "⏹️ 已取消当前计划执行。";
             }
             PlanRunOutcome outcome = runWithPlan(userInput, streamState);
-            if (outcome.persistAssistantMessage() && outcome.result() != null && !outcome.result().isBlank()) {
-                memoryManager.addAssistantMessage("[计划结果] " + outcome.result());
-            }
             if (streamState.hasStreamedOutput() && (outcome.result() == null || outcome.result().isBlank())) {
                 return "";
             }
             return outcome.result();
         } catch (Exception e) {
             log.error("Plan run failed", e);
-            String errorMessage = "❌ 执行失败: " + e.getMessage();
-            memoryManager.addAssistantMessage(errorMessage);
-            return errorMessage;
+            return "❌ 执行失败: " + e.getMessage();
         }
     }
 
@@ -470,7 +480,7 @@ public class PlanExecuteAgent {
 
             // 调 LLM 前评估 messages 是否接近 window 上限；超阈值压缩早期消息为摘要。
             injectPendingLspDiagnostics(messages, out);
-            maybeCompactHistory(messages, out);
+            trimConversationHistory(messages);
 
             LlmClient.ChatResponse response = llmClient.chat(
                     messages,
@@ -501,14 +511,8 @@ public class PlanExecuteAgent {
                 memoryManager.recordTokenUsage(totalInputTokens, totalOutputTokens, totalCachedInputTokens);
                 if (!allResults.isEmpty() && (response.content() == null || response.content().isBlank())) {
                     String toolOnlyResult = allResults.toString().trim();
-                    if (!toolOnlyResult.isBlank()) {
-                        memoryManager.addAssistantMessage("[计划任务 " + task.getId() + "] " + toolOnlyResult);
-                    }
                     streamRenderer.finish();
                     return TaskRunResult.of(toolOnlyResult, streamRenderer.hasStreamedOutput());
-                }
-                if (response.content() != null && !response.content().isBlank()) {
-                    memoryManager.addAssistantMessage("[计划任务 " + task.getId() + "] " + response.content());
                 }
                 streamRenderer.finish();
                 return TaskRunResult.of(response.content(), streamRenderer.hasStreamedOutput());
@@ -528,7 +532,6 @@ public class PlanExecuteAgent {
 
             List<ToolExecutionResult> toolResults = executeToolCalls(task.getId(), response.toolCalls());
             for (ToolExecutionResult toolResult : toolResults) {
-                memoryManager.addToolResult(toolResult.name(), toolResult.result());
                 allResults.append(toolResult.result()).append("\n");
                 messages.add(LlmClient.Message.tool(toolResult.id(), toolResult.result()));
             }
@@ -536,9 +539,6 @@ public class PlanExecuteAgent {
         }
 
         String fallbackResult = allResults.toString().trim();
-        if (!fallbackResult.isBlank()) {
-            memoryManager.addAssistantMessage("[计划任务 " + task.getId() + "] " + fallbackResult);
-        }
         streamRenderer.finish();
         return TaskRunResult.of(fallbackResult, streamRenderer.hasStreamedOutput());
     }

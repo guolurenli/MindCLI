@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.llm.LlmClient;
 import com.mindcli.llm.LlmTraceLogger;
 import com.mindcli.lsp.LspDiagnosticReport;
-import com.mindcli.memory.ConversationHistoryCompactor;
 import com.mindcli.context.ContextProfile;
 import com.mindcli.prompt.PromptAssembler;
 import com.mindcli.prompt.PromptContext;
@@ -48,7 +47,6 @@ public class SubAgent {
     private final List<LlmClient.Message> conversationHistory;
     private Supplier<String> externalContextSupplier = () -> "";
     private SkillRegistry skillRegistry;
-    private final ConversationHistoryCompactor historyCompactor;
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
 
     public SubAgent(String name, AgentRole role, LlmClient llmClient, ToolRegistry toolRegistry) {
@@ -58,7 +56,6 @@ public class SubAgent {
         this.toolRegistry = toolRegistry;
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
         this.conversationHistory = new ArrayList<>();
-        this.historyCompactor = new ConversationHistoryCompactor(llmClient);
         this.conversationHistory.add(LlmClient.Message.system(getSystemPrompt()));
     }
 
@@ -92,18 +89,36 @@ public class SubAgent {
         };
     }
 
-    private void maybeCompactHistory(PrintStream out) {
-        if (historyCompactor == null) return;
-        ContextProfile profile = toolRegistry == null ? null : toolRegistry.getContextProfile();
-        if (profile == null) return;
-        try {
-            boolean compacted = historyCompactor.compactIfNeeded(conversationHistory, profile.compressionTriggerTokens());
-            if (compacted && out != null) {
-                out.println("📦 [" + name + "] 上下文接近窗口上限，已把早期对话压缩为摘要后继续。");
+    /**
+     * 截断过长的对话历史，保留 system prompt + 最近 3 个 user 轮次。
+     * 分割点必须在 user message 边界上，保护 tool_call/tool_result 成对协议。
+     */
+    private void trimConversationHistory() {
+        final int maxMessages = 60;
+        if (conversationHistory.size() <= maxMessages) return;
+
+        int systemEnd = "system".equals(conversationHistory.get(0).role()) ? 1 : 0;
+        List<Integer> userIndices = new ArrayList<>();
+        for (int i = systemEnd; i < conversationHistory.size(); i++) {
+            if ("user".equals(conversationHistory.get(i).role())) {
+                userIndices.add(i);
             }
-        } catch (Exception e) {
-            log.warn("[{}] conversationHistory compaction failed", name, e);
         }
+
+        final int retainUserRounds = 3;
+        if (userIndices.size() <= retainUserRounds) return;
+
+        int splitIdx = userIndices.get(userIndices.size() - retainUserRounds);
+        if (splitIdx <= systemEnd) return;
+
+        List<LlmClient.Message> toKeep = new ArrayList<>();
+        for (int i = 0; i < systemEnd; i++) {
+            toKeep.add(conversationHistory.get(i));
+        }
+        toKeep.addAll(conversationHistory.subList(splitIdx, conversationHistory.size()));
+
+        conversationHistory.clear();
+        conversationHistory.addAll(toKeep);
     }
 
     private String buildSkillIndex() {
@@ -186,7 +201,7 @@ public class SubAgent {
 
             // 调 LLM 前评估 conversationHistory 是否接近 window 上限；超阈值压缩早期消息为摘要。
             injectPendingLspDiagnostics(out);
-            maybeCompactHistory(out);
+            trimConversationHistory();
 
             try {
                 LlmClient.ChatResponse response = llmClient.chat(
