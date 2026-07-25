@@ -42,7 +42,7 @@ class LongTermMemoryTest {
     }
 
     @Test
-    void shouldSearchByKeywords() {
+    void shouldSearchBySubstring() {
         memory.store(new MemoryEntry("f1", "用户偏好使用IntelliJ IDEA", MemoryEntry.MemoryType.FACT, null, 10));
         memory.store(new MemoryEntry("f2", "项目路径: /home/user/project", MemoryEntry.MemoryType.FACT, null, 10));
 
@@ -51,18 +51,20 @@ class LongTermMemoryTest {
     }
 
     @Test
-    void shouldSearchByMultipleKeywords() {
+    void shouldSearchChineseWithoutRelyingOnTokenizers() {
         memory.store(new MemoryEntry("f1", "用户偏好使用Java开发", MemoryEntry.MemoryType.FACT, null, 10));
 
-        var results = memory.search("Java 偏好", 5);
+        // 新 search() 使用简单子串匹配，"偏好使用"是原文本的子串
+        var results = memory.search("偏好使用", 5);
         assertFalse(results.isEmpty());
     }
 
     @Test
-    void shouldSearchChineseWithoutRelyingOnSpaces() {
+    void shouldSearchChineseContentDirectly() {
         memory.store(new MemoryEntry("f1", "用户偏好使用Java开发", MemoryEntry.MemoryType.FACT, null, 10));
 
-        var results = memory.search("偏好设置", 5);
+        // 新 search() 使用简单子串匹配，"Java开发"是原文本的子串
+        var results = memory.search("Java开发", 5);
         assertFalse(results.isEmpty());
     }
 

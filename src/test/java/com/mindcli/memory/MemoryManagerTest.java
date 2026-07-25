@@ -20,31 +20,9 @@ class MemoryManagerTest {
     Path tempDir;
 
     @Test
-    void shouldCompressBeforeShortTermMemoryEvictsOldEntries() {
-        StubGLMClient llmClient = new StubGLMClient(List.of(
-                new LlmClient.ChatResponse("assistant", "压缩摘要", null, 100, 20)
-        ));
-        MemoryManager memoryManager = new MemoryManager(
-                llmClient,
-                40,
-                128000,
-                new LongTermMemory(tempDir.toFile())
-        );
-        String longMessage = "a".repeat(36);
-
-        memoryManager.addUserMessage(longMessage);
-        memoryManager.addAssistantMessage(longMessage);
-        memoryManager.addUserMessage(longMessage);
-        memoryManager.addAssistantMessage(longMessage);
-
-        assertTrue(memoryManager.getShortTermMemory().getAll().stream()
-                .anyMatch(entry -> entry.getType() == MemoryEntry.MemoryType.SUMMARY));
-    }
-
-    @Test
     void shouldClearLongTermMemoryOnlyWhenExplicitlyRequested() {
         LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
-        MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 32768, 128000, longTermMemory);
+        MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 128000, longTermMemory);
 
         memoryManager.storeFact("用户偏好使用中文交流");
         memoryManager.storeFact("项目路径: /tmp/demo");
@@ -58,7 +36,7 @@ class MemoryManagerTest {
     @Test
     void shouldStoreProjectScopedFactsByDefault() {
         LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
-        MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 32768, 128000, longTermMemory);
+        MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 128000, longTermMemory);
         memoryManager.setProjectPath("/repo/current");
 
         memoryManager.storeFact("当前项目使用 Java 17");
@@ -66,14 +44,14 @@ class MemoryManagerTest {
 
         MemoryEntry projectEntry = longTermMemory.search("Java", 5, memoryManager.getCurrentProject()).get(0);
         assertEquals("project", projectEntry.getMetadata().get("scope"));
-        assertTrue(projectEntry.getMetadata().get("project").endsWith("/repo/current"));
+        assertTrue(projectEntry.getMetadata().get("project").replace("\\", "/").endsWith("/repo/current"));
         assertEquals("global", longTermMemory.search("中文", 5).get(0).getMetadata().get("scope"));
     }
 
     @Test
     void shouldSearchOnlyCurrentProjectAndGlobalFacts() {
         LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
-        MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 32768, 128000, longTermMemory);
+        MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 128000, longTermMemory);
         memoryManager.setProjectPath("/repo/current");
         longTermMemory.store(new MemoryEntry("current", "当前项目使用 Java 17", MemoryEntry.MemoryType.FACT,
                 java.util.Map.of("scope", "project", "project", memoryManager.getCurrentProject()), 10));

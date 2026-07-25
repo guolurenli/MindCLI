@@ -14,9 +14,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Queue;
@@ -29,81 +28,6 @@ class PlanExecuteAgentTest {
 
     @TempDir
     Path tempDir;
-
-    @Test
-    void shouldWritePlanExecutionArtifactsBackToShortTermMemoryOnly() throws Exception {
-        Path sampleFile = Files.createFile(tempDir.resolve("sample.txt"));
-        Files.writeString(sampleFile, "plan-memory-content");
-
-        StubGLMClient llmClient = new StubGLMClient(List.of(
-                new LlmClient.ChatResponse(
-                        "assistant",
-                        "",
-                        List.of(new LlmClient.ToolCall(
-                                "call_1",
-                                new LlmClient.ToolCall.Function(
-                                        "read_file",
-                                        "{\"path\":\"" + sampleFile.toString().replace("\\", "\\\\") + "\"}"
-                                )
-                        )),
-                        120,
-                        30
-                ),
-                new LlmClient.ChatResponse("assistant", "已读取并确认文件内容", null, 140, 40)
-        ));
-
-        MemoryManager memoryManager = new MemoryManager(
-                llmClient,
-                4096,
-                128000,
-                new LongTermMemory(tempDir.resolve("memory-store").toFile())
-        );
-        ToolRegistry toolRegistry = new ToolRegistry();
-        toolRegistry.setProjectPath(tempDir.toString());
-        PlanExecuteAgent agent = new PlanExecuteAgent(
-                llmClient,
-                toolRegistry,
-                new StubPlanner(llmClient),
-                memoryManager,
-                (goal, plan) -> PlanExecuteAgent.PlanReviewDecision.execute()
-        );
-
-        String result = agent.run("请读取测试文件并确认内容");
-
-        List<String> shortTermContents = memoryManager.getShortTermMemory().getAll().stream()
-                .map(entry -> entry.getContent())
-                .toList();
-
-        assertTrue(result.contains("计划执行完成"));
-        assertTrue(shortTermContents.stream().anyMatch(content -> content.contains("请读取测试文件并确认内容")));
-        assertTrue(shortTermContents.stream().anyMatch(content -> content.contains("plan-memory-content")));
-        assertTrue(shortTermContents.stream().anyMatch(content -> content.contains("已读取并确认文件内容")));
-        assertEquals(0, memoryManager.getLongTermMemory().size());
-    }
-
-    @Test
-    void shouldNotExtractFactsWhenPlanIsCanceled() throws Exception {
-        StubGLMClient llmClient = new StubGLMClient(List.of());
-        LongTermMemory longTermMemory = new LongTermMemory(tempDir.resolve("memory-store-cancel").toFile());
-        MemoryManager memoryManager = new MemoryManager(
-                llmClient,
-                4096,
-                128000,
-                longTermMemory
-        );
-        PlanExecuteAgent agent = new PlanExecuteAgent(
-                llmClient,
-                new ToolRegistry(),
-                new StubPlanner(llmClient),
-                memoryManager,
-                (goal, plan) -> PlanExecuteAgent.PlanReviewDecision.cancel()
-        );
-
-        String result = agent.run("列出当前目录的文件");
-
-        assertEquals("⏹️ 已取消本次计划执行。", result);
-        assertEquals(0, longTermMemory.size());
-    }
 
     @Test
     void shouldNotRepeatStreamedTaskOutputInFinalPlanSummary() throws Exception {

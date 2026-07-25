@@ -400,7 +400,7 @@ class AgentOrchestratorTest {
 
     private static final class NoOpMemoryManager extends MemoryManager {
         private NoOpMemoryManager(File storageDir) {
-            super(new GLMClient("test-key"), 32768, 200000, new LongTermMemory(storageDir));
+            super(new GLMClient("test-key"), 200000, new LongTermMemory(storageDir));
         }
     }
 
