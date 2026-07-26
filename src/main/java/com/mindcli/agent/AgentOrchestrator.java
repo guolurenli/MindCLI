@@ -106,6 +106,10 @@ public class AgentOrchestrator {
         );
         this.reviewer = new SubAgent("reviewer", AgentRole.REVIEWER, llmClient, toolRegistry);
         this.memoryManager = memoryManager;
+        // 统一记忆体系：所有 SubAgent 共享 MemoryManager
+        this.planner.setMemoryManager(memoryManager);
+        this.workers.forEach(w -> w.setMemoryManager(memoryManager));
+        this.reviewer.setMemoryManager(memoryManager);
     }
 
     public void setExternalContextSupplier(Supplier<String> externalContextSupplier) {
@@ -131,6 +135,7 @@ public class AgentOrchestrator {
      */
     public String run(String userInput) {
         log.info("Multi-Agent run started: inputLength={}", userInput == null ? 0 : userInput.length());
+        memoryManager.resetSurfaced();
         if (CancellationContext.isCancelled()) {
             return "⏹️ 已取消当前多 Agent 任务。";
         }
@@ -427,6 +432,7 @@ public class AgentOrchestrator {
                 //每个步骤单独新建一个Review审查代理，不池化
                 SubAgent localReviewer = new SubAgent(
                         "reviewer-" + step.id(), AgentRole.REVIEWER, llmClient, toolRegistry);
+                localReviewer.setMemoryManager(memoryManager);
                 try {
                     //阻塞从代理池获取空闲Worker，拿不到就等待
                     worker = workerPool.take();

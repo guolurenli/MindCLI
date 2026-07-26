@@ -167,7 +167,6 @@ public class Agent {
                 return "⏹️ 已取消当前任务。";
             }
             // 调 LLM 前评估 conversationHistory 是否接近 window 上限；超阈值就把早期消息压缩成摘要。
-            // 这是与第 3 期 Memory 短期记忆压缩并行的另一道压缩——后者只压 shortTermMemory，
             // 真正决定下一轮 LLM input token 的是这里。
             injectPendingLspDiagnostics();
             trimConversationHistory();
@@ -238,8 +237,9 @@ public class Agent {
                 appendReasoning(reasoningTranscript, response.reasoningContent());
                 conversationHistory.add(LlmClient.Message.assistant(response.content()));
 
-                // 异步提取本轮对话中的长期记忆事实（fire-and-forget，不阻塞响应）
-                memoryManager.extractFactsAsync(conversationHistory);
+                // 增量异步提取本轮新增的长期记忆事实
+                // 对齐 Claude Code Stop hook：只传本轮新增 exchange，不重传整段历史
+                memoryManager.extractFactsIncrementalAsync(conversationHistory);
 
                 // 记录 token 使用
                 memoryManager.recordTokenUsage(budget.totalInputTokens(), budget.totalOutputTokens(), budget.totalCachedInputTokens());
@@ -322,14 +322,20 @@ public class Agent {
 
     /**
      * 截断过长的对话历史，保留 system prompt + 最近用户轮次的消息。
-     * 替代旧版 ConversationHistoryCompactor 的 LLM 摘要压缩方案。
+     *
+     * 对齐 Claude Code 的 Compaction Summary 语义：
+     * - 保留最近 N 轮完整原文（等价于 CC 的保留窗口）
+     * - 被丢弃的早期消息先调 lightQuery 生成压缩摘要，摘要在 system prompt 后插入
+     * - 摘要失败时静默降级为纯截断，不阻塞主流程
      *
      * 关键约束：分割点必须落在 user message 边界，避免切断 tool_call / tool_result
      * 的成对协议（LLM API 要求 tool_call 和 tool_result 成对出现，切断会导致 400 错误）。
      */
     private void trimConversationHistory() {
-        final int maxMessages = 60;
-        if (conversationHistory.size() <= maxMessages) return;
+        // 用 token 阈值替代硬编码消息数，避免小消息过早截断、大消息已超限才发现
+        long currentTokens = estimateCurrentContextTokens();
+        int triggerTokens = memoryManager.getContextProfile().compressionTriggerTokens();
+        if (currentTokens <= triggerTokens) return;
 
         // 找到所有 user message 的索引
         int systemEnd = "system".equals(conversationHistory.get(0).role()) ? 1 : 0;
@@ -347,23 +353,108 @@ public class Agent {
         int splitIdx = userIndices.get(userIndices.size() - retainUserRounds);
         if (splitIdx <= systemEnd) return;
 
+        // 被丢弃的消息
+        List<LlmClient.Message> toDiscard = new ArrayList<>(
+                conversationHistory.subList(systemEnd, splitIdx));
+
+        // 异步生成压缩摘要（fire-and-forget 不阻塞；失败降级为纯截断）
+        String compactionSummary = summarizeDiscardedMessages(toDiscard);
+
         // 在 user message 边界处分割，保护 tool_call/tool_result 不被切断
+        long beforeTokens = estimateCurrentContextTokens();
+        int beforeSize = conversationHistory.size();
         List<LlmClient.Message> toKeep = new ArrayList<>();
         // 保留 system prompt
         for (int i = 0; i < systemEnd; i++) {
             toKeep.add(conversationHistory.get(i));
+        }
+        // 插入压缩摘要（来自被丢弃的消息）
+        if (compactionSummary != null && !compactionSummary.isEmpty()) {
+            toKeep.add(LlmClient.Message.system(
+                    "[Earlier conversation summary]\n" + compactionSummary));
         }
         // 保留从分割点（user message 边界）开始的所有消息
         toKeep.addAll(conversationHistory.subList(splitIdx, conversationHistory.size()));
 
         conversationHistory.clear();
         conversationHistory.addAll(toKeep);
+
+        log.info("Compaction: {}→{} messages, {}→{} tokens, summary={} chars, kept {} user rounds",
+                beforeSize, conversationHistory.size(),
+                beforeTokens, estimateCurrentContextTokens(),
+                compactionSummary != null ? compactionSummary.length() : 0,
+                retainUserRounds);
+    }
+
+    /**
+     * 对即将被丢弃的消息生成压缩摘要。
+     * 对齐 Claude Code Compaction Summary：保留推理过程和关键决策，不提取永久事实（那是 MemoryExtractor 的职责）。
+     *
+     * @return 摘要文本，失败时返回 null（降级为纯截断）
+     */
+    private String summarizeDiscardedMessages(List<LlmClient.Message> messages) {
+        if (messages == null || messages.isEmpty()) return null;
+        if (llmClient == null) return null;
+
+        try {
+            // 只取 user + assistant 消息，跳过 tool 结果（tool 输出太长且摘要不需要原文）
+            String dialogue = messages.stream()
+                    .filter(m -> "user".equals(m.role()) || "assistant".equals(m.role()))
+                    .map(m -> m.role().toUpperCase() + ": " + truncateForSummary(m.content(), 2000))
+                    .reduce("", (a, b) -> a + "\n\n" + b);
+
+            if (dialogue.length() < 300) return null;
+
+            String prompt = """
+                    请对以下对话片段做简洁摘要，保留：
+                    - 用户做了什么关键决策或提出什么重要约束
+                    - 你读了哪些文件、做了哪些关键修改
+                    - 遇到了什么错误以及如何解决的
+                    - 当前仍未完成的事项
+
+                    不要提取可推导的代码模式、文件路径或架构约定。
+                    摘要控制在 500 字以内。
+
+                    对话：
+                    %s
+                    """.formatted(dialogue);
+
+            List<LlmClient.Message> request = List.of(
+                    LlmClient.Message.system("你是一个对话摘要助手，只输出简洁事实，不做推测。"),
+                    LlmClient.Message.user(prompt)
+            );
+
+            // 使用 lightQuery（便宜模型 + 限制输出）控制成本
+            LlmClient.ChatResponse response = llmClient.lightQuery(request, 512);
+            String summary = response.content();
+            if (summary == null || summary.isBlank() || "NONE".equals(summary.trim())) {
+                return null;
+            }
+            return summary.trim();
+        } catch (Exception e) {
+            log.warn("压缩摘要生成失败，降级为纯截断: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private static String truncateForSummary(String s, int max) {
+        return s == null ? "" : (s.length() <= max ? s : s.substring(0, max) + "...");
     }
 
     private void pruneHistoricalImagePayloads() {
+        // 找到最后一条 user message，保护其图片（用户可能刚发了截图）
+        int lastUserIdx = -1;
+        for (int i = conversationHistory.size() - 1; i >= 0; i--) {
+            if ("user".equals(conversationHistory.get(i).role())) {
+                lastUserIdx = i;
+                break;
+            }
+        }
+
         int messageCount = 0;
         int imageCount = 0;
         for (int i = 0; i < conversationHistory.size(); i++) {
+            if (i == lastUserIdx) continue;
             LlmClient.Message message = conversationHistory.get(i);
             int images = message.imagePartCount();
             if (images <= 0) {

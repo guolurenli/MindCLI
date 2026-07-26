@@ -6,6 +6,7 @@ import com.mindcli.llm.LlmClient;
 import com.mindcli.llm.LlmTraceLogger;
 import com.mindcli.lsp.LspDiagnosticReport;
 import com.mindcli.memory.MemoryManager;
+import com.mindcli.memory.TokenBudget;
 import com.mindcli.plan.*;
 import com.mindcli.prompt.PromptAssembler;
 import com.mindcli.prompt.PromptContext;
@@ -176,11 +177,13 @@ public class PlanExecuteAgent {
 
     /**
      * 截断过长的对话历史，保留 system prompt + 最近 3 个 user 轮次。
+     * 触发使用 token 阈值（对齐 Agent.java），避免硬编码消息数。
      * 分割点必须在 user message 边界上，保护 tool_call/tool_result 成对协议。
      */
     private void trimConversationHistory(List<LlmClient.Message> messages) {
-        final int maxMessages = 60;
-        if (messages.size() <= maxMessages) return;
+        long currentTokens = TokenBudget.estimateMessagesTokens(messages);
+        int triggerTokens = memoryManager.getContextProfile().compressionTriggerTokens();
+        if (currentTokens <= triggerTokens) return;
 
         int systemEnd = !messages.isEmpty() && "system".equals(messages.get(0).role()) ? 1 : 0;
         List<Integer> userIndices = new ArrayList<>();
@@ -196,6 +199,8 @@ public class PlanExecuteAgent {
         int splitIdx = userIndices.get(userIndices.size() - retainUserRounds);
         if (splitIdx <= systemEnd) return;
 
+        long beforeTokens = currentTokens;
+        int beforeSize = messages.size();
         List<LlmClient.Message> toKeep = new ArrayList<>();
         for (int i = 0; i < systemEnd; i++) {
             toKeep.add(messages.get(i));
@@ -204,6 +209,9 @@ public class PlanExecuteAgent {
 
         messages.clear();
         messages.addAll(toKeep);
+        log.info("Plan compaction: {}→{} messages, ~{}→~{} tokens",
+                beforeSize, messages.size(), beforeTokens,
+                TokenBudget.estimateMessagesTokens(messages));
     }
 
     private String buildSkillIndex() {
@@ -268,6 +276,7 @@ public class PlanExecuteAgent {
 
     private String executePlan(ExecutionPlan plan, StreamState streamState) throws IOException {
         log.info("Executing plan: goal='{}', taskCount={}", plan.getGoal(), plan.getAllTasks().size());
+        memoryManager.resetSurfaced();
         out.println("🚀 开始执行计划...\n");
 
         plan.markStarted();
@@ -509,6 +518,8 @@ public class PlanExecuteAgent {
 
             if (!response.hasToolCalls()) {
                 memoryManager.recordTokenUsage(totalInputTokens, totalOutputTokens, totalCachedInputTokens);
+                // 子任务结束，增量提取长期记忆
+                memoryManager.extractFactsIncrementalAsync(messages);
                 if (!allResults.isEmpty() && (response.content() == null || response.content().isBlank())) {
                     String toolOnlyResult = allResults.toString().trim();
                     streamRenderer.finish();

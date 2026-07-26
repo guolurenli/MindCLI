@@ -5,7 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.llm.LlmClient;
 import com.mindcli.llm.LlmTraceLogger;
 import com.mindcli.lsp.LspDiagnosticReport;
-import com.mindcli.context.ContextProfile;
+import com.mindcli.memory.MemoryManager;
+import com.mindcli.memory.TokenBudget;
 import com.mindcli.prompt.PromptAssembler;
 import com.mindcli.prompt.PromptContext;
 import com.mindcli.prompt.PromptMode;
@@ -47,6 +48,7 @@ public class SubAgent {
     private final List<LlmClient.Message> conversationHistory;
     private Supplier<String> externalContextSupplier = () -> "";
     private SkillRegistry skillRegistry;
+    private MemoryManager memoryManager;
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
 
     public SubAgent(String name, AgentRole role, LlmClient llmClient, ToolRegistry toolRegistry) {
@@ -67,6 +69,10 @@ public class SubAgent {
     public void setSkillRegistry(SkillRegistry skillRegistry) {
         this.skillRegistry = skillRegistry;
         refreshSystemPrompt();
+    }
+
+    public void setMemoryManager(MemoryManager memoryManager) {
+        this.memoryManager = memoryManager;
     }
 
     /**
@@ -91,11 +97,15 @@ public class SubAgent {
 
     /**
      * 截断过长的对话历史，保留 system prompt + 最近 3 个 user 轮次。
+     * 触发使用 token 阈值（对齐 Agent.java），避免硬编码消息数。
      * 分割点必须在 user message 边界上，保护 tool_call/tool_result 成对协议。
      */
     private void trimConversationHistory() {
-        final int maxMessages = 60;
-        if (conversationHistory.size() <= maxMessages) return;
+        if (memoryManager == null) return;
+
+        long currentTokens = TokenBudget.estimateMessagesTokens(conversationHistory);
+        int triggerTokens = memoryManager.getContextProfile().compressionTriggerTokens();
+        if (currentTokens <= triggerTokens) return;
 
         int systemEnd = "system".equals(conversationHistory.get(0).role()) ? 1 : 0;
         List<Integer> userIndices = new ArrayList<>();
@@ -111,6 +121,8 @@ public class SubAgent {
         int splitIdx = userIndices.get(userIndices.size() - retainUserRounds);
         if (splitIdx <= systemEnd) return;
 
+        long beforeTokens = currentTokens;
+        int beforeSize = conversationHistory.size();
         List<LlmClient.Message> toKeep = new ArrayList<>();
         for (int i = 0; i < systemEnd; i++) {
             toKeep.add(conversationHistory.get(i));
@@ -119,6 +131,9 @@ public class SubAgent {
 
         conversationHistory.clear();
         conversationHistory.addAll(toKeep);
+        log.info("[{}] compaction: {}→{} messages, ~{}→~{} tokens", name,
+                beforeSize, conversationHistory.size(), beforeTokens,
+                TokenBudget.estimateMessagesTokens(conversationHistory));
     }
 
     private String buildSkillIndex() {
@@ -175,6 +190,17 @@ public class SubAgent {
         pruneHistoricalImagePayloads();
         refreshSystemPrompt();
         String taskContent = task.content();
+
+        // 检索长期记忆并注入任务上下文（对齐 Agent.java 的记忆检索）
+        if (memoryManager != null) {
+            memoryManager.resetSurfaced();
+            String memoryContext = memoryManager.buildContextForQuery(
+                    taskContent,
+                    memoryManager.getContextProfile().memoryContextTokens());
+            if (!memoryContext.isEmpty()) {
+                taskContent = "## 相关长期记忆\n\n" + memoryContext + "\n\n## 当前任务\n\n" + taskContent;
+            }
+        }
 
         // 将任务注入对话
         conversationHistory.add(ImageReferenceParser.userMessage(
@@ -241,6 +267,11 @@ public class SubAgent {
                 conversationHistory.add(LlmClient.Message.assistant(response.content()));
 
                 streamRenderer.finish();
+
+                // 增量提取长期记忆，子任务中的关键发现不丢失
+                if (memoryManager != null) {
+                    memoryManager.extractFactsIncrementalAsync(conversationHistory);
+                }
 
                 return AgentMessage.result(name, role, response.content());
 

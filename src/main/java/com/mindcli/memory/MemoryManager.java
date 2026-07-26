@@ -89,10 +89,21 @@ public class MemoryManager {
     /**
      * 异步提取事实（fire-and-forget），不阻塞主对话响应。
      * 对齐 Claude Code 的 stopHooks 异步模式。
+     * @deprecated 改为 {@link #extractFactsIncrementalAsync}，只传本轮新增消息
      */
     public void extractFactsAsync(List<LlmClient.Message> conversationHistory) {
         CompletableFuture.runAsync(() -> {
             extractFacts(conversationHistory);
+        });
+    }
+
+    /**
+     * 增量异步提取 —— 只处理本轮新增的对话消息。
+     * 对齐 Claude Code Stop hook：hook 每次只收到新增 exchange，不是整段历史。
+     */
+    public void extractFactsIncrementalAsync(List<LlmClient.Message> conversationHistory) {
+        CompletableFuture.runAsync(() -> {
+            extractor.extractFactsIncremental(conversationHistory);
         });
     }
 

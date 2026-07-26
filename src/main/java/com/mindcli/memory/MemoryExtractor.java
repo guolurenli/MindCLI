@@ -21,6 +21,13 @@ public class MemoryExtractor {
     private final LlmClient llmClient;
     private final LongTermMemory longTermMemory;
 
+    /**
+     * 上次提取时 conversationHistory 的消息数，用于增量提取。
+     * - 对齐 Claude Code Stop hook：只传给 hook 本轮新增的 exchange
+     * - trimConversationHistory 截断后，size 会变小，此时 reset 重算
+     */
+    private int lastExtractedSize = 0;
+
     /** 明确禁止提取为长期记忆的内容类型（对齐 Claude Code 的 Never Store 列表） */
     private static final Set<String> NEVER_STORE_KEYWORDS = Set.of(
             "代码模式", "设计模式", "编码规范", "代码风格",
@@ -65,9 +72,55 @@ public class MemoryExtractor {
 
     /**
      * 从对话历史中提取事实，直接存入 LongTermMemory（单轮提取）。
+     * @deprecated 改为 {@link #extractFactsIncremental}，只传本轮新增消息
      */
     public void extractFacts(List<LlmClient.Message> conversationHistory) {
         extractFacts(conversationHistory, 1);
+    }
+
+    /**
+     * 增量提取 —— 只处理本轮新增的对话，不重传整个 conversationHistory。
+     *
+     * 对齐 Claude Code Stop hook 语义：
+     * - Stop hook 每次触发时只收到本轮新增的 exchange，不是整段历史重放
+     * - 代码负责跟踪提取到哪了，每次只取 subList[lastExtractedSize, end)
+     * - 如果 conversationHistory 被 trimConversationHistory 截断（size 变小），
+     *   lastExtractedSize 自动重置到当前 size，下一轮提取从新的尾部重新开始
+     */
+    public synchronized void extractFactsIncremental(List<LlmClient.Message> conversationHistory) {
+        if (conversationHistory == null || conversationHistory.isEmpty()) return;
+
+        // trimConversationHistory 截断后 size 可能回退，此时重置位置
+        if (lastExtractedSize > conversationHistory.size()) {
+            lastExtractedSize = 0;
+        }
+
+        // 只取本轮新增的消息
+        List<LlmClient.Message> newMessages = conversationHistory.subList(
+                lastExtractedSize, conversationHistory.size());
+
+        // 新增内容太少，攒着下次一起提（至少 2 条 user 消息才算一轮有效对话）
+        long newUserCount = newMessages.stream().filter(m -> "user".equals(m.role())).count();
+        if (newUserCount < 2) return;
+
+        // 标记本次提取位置
+        lastExtractedSize = conversationHistory.size();
+
+        String dialogue = newMessages.stream()
+                .filter(m -> "user".equals(m.role()) || "assistant".equals(m.role()))
+                .map(m -> m.role().toUpperCase() + ": " + truncate(m.content(), 2000))
+                .reduce("", (a, b) -> a + "\n\n" + b);
+
+        if (dialogue.length() < 500) return;
+
+        try {
+            String result = doExtractRound(dialogue, null, 0, 1);
+            if (result != null && !"NO_FACTS".equals(result.trim())) {
+                storeExtractedFacts(result);
+            }
+        } catch (IOException e) {
+            log.warn("增量事实提取失败，跳过: {}", e.getMessage());
+        }
     }
 
     /**
