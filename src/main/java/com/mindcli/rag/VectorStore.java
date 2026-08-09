@@ -20,7 +20,7 @@ public class VectorStore implements AutoCloseable {
     private final String projectPath;
 
     public VectorStore(String projectPath) throws SQLException {
-        this.projectPath = projectPath;
+        this.projectPath = Path.of(projectPath).toAbsolutePath().normalize().toString();
         String dbDir = System.getProperty("mindcli.rag.dir",
                 System.getProperty("user.home") + "/.mindcli/rag");
         java.io.File dir = new java.io.File(dbDir);
@@ -113,7 +113,7 @@ public class VectorStore implements AutoCloseable {
                 ps.setString(3, entry.chunk.chunkType());
                 ps.setString(4, entry.chunk.name());
                 ps.setString(5, entry.chunk.content());
-                ps.setString(6, embeddingToJson(entry.embedding));
+                ps.setString(6, entry.embedding == null ? null : embeddingToJson(entry.embedding));
                 ps.addBatch();
             }
             ps.executeBatch();
@@ -172,6 +172,9 @@ public class VectorStore implements AutoCloseable {
                         continue;
                     }
                     float[] embedding = jsonToEmbedding(embeddingJson);
+                    if (embedding.length == 0 || queryEmbedding.length != embedding.length) {
+                        continue;
+                    }
                     double similarity = cosineSimilarity(queryEmbedding, embedding);
                     candidates.add(new SearchResult(
                             rs.getString("file_path"),

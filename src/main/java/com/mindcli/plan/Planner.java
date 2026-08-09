@@ -166,6 +166,73 @@ public class Planner {
     }
 
     /**
+     * 局部重规划失败任务及其下游子树（不重跑已完成任务）。
+     */
+    public ExecutionPlan replanSubtree(ExecutionPlan plan, Task failedTask, String failureReason) throws IOException {
+        out.println("🔄 局部重规划子树，失败任务: " + failedTask.getId() + "\n");
+
+        // 收集受影响的下游任务
+        List<Task> affected = new ArrayList<>();
+        collectDependents(failedTask, plan, new HashSet<>(), affected);
+
+        StringBuilder context = new StringBuilder();
+        context.append("原目标: ").append(plan.getGoal()).append("\n");
+        context.append("失败任务: ").append(failedTask.getId())
+                .append(" - ").append(failedTask.getDescription()).append("\n");
+        context.append("失败原因: ").append(failureReason).append("\n");
+
+        // 第一步：根因分析
+        try {
+            List<LlmClient.Message> analysisReq = List.of(
+                    LlmClient.Message.system("你是一个故障分析助手，只输出简洁的根因分析和修复策略。"),
+                    LlmClient.Message.user("任务执行失败。\n目标: " + plan.getGoal()
+                            + "\n失败任务: " + failedTask.getDescription()
+                            + "\n失败信息: " + failureReason
+                            + "\n已完成任务: " + summarizeCompletedTasks(plan)
+                            + "\n\n请分析失败根因，并给出绕过该问题的具体策略（不超过3句话）。")
+            );
+            String analysis = llmClient.chat(analysisReq, null).content();
+            if (analysis != null && !analysis.isBlank()) {
+                context.append("\n失败根因分析: ").append(analysis.trim()).append("\n");
+            }
+        } catch (Exception e) {
+            log.warn("根因分析 LLM 调用失败，跳过: {}", e.getMessage());
+        }
+
+        if (!affected.isEmpty()) {
+            context.append("\n受影响的下游任务（需重新规划）:\n");
+            for (Task t : affected) {
+                context.append("- ").append(t.getId()).append(": ").append(t.getDescription()).append("\n");
+            }
+        }
+        context.append("\n请制定绕过上述失败的新执行计划，已完成的任务保持不动。");
+
+        return createPlan(context.toString());
+    }
+
+    private void collectDependents(Task task, ExecutionPlan plan,
+                                    Set<String> visited, List<Task> result) {
+        if (!visited.add(task.getId())) return;
+        for (String depId : task.getDependents()) {
+            Task dep = plan.getTask(depId);
+            if (dep != null) {
+                result.add(dep);
+                collectDependents(dep, plan, visited, result);
+            }
+        }
+    }
+
+    private String summarizeCompletedTasks(ExecutionPlan plan) {
+        StringBuilder sb = new StringBuilder();
+        for (Task t : plan.getAllTasks()) {
+            if (t.getStatus() == Task.TaskStatus.COMPLETED) {
+                sb.append(t.getId()).append(": ").append(t.getDescription()).append("; ");
+            }
+        }
+        return sb.isEmpty() ? "(无)" : sb.toString().trim();
+    }
+
+    /**
      * 根据执行结果重新规划
      */
     public ExecutionPlan replan(ExecutionPlan failedPlan, String failureReason) throws IOException {

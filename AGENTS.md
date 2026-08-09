@@ -50,6 +50,8 @@ mvn test -DskipTests=false                  # 全量回归
 | Plan-and-Execute | `PlanExecuteAgent.java` | `/plan` |
 | Multi-Agent | `AgentOrchestrator.java` | `/team` |
 
+ReAct 的 LLM/tool 循环已委托给 `runtime/agent/AgentLoopExecutor.java`；`Agent.java` 继续负责 prompt / memory / renderer / 状态栏等 ReAct 周边体验。工具调用先经 `runtime/agent/ToolDispatcher.java` 映射为 `ToolOutcome`，再回灌给模型；Plan 和 Multi-Agent 暂时仍保留各自 loop，后续阶段再迁移。
+
 核心内置工具 11 个：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `create_project` / `search_code` / `web_search` / `web_fetch` / `revert_turn`
 
 代码库理解默认走 Claude Code 式实时探索：`glob_files` 找候选文件、`grep_code` 精确定位符号或字符串、`read_file` 按需读取具体行段。`grep_code` 优先使用本机 `ripgrep`，不可用时回退到 Java 扫描；结果受 `max_results` / `head_limit` / `max_chars` 预算约束，返回 `partial: true` 或 `suggested_reads` 时应继续缩小搜索范围或按建议读取行段。`search_code` 是 RAG 语义辅助，适合模糊自然语言、关键词不明确、常规搜索无果、巨型/跨知识检索场景，不作为精确代码定位的首选。
@@ -140,7 +142,7 @@ src/main/java/com/mindcli/
 
 ### 并行工具
 
-- 三条路径都走 `executeTools()`，不手写 for-loop
+- 三条路径都走 `executeTools()`，不手写 for-loop；ReAct 通过 `ToolDispatcher` 适配到结构化 `ToolOutcome`
 - 默认最多 4 个并发，结果保持原始顺序
 
 ### Web + Browser
@@ -215,7 +217,8 @@ src/main/java/com/mindcli/
 |----------|------|
 | CLI 命令 | Main.java + CliCommandParser.java |
 | 规划/DAG | PlanExecuteAgent.java + Planner.java + ExecutionPlan.java |
-| 工具调用 | ToolRegistry.java + Agent.java |
+| 工具调用 | ToolRegistry.java + runtime/agent/ToolDispatcher.java + runtime/agent/ToolOutcome.java |
+| ReAct loop | Agent.java + runtime/agent/AgentLoopExecutor.java |
 | 代码搜索 | ToolRegistry.java (`glob_files` / `grep_code` / `read_file`) |
 | 模型/API | llm/*Client.java + LlmClientFactory.java |
 | RAG 语义辅助 | CodeRetriever.java + CodeIndex.java + VectorStore.java |

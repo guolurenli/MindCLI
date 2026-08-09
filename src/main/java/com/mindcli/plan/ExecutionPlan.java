@@ -71,6 +71,13 @@ public class ExecutionPlan {
     }
 
     /**
+     * 获取任务 Map（用于 isOnCriticalPath 等需要按 ID 查询的场景）。
+     */
+    public Map<String, Task> getAllTasksMap() {
+        return new LinkedHashMap<>(tasks);
+    }
+
+    /**
      * 获取根任务（没有依赖的任务）
      */
     public List<Task> getRootTasks() {
@@ -328,6 +335,51 @@ public class ExecutionPlan {
             case FAILED -> "❌";
             case SKIPPED -> "⏭️";
         };
+    }
+
+    /**
+     * 将子树计划中的新任务合并到当前计划。
+     * 已完成的 COMPLETED 任务保留不动，子树中的新任务替换原有同区域任务。
+     */
+    public void mergeSubtree(ExecutionPlan subtree) {
+        // 移除当前计划中 PENDING/FAILED 状态的任务（将被子树替换）
+        List<String> toRemove = new ArrayList<>();
+        for (Task t : tasks.values()) {
+            if (t.getStatus() == Task.TaskStatus.PENDING
+                || t.getStatus() == Task.TaskStatus.FAILED) {
+                toRemove.add(t.getId());
+            }
+        }
+        for (String id : toRemove) {
+            tasks.remove(id);
+        }
+
+        // 将子树中的任务重编号并加入
+        int nextIdx = tasks.size() + 1;
+        Map<String, String> idRemap = new HashMap<>();
+        for (Task t : subtree.getAllTasks()) {
+            String newId = "task_" + nextIdx++;
+            idRemap.put(t.getId(), newId);
+            Task newTask = new Task(newId, t.getDescription(), t.getType());
+            tasks.put(newId, newTask);
+        }
+
+        // 重建子树的依赖关系
+        for (Task t : subtree.getAllTasks()) {
+            Task newTask = tasks.get(idRemap.get(t.getId()));
+            if (newTask == null) continue;
+            for (String depId : t.getDependencies()) {
+                String newDepId = idRemap.get(depId);
+                if (newDepId != null && tasks.containsKey(newDepId)) {
+                    newTask.addDependency(newDepId);
+                    Task dep = tasks.get(newDepId);
+                    if (dep != null) dep.addDependent(newTask.getId());
+                }
+            }
+        }
+
+        // 重新计算执行顺序
+        computeExecutionOrder();
     }
 
     @Override

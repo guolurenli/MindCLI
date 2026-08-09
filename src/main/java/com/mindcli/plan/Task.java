@@ -16,6 +16,10 @@ public class Task {
     private final List<String> dependents;    // 依赖此任务的其他任务ID
     private volatile long startTime;
     private volatile long endTime;
+    private volatile int maxRetries = 3;
+    private volatile int retryCount = 0;
+    // 是否为关键路径任务（默认 true，LLM 可在计划 JSON 中指定 critical: false）
+    private volatile boolean critical = true;
 
     public enum TaskType {
         PLANNING,      // 规划任务
@@ -99,6 +103,11 @@ public class Task {
         this.endTime = System.currentTimeMillis();
     }
 
+    /** 重置为 PENDING 状态（用于瞬态错误重试） */
+    public void resetToPending() {
+        this.status = TaskStatus.PENDING;
+    }
+
     /**
      * 获取执行耗时（毫秒）
      */
@@ -108,14 +117,60 @@ public class Task {
         return endTime - startTime;
     }
 
+    // -- 重试相关 --
+    public int getMaxRetries() { return maxRetries; }
+    public void setMaxRetries(int maxRetries) { this.maxRetries = maxRetries; }
+    public int getRetryCount() { return retryCount; }
+    public void incrementRetry() { retryCount++; }
+
     /**
-     * 是否可以执行（所有依赖都已完成）
+     * 判断异常是否可重试（网络超时、限流、连接失败等瞬态错误）。
+     */
+    public boolean shouldRetry(Exception error) {
+        if (retryCount >= maxRetries) return false;
+        if (error == null) return false;
+        return com.mindcli.llm.LlmRetryPolicy.isRetryable(error);
+    }
+
+    // -- 关键路径相关 --
+    public boolean isCritical() { return critical; }
+    public void setCritical(boolean critical) { this.critical = critical; }
+
+    /**
+     * 判断当前任务是否在关键路径上：有下游依赖且存在叶子任务间接依赖本任务。
+     */
+    public boolean isOnCriticalPath(Map<String, Task> allTasks) {
+        if (dependents.isEmpty()) return false;
+        Set<String> reachableLeaves = new HashSet<>();
+        collectLeafTasks(this.id, allTasks, new HashSet<>(), reachableLeaves);
+        return !reachableLeaves.isEmpty();
+    }
+
+    private void collectLeafTasks(String fromId, Map<String, Task> allTasks,
+                                   Set<String> visited, Set<String> leaves) {
+        if (!visited.add(fromId)) return;
+        Task task = allTasks.get(fromId);
+        if (task == null) return;
+        if (task.dependents.isEmpty()) {
+            leaves.add(fromId);
+            return;
+        }
+        for (String depId : task.dependents) {
+            collectLeafTasks(depId, allTasks, visited, leaves);
+        }
+    }
+
+    /**
+     * 是否可以执行。COMPLETED（正常）或 SKIPPED（降级）均满足依赖；
+     * FAILED 不满足，下游需等待重试或重规划。
      */
     public boolean isExecutable(Map<String, Task> allTasks) {
         if (status != TaskStatus.PENDING) return false;
         for (String depId : dependencies) {
             Task dep = allTasks.get(depId);
-            if (dep == null || dep.getStatus() != TaskStatus.COMPLETED) {
+            if (dep == null) return false;
+            if (dep.getStatus() != TaskStatus.COMPLETED
+                && dep.getStatus() != TaskStatus.SKIPPED) {
                 return false;
             }
         }

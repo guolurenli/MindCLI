@@ -69,13 +69,18 @@ public class AgentOrchestrator {
             return new ExecutionStep(id, description, type, dependencies, result, StepStatus.FAILED);
         }
 
+        ExecutionStep withSkipped(String reason) {
+            return new ExecutionStep(id, description, type, dependencies,
+                    reason != null ? reason : "步骤被跳过", StepStatus.SKIPPED);
+        }
+
         ExecutionStep started() {
             return new ExecutionStep(id, description, type, dependencies, result, StepStatus.RUNNING);
         }
     }
 
     enum StepStatus {
-        PENDING, RUNNING, COMPLETED, FAILED
+        PENDING, RUNNING, COMPLETED, FAILED, SKIPPED
     }
 
     public AgentOrchestrator(LlmClient llmClient) {
@@ -200,10 +205,18 @@ public class AgentOrchestrator {
             }
         }
 
-        // 5. 处理因前置失败而无法执行的残留步骤（显式提示用户）
+        // 5. 处理未能执行的残留步骤（显式提示用户）
         for (ExecutionStep step : steps) {
             if (step.status() == StepStatus.PENDING) {
-                out.println("⏭️ 步骤 [" + step.id() + "] 因前置步骤失败被跳过: " + step.description());
+                // 列出其依赖状态，帮助用户理解为何未能执行
+                List<String> depStatus = step.dependencies().stream()
+                        .map(dep -> dep + "=" + getStepStatus(dep, steps))
+                        .toList();
+                out.println("⏭️ 步骤 [" + step.id() + "] 未能执行（依赖状态: "
+                        + String.join(", ", depStatus) + "）: " + step.description());
+            }
+            if (step.status() == StepStatus.SKIPPED) {
+                out.println("⏭️ 步骤 [" + step.id() + "] 已跳过: " + step.description());
             }
         }
 
@@ -289,7 +302,13 @@ public class AgentOrchestrator {
         return steps.stream()
                 .filter(step -> step.status() == StepStatus.PENDING)
                 .filter(step -> step.dependencies().stream()
-                        .allMatch(dep -> statusMap.get(dep) == StepStatus.COMPLETED))
+                        .allMatch(dep -> {
+                            StepStatus s = statusMap.get(dep);
+                            // COMPLETED（正常）和 SKIPPED（显式降级）可放行；
+                            // FAILED 表示依赖结果不可用，必须阻断下游步骤。
+                            return s == StepStatus.COMPLETED
+                                || s == StepStatus.SKIPPED;
+                        }))
                 .toList();
     }
 
@@ -603,14 +622,26 @@ public class AgentOrchestrator {
         return context.toString();
     }
 
+    private StepStatus getStepStatus(String stepId, List<ExecutionStep> steps) {
+        for (ExecutionStep step : steps) {
+            if (step.id().equals(stepId)) return step.status();
+        }
+        return StepStatus.PENDING;
+    }
+
     private String summarizeSteps(List<ExecutionStep> steps) {
         StringBuilder sb = new StringBuilder();
         for (ExecutionStep step : steps) {
             String deps = step.dependencies().isEmpty() ? "无"
                     : String.join(", ", step.dependencies());
+            String icon = switch (step.status()) {
+                case COMPLETED -> "✅";
+                case FAILED -> "❌";
+                case SKIPPED -> "⏭️";
+                default -> "⏳";
+            };
             sb.append(String.format("  %s [%s] %s (依赖: %s)%n",
-                    step.status() == StepStatus.COMPLETED ? "✅" : "⏳",
-                    step.id(), step.description(), deps));
+                    icon, step.id(), step.description(), deps));
         }
         return sb.toString();
     }
@@ -624,10 +655,15 @@ public class AgentOrchestrator {
     private String buildFinalResult(List<ExecutionStep> steps) {
         StringBuilder result = new StringBuilder();
         boolean allCompleted = steps.stream().allMatch(step -> step.status() == StepStatus.COMPLETED);
+        boolean allDone = steps.stream().allMatch(step ->
+                step.status() == StepStatus.COMPLETED || step.status() == StepStatus.SKIPPED);
         boolean hasFailedSteps = steps.stream().anyMatch(step -> step.status() == StepStatus.FAILED);
+        boolean hasSkippedSteps = steps.stream().anyMatch(step -> step.status() == StepStatus.SKIPPED);
 
         if (allCompleted) {
             result.append("✅ 多 Agent 协作任务完成！\n\n");
+        } else if (allDone && hasSkippedSteps) {
+            result.append("⚠️ 多 Agent 协作任务完成（部分步骤已跳过）。\n\n");
         } else if (hasFailedSteps) {
             result.append("⚠️ 多 Agent 协作任务未完全完成，存在失败步骤。\n\n");
         } else {
@@ -641,6 +677,8 @@ public class AgentOrchestrator {
                 result.append("✅ ");
             } else if (step.status() == StepStatus.FAILED) {
                 result.append("❌ ");
+            } else if (step.status() == StepStatus.SKIPPED) {
+                result.append("⏭️ ");
             } else {
                 result.append("⏳ ");
             }

@@ -312,21 +312,46 @@ public class PlanExecuteAgent {
                 }
 
                 Exception error = batchResult.error();
-                task.markFailed(error.getMessage());
-                log.warn("Task failed: {} error={}", task.getId(), error.getMessage());
                 out.println("❌ 失败 [" + task.getId() + "]: " + error.getMessage() + "\n");
 
-                // 策略1：计划进度小于50%，直接重新规划整套任务
-                if (plan.getProgress() < 0.5) {
-                    out.println("🔄 尝试重新规划...\n");
-                    ExecutionPlan replanned = planner.replan(plan, error.getMessage());
-                    return reviewAndExecutePlan(replanned, streamState).result();
+                // --- 三级递进恢复 ---
+                // 第一级：瞬态错误 → 指数退避重试
+                if (task.shouldRetry(error)) {
+                    task.incrementRetry();
+                    task.resetToPending();
+                    long delayMs = (1L << (task.getRetryCount() - 1)) * 1000;
+                    out.println("🔁 重试 [" + task.getId() + "] ("
+                            + task.getRetryCount() + "/" + task.getMaxRetries()
+                            + ")，等待 " + delayMs + "ms...\n");
+                    log.info("Retrying task {} ({}/{}) after transient error: {}",
+                            task.getId(), task.getRetryCount(), task.getMaxRetries(), error.getMessage());
+                    try {
+                        Thread.sleep(delayMs);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                    }
+                    continue;
                 }
 
-                if (!finalResult.isEmpty()) {
-                    finalResult.append("\n");
+                // 第二级：关键路径任务 → 局部重规划子树
+                if (task.isOnCriticalPath(plan.getAllTasksMap())) {
+                    out.println("🔄 关键任务 [" + task.getId() + "] 失败，局部重规划子树...\n");
+                    task.markFailed(error.getMessage());
+                    try {
+                        ExecutionPlan partialPlan = planner.replanSubtree(plan, task, error.getMessage());
+                        plan.mergeSubtree(partialPlan);
+                        log.info("Subtree replan merged for failed task {}", task.getId());
+                    } catch (IOException e) {
+                        log.error("Subtree replan failed for task {}", task.getId(), e);
+                        task.markFailed("局部重规划失败: " + e.getMessage());
+                    }
+                    continue;
                 }
-                finalResult.append("任务 ").append(task.getId()).append(" 失败: ").append(error.getMessage());
+
+                // 第三级：非关键路径 → 跳过，下游降级执行
+                task.markSkipped();
+                log.warn("Task {} skipped (non-critical), dependents will degrade", task.getId());
+                out.println("⏭️ 跳过 [" + task.getId() + "]（非关键路径），下游将降级执行\n");
             }
         }
 
@@ -475,6 +500,7 @@ public class PlanExecuteAgent {
         StringBuilder allResults = new StringBuilder();
         int iteration = 0;
         TaskStreamRenderer streamRenderer = new TaskStreamRenderer(task.getId(), streamState, out);
+        AgentBudget taskBudget = AgentBudget.fromLlmClient(llmClient);
 
         int totalInputTokens = 0;
         int totalOutputTokens = 0;
@@ -485,17 +511,44 @@ public class PlanExecuteAgent {
                 streamRenderer.finish();
                 return TaskRunResult.of("⏹️ 已取消任务 [" + task.getId() + "]。", streamRenderer.hasStreamedOutput());
             }
+
+            // AgentBudget 三重阀：token 耗尽 / 停滞检测 / 硬轮数兜底
+            AgentBudget.ExitReason exitReason = taskBudget.check();
+            if (exitReason != AgentBudget.ExitReason.WITHIN_BUDGET) {
+                log.warn("Task {} budget exhausted: reason={}, iteration={}",
+                        task.getId(), exitReason, iteration);
+                streamRenderer.finish();
+                String toolOnlyResult = allResults.toString().trim();
+                if (!toolOnlyResult.isEmpty()) {
+                    return TaskRunResult.of("⚠️ 子任务因 " + taskBudget.describeExit(exitReason)
+                            + " 提前终止，已有工具输出：\n" + toolOnlyResult, streamRenderer.hasStreamedOutput());
+                }
+                return TaskRunResult.of("⚠️ 子任务因 " + taskBudget.describeExit(exitReason) + " 提前终止",
+                        streamRenderer.hasStreamedOutput());
+            }
+
             iteration++;
+            taskBudget.beginIteration();
 
             // 调 LLM 前评估 messages 是否接近 window 上限；超阈值压缩早期消息为摘要。
             injectPendingLspDiagnostics(messages, out);
             trimConversationHistory(messages);
 
-            LlmClient.ChatResponse response = llmClient.chat(
-                    messages,
-                    llmClient.supportsTools() ? toolRegistry.getToolDefinitions() : null,
-                    streamRenderer
-            );
+            LlmClient.ChatResponse response;
+            try {
+                response = com.mindcli.llm.LlmRetryPolicy.withRetry(() ->
+                        llmClient.chat(
+                                messages,
+                                llmClient.supportsTools() ? toolRegistry.getToolDefinitions() : null,
+                                streamRenderer
+                        ),
+                        "plan-task-" + task.getId()
+                );
+            } catch (Exception e) {
+                log.error("Task {} LLM call failed after retries: {}", task.getId(), e.getMessage());
+                streamRenderer.finish();
+                throw new IOException("LLM 调用失败: " + e.getMessage(), e);
+            }
             LlmTraceLogger.logReasoning(log,
                     "plan-task task=" + task.getId() + " iteration=" + iteration,
                     llmClient,
@@ -508,6 +561,7 @@ public class PlanExecuteAgent {
             totalInputTokens += response.inputTokens();
             totalOutputTokens += response.outputTokens();
             totalCachedInputTokens += response.cachedInputTokens();
+            taskBudget.recordTokens(response.inputTokens(), response.outputTokens(), response.cachedInputTokens());
 
             log.info("Task {} iteration {} response: toolCalls={}, reasoningChars={}, contentChars={}",
                     task.getId(),
@@ -531,6 +585,7 @@ public class PlanExecuteAgent {
 
             // 有工具调用：执行工具并将结果回灌到消息历史
             printToolCalls(out, response.toolCalls());
+            taskBudget.recordToolCalls(response.toolCalls());
             messages.add(LlmClient.Message.assistant(
                     response.reasoningContent(),
                     response.content(),

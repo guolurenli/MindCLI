@@ -155,6 +155,17 @@ public class ImageReferenceParser {
     // 其他字符（包括空格、中文、未编码字节）原样保留。
     private static String fileUriToLocalPath(String value) {
         String afterScheme = value.substring("file://".length());
+        String decoded = percentDecodeUtf8(afterScheme);
+        if (isWindows()) {
+            if (isWindowsDrivePath(decoded, 0)) {
+                return decoded;
+            }
+            if (decoded.length() > 1
+                    && (decoded.charAt(0) == '/' || decoded.charAt(0) == '\\')
+                    && isWindowsDrivePath(decoded, 1)) {
+                return decoded.substring(1);
+            }
+        }
         String pathPart;
         if (afterScheme.startsWith("/")) {
             pathPart = afterScheme;
@@ -163,6 +174,17 @@ public class ImageReferenceParser {
             pathPart = slashIdx < 0 ? "/" + afterScheme : afterScheme.substring(slashIdx);
         }
         return percentDecodeUtf8(pathPart);
+    }
+
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+    }
+
+    private static boolean isWindowsDrivePath(String value, int offset) {
+        return value.length() >= offset + 3
+                && Character.isLetter(value.charAt(offset))
+                && value.charAt(offset + 1) == ':'
+                && (value.charAt(offset + 2) == '/' || value.charAt(offset + 2) == '\\');
     }
 
     private static String percentDecodeUtf8(String s) {

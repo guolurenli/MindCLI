@@ -389,7 +389,7 @@ public class ToolRegistry {
                 }
                 Path relative = projectRoot.relativize(path);
                 if (matcher.matches(relative) || fileNameMatcher.matches(path.getFileName())) {
-                    matches.add(relative.toString());
+                    matches.add(relative.toString().replace('\\', '/'));
                 }
             }));
         } catch (Exception e) {
@@ -1289,7 +1289,7 @@ public class ToolRegistry {
 
         Process process = null;
         try {
-            ProcessBuilder pb = new ProcessBuilder("bash", "-c", normalized);
+            ProcessBuilder pb = commandProcessBuilder(normalized);
             pb.directory(new File(projectPath));
             pb.redirectErrorStream(true);
             process = pb.start();
@@ -1307,7 +1307,7 @@ public class ToolRegistry {
 
             String output = getCommandOutput(outputFuture);
             int exitCode = process.exitValue();
-            return String.format("命令执行完成 (exit code: %d)\n%s", exitCode, output);
+            return String.format("命令执行完成 (exit code: %d, cwd: %s)\n%s", exitCode, projectPath, output);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             if (process != null) {
@@ -1324,9 +1324,30 @@ public class ToolRegistry {
         }
     }
 
+    private ProcessBuilder commandProcessBuilder(String command) {
+        if (isWindows()) {
+            String script = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
+                    + "$OutputEncoding=[System.Text.Encoding]::UTF8; "
+                    + command;
+            return new ProcessBuilder("powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    script);
+        }
+        return new ProcessBuilder("bash", "-c", command);
+    }
+
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+    }
+
     private String readProcessOutput(Process process) throws Exception {
         StringBuilder output = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
                 if (output.length() < MAX_COMMAND_OUTPUT_CHARS) {

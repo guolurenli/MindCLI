@@ -99,15 +99,18 @@ public class MemoryExtractor {
         List<LlmClient.Message> newMessages = conversationHistory.subList(
                 lastExtractedSize, conversationHistory.size());
 
-        // 新增内容太少，攒着下次一起提（至少 2 条 user 消息才算一轮有效对话）
-        long newUserCount = newMessages.stream().filter(m -> "user".equals(m.role())).count();
+        List<LlmClient.Message> memoryMessages = newMessages.stream()
+                .filter(MemoryExtractor::isMemoryExtractionCandidate)
+                .toList();
+
+        // 新增内容太少，攒着下次一起提（至少 2 条真实 user 消息才算一轮有效对话）
+        long newUserCount = memoryMessages.stream().filter(m -> "user".equals(m.role())).count();
         if (newUserCount < 2) return;
 
         // 标记本次提取位置
         lastExtractedSize = conversationHistory.size();
 
-        String dialogue = newMessages.stream()
-                .filter(m -> "user".equals(m.role()) || "assistant".equals(m.role()))
+        String dialogue = memoryMessages.stream()
                 .map(m -> m.role().toUpperCase() + ": " + truncate(m.content(), 2000))
                 .reduce("", (a, b) -> a + "\n\n" + b);
 
@@ -136,7 +139,7 @@ public class MemoryExtractor {
         }
 
         String dialogue = conversationHistory.stream()
-                .filter(m -> "user".equals(m.role()) || "assistant".equals(m.role()))
+                .filter(MemoryExtractor::isMemoryExtractionCandidate)
                 .map(m -> m.role().toUpperCase() + ": " + truncate(m.content(), 2000))
                 .reduce("", (a, b) -> a + "\n\n" + b);
 
@@ -187,6 +190,23 @@ public class MemoryExtractor {
         );
 
         return llmClient.chat(request, null).content();
+    }
+
+    private static boolean isMemoryExtractionCandidate(LlmClient.Message message) {
+        if (message == null) {
+            return false;
+        }
+        if ("assistant".equals(message.role())) {
+            return true;
+        }
+        if (!"user".equals(message.role())) {
+            return false;
+        }
+        String content = message.content() == null ? "" : message.content().trim();
+        if (content.startsWith("[LSP 诊断注入]")) {
+            return false;
+        }
+        return !(content.startsWith("工具 ") && content.contains(" 返回了图片内容"));
     }
 
     private void storeExtractedFacts(String result) {

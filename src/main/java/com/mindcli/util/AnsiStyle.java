@@ -15,8 +15,6 @@ public final class AnsiStyle {
     private static final String GRAY = "\u001B[90m";
     private static final String PURPLE = "\u001B[38;5;141m";
     private static final String BG_PANEL = "\u001B[48;5;236m";
-    private static final boolean ENABLED = determineEnabled();
-
     private AnsiStyle() {
     }
 
@@ -60,7 +58,7 @@ public final class AnsiStyle {
         String content = prefix + safe;
         int padding = Math.max(0, width - displayWidth(content));
         String line = content + " ".repeat(padding);
-        if (!ENABLED) {
+        if (!isEnabled()) {
             return line.stripTrailing();
         }
         return BG_PANEL + PURPLE + prefix + RESET + BG_PANEL + safe + " ".repeat(padding) + RESET;
@@ -83,11 +81,11 @@ public final class AnsiStyle {
     }
 
     public static boolean isEnabled() {
-        return ENABLED;
+        return determineEnabled();
     }
 
     private static String wrap(String prefix, String text) {
-        if (!ENABLED || text == null || text.isEmpty()) {
+        if (!isEnabled() || text == null || text.isEmpty()) {
             return text;
         }
         return prefix + text + RESET;

@@ -73,6 +73,7 @@ public class CodeIndex {
 
         int processed = 0;
         int total = filesToIndex.size();
+        boolean embeddingWarningEmitted = false;
 
         for (Path file : filesToIndex) {
             processed++;
@@ -86,7 +87,17 @@ public class CodeIndex {
 
                 // 2. 生成 Embedding 并组装条目
                 for (CodeChunk chunk : chunks) {
-                    float[] embedding = embeddingClient.embed(chunk.toEmbeddingText());
+                    float[] embedding = null;
+                    try {
+                        embedding = embeddingClient.embed(chunk.toEmbeddingText());
+                    } catch (Exception e) {
+                        if (!embeddingWarningEmitted) {
+                            emit("   ⚠️ Embedding 不可用，已降级为仅关键词可检索索引: " + e.getMessage());
+                            embeddingWarningEmitted = true;
+                        }
+                        log.warn("embedding failed for chunk {} in {}; keeping chunk without vector",
+                                chunk.name(), file, e);
+                    }
                     entries.add(new VectorStore.CodeChunkEntry(chunk, embedding));
                 }
 

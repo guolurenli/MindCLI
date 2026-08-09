@@ -489,11 +489,15 @@ public final class InlineRenderer implements Renderer {
         }
         LineReader reader = activePrintAboveReader();
         if (reader != null) {
-            reader.printAbove(text);
+            reader.printAbove(normalizeForPrintAbove(text));
             return;
         }
         out.print(text);
         out.flush();
+    }
+
+    private static String normalizeForPrintAbove(String text) {
+        return text.replace("\r\n", "\n").replace('\r', '\n');
     }
 
     private static String joinLines(List<String> lines) {
@@ -609,7 +613,7 @@ public final class InlineRenderer implements Renderer {
                     rowsAfter += estimateRows(rendered);
                 }
                 renderedRows = rowsAfter;
-                reader.printAbove(snapshot.toString());
+                reader.printAbove(normalizeForPrintAbove(snapshot.toString()));
                 return;
             }
             redrawing = true;

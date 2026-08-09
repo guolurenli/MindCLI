@@ -230,10 +230,13 @@ public class SubAgent {
             trimConversationHistory();
 
             try {
-                LlmClient.ChatResponse response = llmClient.chat(
-                        conversationHistory,
-                        shouldUseTools() && llmClient.supportsTools() ? toolRegistry.getToolDefinitions() : null,
-                        streamRenderer
+                LlmClient.ChatResponse response = com.mindcli.llm.LlmRetryPolicy.withRetry(() ->
+                        llmClient.chat(
+                                conversationHistory,
+                                shouldUseTools() && llmClient.supportsTools() ? toolRegistry.getToolDefinitions() : null,
+                                streamRenderer
+                        ),
+                        "sub-agent-" + name + "-" + role
                 );
                 LlmTraceLogger.logReasoning(log,
                         "sub-agent name=" + name + " role=" + role + " iteration=" + budget.iteration(),
@@ -275,7 +278,7 @@ public class SubAgent {
 
                 return AgentMessage.result(name, role, response.content());
 
-            } catch (IOException e) {
+            } catch (Exception e) {
                 log.error("[{}] LLM call failed", name, e);
                 streamRenderer.finish();
                 return AgentMessage.error(name, role, "LLM 调用失败: " + e.getMessage());
