@@ -50,7 +50,9 @@ mvn test -DskipTests=false                  # 全量回归
 | Plan-and-Execute | `PlanExecuteAgent.java` | `/plan` |
 | Multi-Agent | `AgentOrchestrator.java` | `/team` |
 
-ReAct 的 LLM/tool 循环已委托给 `runtime/agent/AgentLoopExecutor.java`；`Agent.java` 继续负责 prompt / memory / renderer / 状态栏等 ReAct 周边体验。工具调用先经 `runtime/agent/ToolDispatcher.java` 映射为 `ToolOutcome`，再回灌给模型；Plan 和 Multi-Agent 暂时仍保留各自 loop，后续阶段再迁移。
+ReAct 的 LLM/tool 循环已委托给 `runtime/agent/AgentLoopExecutor.java`；`Agent.java` 继续负责 prompt / memory / renderer / 状态栏等 ReAct 周边体验。三条路径的工具调用都会先经 `runtime/agent/ToolDispatcher.java` 进入内部 Hook、资源分类和资源锁，再映射为结构化 `ToolOutcome`；Plan 和 Multi-Agent 暂时仍保留各自 loop，但 `PlanExecuteAgent` / `SubAgent` 的实际工具执行也会写 `TOOL_OUTCOME` 事件，并由 `PlanModeAdapter` / `TeamModeAdapter` 传递 runtime 提供的 `AgentRunContext` 与共享 `RunStore`，避免分裂 runId / store。
+
+Agent Runtime 账本默认通过 `RunStoreFactory` 写到 `~/.mindcli/runs`（可用 `mindcli.runs.dir` / `MINDCLI_RUNS_DIR` 改写），`InMemoryRunStore` 仅保留给测试和降级。JSONL ledger 是 source of truth：每个事件包含 run 内递增 `seq` 和唯一 `eventId`，`run.meta.json` / `run.state.json` 由事件投影生成；读取会忽略尾部坏行，继续 append 前会先截断坏尾，`runId` 只能使用安全路径字符。Multi-Agent 的 planner / worker / reviewer 会写入 child run：目录布局为 `parentRun/children/childRun/`，事件 attributes 带 `parentRunId`、`rootRunId`、`role`、`stepId`、`attempt`；parent `run.state.json` 会 materialize child run 摘要。Reviewer 调用失败、输出不可解析、重试后仍拒绝时必须 fail closed，不能把 worker 候选结果标记为完成；reviewer child 摘要要保留 `approved` / `businessStatus`，供恢复和审计判断。
 
 核心内置工具 11 个：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `create_project` / `search_code` / `web_search` / `web_fetch` / `revert_turn`
 
@@ -142,8 +144,11 @@ src/main/java/com/mindcli/
 
 ### 并行工具
 
-- 三条路径都走 `executeTools()`，不手写 for-loop；ReAct 通过 `ToolDispatcher` 适配到结构化 `ToolOutcome`
-- 默认最多 4 个并发，结果保持原始顺序
+- 工具调度统一从 `ToolDispatcher` 进入；ReAct、Plan、Multi-Agent 的实际工具执行都使用 context-aware dispatcher，并把结构化 `TOOL_OUTCOME` 写入同一 run ledger
+- `ToolOutcomeStatus` 结构化表达 `COMPLETED` / `PARTIAL` / `DENIED_BY_POLICY` / `DENIED_BY_USER` / `TIMED_OUT` / `CANCELLED` / `FAILED`，运行时不要解析自然语言当唯一控制信号
+- `ToolResourceClassifier` 会为工具推导资源锁：文件读 shared、文件写 exclusive，并补充祖先目录 shared 锁来阻止目录创建/文件写入交叠；workspace 命令默认 exclusive，已知只读命令 shared，但含管道、重定向、命令连接符或外部 diff / output 选项时降级为 exclusive；browser MCP session exclusive、普通 MCP server exclusive、未知副作用工具 workspace exclusive
+- `ResourceLockManager` 按排序后的资源 key 获取 shared / exclusive 锁，避免死锁；结果必须保持原始 tool_call 顺序
+- `HookManager` 目前只支持内部 Java Hook，生命周期点为 `PRE_TOOL_USE` / `POST_TOOL_USE` / `TOOL_ERROR` / `RUN_STOP`；不要在本阶段新增外部脚本 Hook 生态
 
 ### Web + Browser
 

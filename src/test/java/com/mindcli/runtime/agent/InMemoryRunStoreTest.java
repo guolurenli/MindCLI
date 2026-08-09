@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -28,6 +30,26 @@ class InMemoryRunStoreTest {
         List<AgentRunEvent> run2Events = runStore.events(run2.runId());
         assertEquals(1, run2Events.size());
         assertEquals(AgentRunEventType.RUN_STARTED, run2Events.get(0).type());
+    }
+
+    @Test
+    void assignsSequenceAndEventIdsPerRun() {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext run1 = AgentRunContext.create(AgentMode.REACT, "one", "workspace");
+        AgentRunContext run2 = AgentRunContext.create(AgentMode.PLAN, "two", "workspace");
+
+        runStore.append(AgentRunEvent.of(run1, AgentRunEventType.RUN_STARTED));
+        runStore.append(AgentRunEvent.of(run1, AgentRunEventType.RUN_FINISHED));
+        runStore.append(AgentRunEvent.of(run2, AgentRunEventType.RUN_STARTED));
+
+        List<AgentRunEvent> run1Events = runStore.events(run1.runId());
+        assertEquals(1, run1Events.get(0).seq());
+        assertEquals(2, run1Events.get(1).seq());
+        assertFalse(run1Events.get(0).eventId().isBlank());
+        assertFalse(run1Events.get(1).eventId().isBlank());
+        assertNotEquals(run1Events.get(0).eventId(), run1Events.get(1).eventId());
+
+        assertEquals(1, runStore.events(run2.runId()).get(0).seq());
     }
 
     @Test

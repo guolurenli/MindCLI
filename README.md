@@ -19,7 +19,8 @@ java -jar target/mindcli-1.0-SNAPSHOT.jar
 - **Chrome DevTools**：浏览器操作（navigate / click / fill / snapshot），支持登录态复用
 - **联网搜索**：`web_search`（智谱 / SerpAPI / SearXNG）+ `web_fetch`（URL → Markdown）
 - **Skill 系统**：把专家手册沉淀为可复用 SKILL.md，内置 web-access skill，三层加载（jar / 用户级 / 项目级）
-- **安全防护**：HITL 人工审批 + 路径围栏 + 命令黑名单 + JSONL 审计日志
+- **安全防护**：HITL 人工审批 + 路径围栏 + 命令黑名单 + 资源感知工具调度 + JSONL 审计日志
+- **Agent Runtime 账本**：ReAct / Plan / Multi-Agent 运行事件写入 JSONL run ledger，支持状态投影、恢复检查和 Multi-Agent child run 审计
 - **Side-Git 快照**：每轮自动 pre/post-turn 快照，`/restore <N>` 一键回滚
 - **微信通道**：iLink 长轮询，扫码绑定后通过微信使用 Agent
 - **其他**：LSP 诊断注入 / 图片复制粘贴输入 / TUI 双形态（inline 流式 + Lanterna 全屏）/ Prompt 分层架构 / 异步后台任务 + Runtime API
@@ -37,6 +38,8 @@ java -jar target/mindcli-1.0-SNAPSHOT.jar
 | `web_search` / `web_fetch` | 联网搜索与网页抓取 |
 | `revert_turn` | 恢复到历史快照 |
 | `mcp__{server}__{tool}` | MCP server 动态注册的外部工具 |
+
+ReAct / Plan / Multi-Agent 的工具调用都会先进入 Agent Runtime 的 `ToolDispatcher`：只读文件 / 搜索类工具可共享并行，写文件、目录创建、workspace 命令、浏览器会话、MCP server 和未知副作用工具会按资源锁串行化；文件与目录锁包含祖先目录关系，避免目录创建和子文件写入交叠；工具结果使用 `ToolOutcomeStatus` 区分策略拒绝、用户拒绝、超时、取消、部分成功和普通失败，并写入 JSONL run ledger 的 `TOOL_OUTCOME` 事件。
 
 ## 常用命令
 
@@ -115,6 +118,7 @@ export FREELLMAPI_BASE_URL=http://localhost:5173/v1
 # 日志
 export MINDCLI_LOG_LEVEL=DEBUG
 export MINDCLI_LOG_DIR=~/.mindcli/logs
+export MINDCLI_RUNS_DIR=~/.mindcli/runs  # Agent Runtime JSONL 账本目录
 
 # 渲染
 export MINDCLI_RENDERER=inline    # inline（默认）| lanterna | plain

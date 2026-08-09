@@ -6,7 +6,6 @@ import com.mindcli.llm.LlmRetryPolicy;
 import com.mindcli.runtime.CancellationContext;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -90,7 +89,7 @@ public final class AgentLoopExecutor {
                     "toolNames", toolNames(response.toolCalls())));
             context.observer().beforeToolDispatch(iteration, response.toolCalls());
 
-            List<ToolOutcome> outcomes = toolDispatcher.dispatch(response.toolCalls());
+            List<ToolOutcome> outcomes = toolDispatcher.dispatch(response.toolCalls(), context.runContext());
             allToolOutcomes.addAll(outcomes);
             for (ToolOutcome outcome : outcomes) {
                 appendToolOutcomeEvent(context, iteration, outcome);
@@ -113,15 +112,8 @@ public final class AgentLoopExecutor {
     }
 
     private void appendToolOutcomeEvent(AgentLoopContext context, int iteration, ToolOutcome outcome) {
-        Map<String, String> attributes = new LinkedHashMap<>();
-        attributes.put("iteration", String.valueOf(iteration));
-        attributes.put("toolId", outcome.id());
-        attributes.put("toolName", outcome.name());
-        attributes.put("status", outcome.status().name());
-        attributes.put("elapsedMillis", String.valueOf(outcome.elapsedMillis()));
-        attributes.put("textChars", String.valueOf(outcome.text().length()));
-        attributes.put("hasImages", String.valueOf(outcome.hasImageParts()));
-        append(context, AgentRunEventType.TOOL_OUTCOME, attributes);
+        append(context, AgentRunEventType.TOOL_OUTCOME,
+                ToolOutcomeEventFactory.attributes(outcome, Map.of("iteration", String.valueOf(iteration))));
     }
 
     private void append(AgentLoopContext context, AgentRunEventType type) {

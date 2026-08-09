@@ -13,6 +13,16 @@ import com.mindcli.prompt.PromptContext;
 import com.mindcli.prompt.PromptMode;
 import com.mindcli.prompt.ProjectMemoryLoader;
 import com.mindcli.runtime.CancellationContext;
+import com.mindcli.runtime.agent.AgentMode;
+import com.mindcli.runtime.agent.AgentRunContext;
+import com.mindcli.runtime.agent.AgentRunEventType;
+import com.mindcli.runtime.agent.AgentRunStatus;
+import com.mindcli.runtime.agent.RunStore;
+import com.mindcli.runtime.agent.RunStoreFactory;
+import com.mindcli.runtime.agent.ToolDispatcher;
+import com.mindcli.runtime.agent.ToolOutcome;
+import com.mindcli.runtime.agent.ToolOutcomeEventFactory;
+import com.mindcli.runtime.agent.ToolOutcomeStatus;
 import com.mindcli.skill.SkillIndexFormatter;
 import com.mindcli.skill.SkillRegistry;
 import com.mindcli.util.AnsiStyle;
@@ -105,6 +115,11 @@ public class PlanExecuteAgent {
     private final PlanReviewHandler reviewHandler;
     private final MemoryManager memoryManager;
     private final PrintStream out;
+    private final RunStore runStore;
+    private final ToolDispatcher toolDispatcher;
+    private volatile RunStore activeRunStore;
+    private volatile AgentRunContext activeRunContext;
+    private volatile String runtimeOwnedLifecycleRunId;
     private Supplier<String> externalContextSupplier = () -> "";
     private SkillRegistry skillRegistry;
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
@@ -119,28 +134,49 @@ public class PlanExecuteAgent {
 
     public PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry,
                             MemoryManager memoryManager, PlanReviewHandler reviewHandler) {
-        this(llmClient, toolRegistry, null, memoryManager, reviewHandler);
+        this(llmClient, toolRegistry, null, memoryManager, reviewHandler, null, null);
+    }
+
+    public PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry,
+                            MemoryManager memoryManager, PlanReviewHandler reviewHandler,
+                            RunStore runStore) {
+        this(llmClient, toolRegistry, null, memoryManager, reviewHandler, null, runStore);
     }
 
     public PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry,
                             MemoryManager memoryManager, PlanReviewHandler reviewHandler,
                             PrintStream out) {
-        this(llmClient, toolRegistry, null, memoryManager, reviewHandler, out);
+        this(llmClient, toolRegistry, null, memoryManager, reviewHandler, out, null);
+    }
+
+    public PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry,
+                            MemoryManager memoryManager, PlanReviewHandler reviewHandler,
+                            PrintStream out, RunStore runStore) {
+        this(llmClient, toolRegistry, null, memoryManager, reviewHandler, out, runStore);
     }
 
     PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry, Planner planner,
                      MemoryManager memoryManager, PlanReviewHandler reviewHandler) {
-        this(llmClient, toolRegistry, planner, memoryManager, reviewHandler, null);
+        this(llmClient, toolRegistry, planner, memoryManager, reviewHandler, null, null);
     }
 
     PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry, Planner planner,
                      MemoryManager memoryManager, PlanReviewHandler reviewHandler, PrintStream out) {
+        this(llmClient, toolRegistry, planner, memoryManager, reviewHandler, out, null);
+    }
+
+    PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry, Planner planner,
+                     MemoryManager memoryManager, PlanReviewHandler reviewHandler, PrintStream out,
+                     RunStore runStore) {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry != null ? toolRegistry : new ToolRegistry();
         this.out = out == null ? deferredSystemOut() : out;
         this.planner = planner != null ? planner : new Planner(llmClient, this.out);
         this.reviewHandler = reviewHandler == null ? (goal, plan) -> PlanReviewDecision.execute() : reviewHandler;
         this.memoryManager = memoryManager != null ? memoryManager : new MemoryManager(llmClient);
+        this.runStore = runStore == null ? RunStoreFactory.create() : runStore;
+        this.activeRunStore = this.runStore;
+        this.toolDispatcher = new ToolDispatcher(this.toolRegistry);
         this.toolRegistry.setContextProfile(this.memoryManager.getContextProfile());
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
         this.memoryManager.setProjectPath(this.toolRegistry.getProjectPath());
@@ -228,20 +264,61 @@ public class PlanExecuteAgent {
      * 运行任务（自动判断是否需要规划）
      */
     public String run(String userInput) {
+        AgentRunContext runContext = AgentRunContext.create(
+                AgentMode.PLAN,
+                userInput,
+                toolRegistry.getProjectPath());
+        return runInternal(runContext, runStore, true);
+    }
+
+    public String run(AgentRunContext runContext, RunStore runStore) {
+        AgentRunContext effectiveContext = runContext == null
+                ? AgentRunContext.create(AgentMode.PLAN, "", toolRegistry.getProjectPath())
+                : runContext;
+        return runInternal(effectiveContext, runStore == null ? this.runStore : runStore, false);
+    }
+
+    private String runInternal(AgentRunContext runContext, RunStore activeStore, boolean appendLifecycleStart) {
+        String userInput = runContext.input();
         log.info("Plan run started: inputLength={}", userInput == null ? 0 : userInput.length());
-        StreamState streamState = new StreamState();
+        RunStore previousStore = activeRunStore;
+        AgentRunContext previousRunContext = activeRunContext;
+        String previousRuntimeOwnedRunId = runtimeOwnedLifecycleRunId;
+        activeRunStore = activeStore == null ? this.runStore : activeStore;
+        activeRunContext = runContext;
+        runtimeOwnedLifecycleRunId = appendLifecycleStart ? null : runContext.runId();
         try {
-            if (CancellationContext.isCancelled()) {
-                return "⏹️ 已取消当前计划执行。";
+            if (appendLifecycleStart) {
+                appendRunEvent(runContext, AgentRunEventType.RUN_STARTED);
+                appendRunEvent(runContext, AgentRunEventType.MODE_SELECTED, Map.of(
+                        "mode", AgentMode.PLAN.name(),
+                        "adapterMode", AgentMode.PLAN.name()));
             }
-            PlanRunOutcome outcome = runWithPlan(userInput, streamState);
-            if (streamState.hasStreamedOutput() && (outcome.result() == null || outcome.result().isBlank())) {
-                return "";
+            StreamState streamState = new StreamState();
+            try {
+                if (CancellationContext.isCancelled()) {
+                    String result = "⏹️ 已取消当前计划执行。";
+                    appendTerminalEvent(runContext, result);
+                    return result;
+                }
+                PlanRunOutcome outcome = runWithPlan(userInput, streamState);
+                appendTerminalEvent(runContext, outcome.result());
+                if (streamState.hasStreamedOutput() && (outcome.result() == null || outcome.result().isBlank())) {
+                    return "";
+                }
+                return outcome.result();
+            } catch (Exception e) {
+                log.error("Plan run failed", e);
+                String result = "❌ 执行失败: " + e.getMessage();
+                appendRunEvent(runContext, AgentRunEventType.RUN_FAILED, Map.of(
+                        "status", AgentRunStatus.FAILED.name(),
+                        "error", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+                return result;
             }
-            return outcome.result();
-        } catch (Exception e) {
-            log.error("Plan run failed", e);
-            return "❌ 执行失败: " + e.getMessage();
+        } finally {
+            activeRunStore = previousStore;
+            activeRunContext = previousRunContext;
+            runtimeOwnedLifecycleRunId = previousRuntimeOwnedRunId;
         }
     }
 
@@ -467,6 +544,49 @@ public class PlanExecuteAgent {
 
     private static final int MAX_TASK_ITERATIONS = 5;
 
+    private void appendRunEvent(AgentRunContext context, AgentRunEventType type) {
+        appendRunEvent(context, type, Map.of());
+    }
+
+    private void appendRunEvent(AgentRunContext context, AgentRunEventType type, Map<String, String> attributes) {
+        if (isRuntimeOwnedLifecycleEvent(context, type)) {
+            return;
+        }
+        activeRunStore.append(com.mindcli.runtime.agent.AgentRunEvent.of(context, type, attributes));
+    }
+
+    private void appendTerminalEvent(AgentRunContext context, String result) {
+        String normalized = result == null ? "" : result.trim();
+        AgentRunEventType type;
+        AgentRunStatus status;
+        if (normalized.startsWith("⏹️")) {
+            type = AgentRunEventType.RUN_CANCELLED;
+            status = AgentRunStatus.CANCELLED;
+        } else if (normalized.startsWith("❌")) {
+            type = AgentRunEventType.RUN_FAILED;
+            status = AgentRunStatus.FAILED;
+        } else if (normalized.startsWith("⚠️")) {
+            type = AgentRunEventType.RUN_FAILED;
+            status = AgentRunStatus.BLOCKED;
+        } else {
+            type = AgentRunEventType.RUN_FINISHED;
+            status = AgentRunStatus.SUCCESS;
+        }
+        appendRunEvent(context, type, Map.of("status", status.name()));
+    }
+
+    private boolean isRuntimeOwnedLifecycleEvent(AgentRunContext context, AgentRunEventType type) {
+        return runtimeOwnedLifecycleRunId != null
+                && context != null
+                && runtimeOwnedLifecycleRunId.equals(context.runId())
+                && (type == AgentRunEventType.RUN_STARTED
+                || type == AgentRunEventType.MODE_SELECTED
+                || type == AgentRunEventType.RUN_FINISHED
+                || type == AgentRunEventType.RUN_FAILED
+                || type == AgentRunEventType.RUN_CANCELLED
+                || type == AgentRunEventType.BUDGET_EXHAUSTED);
+    }
+
     /**
      * 执行单个任务（支持多轮工具调用）
      */
@@ -665,11 +785,54 @@ public class PlanExecuteAgent {
         if (invocations.size() > 1) {
             log.info("Task {} executing {} tool calls in parallel", taskId, invocations.size());
         }
-        List<ToolExecutionResult> results = toolRegistry.executeTools(invocations);
+        AgentRunContext dispatchContext = toolDispatchContext(taskId);
+        List<ToolOutcome> outcomes = toolDispatcher.dispatchInvocations(invocations, dispatchContext);
+        appendToolOutcomeEvents(dispatchContext, outcomes);
+        List<ToolExecutionResult> results = outcomes.stream()
+                .map(PlanExecuteAgent::toLegacyResult)
+                .toList();
         for (ToolExecutionResult result : results) {
             log.debug("Task {} tool result preview [{}]: {}", taskId, result.name(), preview(result.result(), 300));
         }
         return results;
+    }
+
+    private AgentRunContext toolDispatchContext(String taskId) {
+        AgentRunContext base = activeRunContext == null
+                ? AgentRunContext.create(AgentMode.PLAN, "", toolRegistry.getProjectPath())
+                : activeRunContext;
+        Map<String, String> metadata = new LinkedHashMap<>(base.metadata());
+        metadata.put("role", "plan");
+        if (taskId != null && !taskId.isBlank()) {
+            metadata.put("taskId", taskId);
+        }
+        return new AgentRunContext(
+                base.runId(),
+                AgentMode.PLAN,
+                base.input(),
+                base.workspace(),
+                base.startedAt(),
+                metadata);
+    }
+
+    private void appendToolOutcomeEvents(AgentRunContext context, List<ToolOutcome> outcomes) {
+        if (outcomes == null || outcomes.isEmpty()) {
+            return;
+        }
+        for (ToolOutcome outcome : outcomes) {
+            activeRunStore.append(ToolOutcomeEventFactory.create(context, outcome, Map.of()));
+        }
+    }
+
+    private static ToolExecutionResult toLegacyResult(ToolOutcome outcome) {
+        return new ToolExecutionResult(
+                outcome.id(),
+                outcome.name(),
+                outcome.argumentsJson(),
+                outcome.text(),
+                outcome.elapsedMillis(),
+                outcome.status() == ToolOutcomeStatus.TIMED_OUT,
+                outcome.imageParts());
     }
 
     private void appendImageToolMessages(List<LlmClient.Message> messages, List<ToolExecutionResult> toolResults) {

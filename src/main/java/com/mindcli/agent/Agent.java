@@ -20,9 +20,12 @@ import com.mindcli.runtime.agent.AgentLoopPolicy;
 import com.mindcli.runtime.agent.AgentLoopResult;
 import com.mindcli.runtime.agent.AgentLoopStatus;
 import com.mindcli.runtime.agent.AgentMode;
+import com.mindcli.runtime.agent.AgentRuntime;
 import com.mindcli.runtime.agent.AgentRunContext;
 import com.mindcli.runtime.agent.AgentRunResult;
 import com.mindcli.runtime.agent.InMemoryRunStore;
+import com.mindcli.runtime.agent.ReActModeAdapter;
+import com.mindcli.runtime.agent.RunStoreFactory;
 import com.mindcli.runtime.agent.RunStore;
 import com.mindcli.runtime.agent.ToolDispatcher;
 import com.mindcli.runtime.agent.ToolOutcome;
@@ -72,15 +75,20 @@ public class Agent {
     //提示词组装器
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
     //运行时事件账本（Phase 2 先使用内存实现）
-    private final RunStore runStore = new InMemoryRunStore();
+    private final RunStore runStore;
 
     public Agent(LlmClient llmClient) {
-        this(llmClient, new ToolRegistry());
+        this(llmClient, new ToolRegistry(), RunStoreFactory.create());
     }
 
     public Agent(LlmClient llmClient, ToolRegistry toolRegistry) {
+        this(llmClient, toolRegistry, RunStoreFactory.create());
+    }
+
+    public Agent(LlmClient llmClient, ToolRegistry toolRegistry, RunStore runStore) {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
+        this.runStore = runStore == null ? new InMemoryRunStore() : runStore;
         this.conversationHistory = new ArrayList<>();
         this.memoryManager = new MemoryManager(llmClient);
         this.toolRegistry.setContextProfile(memoryManager.getContextProfile());
@@ -140,7 +148,11 @@ public class Agent {
                 AgentMode.REACT,
                 userInput,
                 toolRegistry.getProjectPath());
-        return userFacingContent(run(runContext, runStore));
+        return userFacingContent(new AgentRuntime(runStore).run(runContext, new ReActModeAdapter(this)));
+    }
+
+    public RunStore runStore() {
+        return runStore;
     }
 
     public AgentRunResult run(AgentRunContext runContext, RunStore runStore) {

@@ -15,7 +15,10 @@ public final class InMemoryRunStore implements RunStore {
         Objects.requireNonNull(event, "event");
         List<AgentRunEvent> events = eventsByRunId.computeIfAbsent(event.runId(),
                 ignored -> Collections.synchronizedList(new ArrayList<>()));
-        events.add(event);
+        synchronized (events) {
+            long seq = event.seq() > 0 ? event.seq() : events.size() + 1L;
+            events.add(event.withSeq(seq));
+        }
     }
 
     @Override

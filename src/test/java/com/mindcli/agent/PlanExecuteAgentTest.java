@@ -7,7 +7,15 @@ import com.mindcli.memory.MemoryManager;
 import com.mindcli.plan.ExecutionPlan;
 import com.mindcli.plan.Planner;
 import com.mindcli.plan.Task;
+import com.mindcli.runtime.agent.AgentMode;
+import com.mindcli.runtime.agent.AgentRunContext;
+import com.mindcli.runtime.agent.AgentRunEvent;
+import com.mindcli.runtime.agent.AgentRunEventType;
+import com.mindcli.runtime.agent.InMemoryRunStore;
+import com.mindcli.runtime.agent.ToolDispatcher;
 import com.mindcli.tool.ToolRegistry;
+import com.mindcli.tool.ToolRegistry.ToolExecutionResult;
+import com.mindcli.tool.ToolRegistry.ToolInvocation;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -19,6 +27,11 @@ import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Queue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -98,6 +111,122 @@ class PlanExecuteAgentTest {
                 "tool-call 前后的流式 content 不应被误标成任务结果: " + rendered);
     }
 
+    @Test
+    void planToolCallsWaitForSharedDispatcherLocks() throws Exception {
+        CountDownLatch lockEntered = new CountDownLatch(1);
+        CountDownLatch releaseLock = new CountDownLatch(1);
+        CountDownLatch planToolStarted = new CountDownLatch(1);
+        ToolDispatcher lockHolder = new ToolDispatcher(new LockHoldingToolRegistry(lockEntered, releaseLock));
+        RecordingToolRegistry registry = new RecordingToolRegistry(planToolStarted);
+        registry.setProjectPath(tempDir.toString());
+        StubGLMClient llmClient = StubGLMClient.streaming(List.of(
+                StubResponse.plain(new LlmClient.ChatResponse(
+                        "assistant",
+                        "准备写入文件",
+                        null,
+                        List.of(new LlmClient.ToolCall(
+                                "call_plan",
+                                new LlmClient.ToolCall.Function("write_file",
+                                        "{\"path\":\"shared.txt\",\"content\":\"plan\"}")
+                        )),
+                        10,
+                        5
+                )),
+                StubResponse.streamed(new LlmClient.ChatResponse(
+                        "assistant",
+                        "写入完成",
+                        null,
+                        null,
+                        10,
+                        5
+                ))
+        ));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PlanExecuteAgent agent = new PlanExecuteAgent(
+                llmClient,
+                registry,
+                new StubPlanner(llmClient),
+                null,
+                (goal, plan) -> PlanExecuteAgent.PlanReviewDecision.execute(),
+                new PrintStream(output, true, StandardCharsets.UTF_8)
+        );
+        AgentRunContext lockContext = AgentRunContext.create(AgentMode.PLAN, "lock", tempDir.toString());
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+
+        try {
+            Future<?> lockFuture = executor.submit(() -> lockHolder.dispatch(List.of(
+                    new LlmClient.ToolCall("call_lock", new LlmClient.ToolCall.Function(
+                            "write_file", "{\"path\":\"shared.txt\",\"content\":\"lock\"}"))
+            ), lockContext));
+            assertTrue(lockEntered.await(1, TimeUnit.SECONDS));
+
+            Future<String> planFuture = executor.submit(() -> agent.run("写入 shared.txt"));
+
+            assertFalse(planToolStarted.await(1, TimeUnit.SECONDS),
+                    "Plan tool execution must wait for the shared dispatcher lock");
+            releaseLock.countDown();
+
+            assertEquals("✅ 计划执行完成！", planFuture.get(2, TimeUnit.SECONDS));
+            lockFuture.get(1, TimeUnit.SECONDS);
+            assertTrue(planToolStarted.await(1, TimeUnit.SECONDS));
+        } finally {
+            releaseLock.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void planToolCallsRecordStructuredToolOutcomeEvents() {
+        RecordingToolRegistry registry = new RecordingToolRegistry(new CountDownLatch(1));
+        registry.setProjectPath(tempDir.toString());
+        StubGLMClient llmClient = StubGLMClient.streaming(List.of(
+                StubResponse.plain(new LlmClient.ChatResponse(
+                        "assistant",
+                        "准备写入文件",
+                        null,
+                        List.of(new LlmClient.ToolCall(
+                                "call_plan",
+                                new LlmClient.ToolCall.Function("write_file",
+                                        "{\"path\":\"out.txt\",\"content\":\"plan\"}")
+                        )),
+                        10,
+                        5
+                )),
+                StubResponse.streamed(new LlmClient.ChatResponse(
+                        "assistant",
+                        "写入完成",
+                        null,
+                        null,
+                        10,
+                        5
+                ))
+        ));
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        PlanExecuteAgent agent = new PlanExecuteAgent(
+                llmClient,
+                registry,
+                new StubPlanner(llmClient),
+                null,
+                (goal, plan) -> PlanExecuteAgent.PlanReviewDecision.execute(),
+                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
+                runStore
+        );
+        AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "写入 out.txt", tempDir.toString());
+
+        agent.run(context, runStore);
+
+        AgentRunEvent outcome = runStore.events(context.runId()).stream()
+                .filter(event -> event.type() == AgentRunEventType.TOOL_OUTCOME)
+                .findFirst()
+                .orElseThrow();
+        assertEquals("COMPLETED", outcome.attributes().get("status"));
+        assertEquals("write_file", outcome.attributes().get("toolName"));
+        assertEquals("call_plan", outcome.attributes().get("toolId"));
+        assertEquals("ALLOW", outcome.attributes().get("hookDecision"));
+        assertEquals("task_1", outcome.attributes().get("taskId"));
+        assertTrue(outcome.attributes().get("lockKeys").contains("FILE:"));
+    }
+
     private record StubResponse(LlmClient.ChatResponse response, boolean streamContent,
                                 java.util.function.Consumer<LlmClient.StreamListener> streamScript) {
         private static StubResponse plain(LlmClient.ChatResponse response) {
@@ -125,6 +254,45 @@ class PlanExecuteAgentTest {
             plan.addTask(new Task("task_1", "读取测试文件", Task.TaskType.FILE_READ));
             plan.computeExecutionOrder();
             return plan;
+        }
+    }
+
+    private static final class RecordingToolRegistry extends ToolRegistry {
+        private final CountDownLatch toolStarted;
+
+        private RecordingToolRegistry(CountDownLatch toolStarted) {
+            this.toolStarted = toolStarted;
+        }
+
+        @Override
+        public String executeTool(String name, String argumentsJson) {
+            toolStarted.countDown();
+            return "文件已写入: shared.txt";
+        }
+    }
+
+    private static final class LockHoldingToolRegistry extends ToolRegistry {
+        private final CountDownLatch lockEntered;
+        private final CountDownLatch releaseLock;
+
+        private LockHoldingToolRegistry(CountDownLatch lockEntered, CountDownLatch releaseLock) {
+            this.lockEntered = lockEntered;
+            this.releaseLock = releaseLock;
+        }
+
+        @Override
+        public List<ToolExecutionResult> executeTools(List<ToolInvocation> invocations) {
+            lockEntered.countDown();
+            try {
+                assertTrue(releaseLock.await(2, TimeUnit.SECONDS));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return invocations.stream()
+                    .map(invocation -> new ToolExecutionResult(
+                            invocation.id(), invocation.name(), invocation.argumentsJson(),
+                            "lock released", 1, false, List.of()))
+                    .toList();
         }
     }
 

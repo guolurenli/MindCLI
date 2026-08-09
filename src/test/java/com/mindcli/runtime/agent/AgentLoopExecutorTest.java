@@ -66,6 +66,34 @@ class AgentLoopExecutorTest {
     }
 
     @Test
+    void toolOutcomeEventsIncludeDispatcherMetadata() {
+        LlmClient.ToolCall toolCall = toolCall("call_1", "read_file", "{\"path\":\"a.txt\"}");
+        FakeLlmClient llm = new FakeLlmClient(List.of(
+                new LlmClient.ChatResponse("assistant", "", List.of(toolCall), 10, 2),
+                new LlmClient.ChatResponse("assistant", "final after tool", null, 8, 4)
+        ));
+        ToolDispatcher dispatcher = new ToolDispatcher(
+                invocations -> List.of(new ToolRegistry.ToolExecutionResult(
+                        "call_1", "read_file", "{\"path\":\"a.txt\"}", "file text", 7, false, List.of())),
+                new ToolResourceClassifier(),
+                new ResourceLockManager(),
+                HookManager.noop());
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentLoopExecutor executor = new AgentLoopExecutor(llm, dispatcher, runStore);
+        AgentRunContext runContext = AgentRunContext.create(AgentMode.REACT, "hello", "workspace");
+
+        executor.execute(loopContext(runContext, new ArrayList<>(List.of(LlmClient.Message.user("hello")))));
+
+        AgentRunEvent outcome = runStore.events(runContext.runId()).stream()
+                .filter(event -> event.type() == AgentRunEventType.TOOL_OUTCOME)
+                .findFirst()
+                .orElseThrow();
+        assertEquals("COMPLETED", outcome.attributes().get("status"));
+        assertTrue(outcome.attributes().get("lockKeys").contains("WORKSPACE:workspace:SHARED"));
+        assertEquals("ALLOW", outcome.attributes().get("hookDecision"));
+    }
+
+    @Test
     void returnsBudgetExhaustedWhenBudgetStopsBeforeModelCall() {
         FakeLlmClient llm = new FakeLlmClient(List.of());
         InMemoryRunStore runStore = new InMemoryRunStore();

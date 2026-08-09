@@ -9,6 +9,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
 
@@ -70,6 +71,25 @@ class AgentRuntimeTest {
         assertEquals(AgentRunStatus.SUCCESS, result.status());
         assertEquals("done", result.content());
         assertEventTypes(runStore.events(context.runId()),
+                AgentRunEventType.RUN_STARTED,
+                AgentRunEventType.MODE_SELECTED,
+                AgentRunEventType.LLM_RESPONSE,
+                AgentRunEventType.RUN_FINISHED);
+    }
+
+    @Test
+    void agentRunStringRecordsLifecycleAndLoopEventsInItsDefaultRunStore() {
+        RecordingRunStore runStore = new RecordingRunStore();
+        ToolRegistry registry = new ToolRegistry();
+        registry.setProjectPath(tempDir.toString());
+        Agent agent = new Agent(new ScriptedClient(List.of(
+                new LlmClient.ChatResponse("assistant", "done", null, 10, 3)
+        )), registry, runStore);
+
+        String result = agent.run("hello");
+
+        assertEquals("done", result);
+        assertEventTypes(runStore.allEvents(),
                 AgentRunEventType.RUN_STARTED,
                 AgentRunEventType.MODE_SELECTED,
                 AgentRunEventType.LLM_RESPONSE,
@@ -139,6 +159,26 @@ class AgentRuntimeTest {
         assertEquals(expected.length, events.size());
         for (int i = 0; i < expected.length; i++) {
             assertEquals(expected[i], events.get(i).type());
+        }
+    }
+
+    private static final class RecordingRunStore implements RunStore {
+        private final List<AgentRunEvent> events = new ArrayList<>();
+
+        @Override
+        public void append(AgentRunEvent event) {
+            events.add(event);
+        }
+
+        @Override
+        public List<AgentRunEvent> events(String runId) {
+            return events.stream()
+                    .filter(event -> event.runId().equals(runId))
+                    .toList();
+        }
+
+        private List<AgentRunEvent> allEvents() {
+            return List.copyOf(events);
         }
     }
 

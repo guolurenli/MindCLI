@@ -11,6 +11,13 @@ import com.mindcli.prompt.PromptAssembler;
 import com.mindcli.prompt.PromptContext;
 import com.mindcli.prompt.PromptMode;
 import com.mindcli.prompt.ProjectMemoryLoader;
+import com.mindcli.runtime.agent.AgentMode;
+import com.mindcli.runtime.agent.AgentRunContext;
+import com.mindcli.runtime.agent.RunStore;
+import com.mindcli.runtime.agent.ToolDispatcher;
+import com.mindcli.runtime.agent.ToolOutcome;
+import com.mindcli.runtime.agent.ToolOutcomeEventFactory;
+import com.mindcli.runtime.agent.ToolOutcomeStatus;
 import com.mindcli.skill.SkillIndexFormatter;
 import com.mindcli.skill.SkillRegistry;
 import com.mindcli.tool.ToolRegistry;
@@ -45,7 +52,10 @@ public class SubAgent {
     private final AgentRole role;
     private final LlmClient llmClient;
     private final ToolRegistry toolRegistry;
+    private final ToolDispatcher toolDispatcher;
     private final List<LlmClient.Message> conversationHistory;
+    private final ThreadLocal<AgentRunContext> activeRunContext = new ThreadLocal<>();
+    private final ThreadLocal<RunStore> activeRunStore = new ThreadLocal<>();
     private Supplier<String> externalContextSupplier = () -> "";
     private SkillRegistry skillRegistry;
     private MemoryManager memoryManager;
@@ -56,6 +66,7 @@ public class SubAgent {
         this.role = role;
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
+        this.toolDispatcher = new ToolDispatcher(toolRegistry);
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
         this.conversationHistory = new ArrayList<>();
         this.conversationHistory.add(LlmClient.Message.system(getSystemPrompt()));
@@ -286,6 +297,15 @@ public class SubAgent {
         }
     }
 
+    AgentMessage executeWithRunContext(AgentMessage task, PrintStream out, AgentRunContext runContext) {
+        return executeWithRunContext(task, out, runContext, null);
+    }
+
+    AgentMessage executeWithRunContext(AgentMessage task, PrintStream out, AgentRunContext runContext,
+                                       RunStore runStore) {
+        return withRuntimeContext(runContext, runStore, () -> execute(task, out));
+    }
+
     /**
      * 执行任务（带上下文注入），用于 Worker 接收额外上下文
      */
@@ -294,13 +314,23 @@ public class SubAgent {
     }
 
     public AgentMessage executeWithContext(AgentMessage task, String context, PrintStream out) {
+        return executeWithContext(task, context, out, null);
+    }
+
+    AgentMessage executeWithContext(AgentMessage task, String context, PrintStream out,
+                                    AgentRunContext runContext) {
+        return executeWithContext(task, context, out, runContext, null);
+    }
+
+    AgentMessage executeWithContext(AgentMessage task, String context, PrintStream out,
+                                    AgentRunContext runContext, RunStore runStore) {
         String enrichedContent = task.content();
         if (context != null && !context.isEmpty()) {
             enrichedContent = context + "\n\n当前任务：" + task.content();
         }
         AgentMessage enrichedTask = new AgentMessage(task.fromAgent(), task.fromRole(),
                 enrichedContent, task.type());
-        return execute(enrichedTask, out);
+        return executeWithRunContext(enrichedTask, out, runContext, runStore);
     }
 
     /**
@@ -311,9 +341,52 @@ public class SubAgent {
     }
 
     public AgentMessage review(String originalTask, String executionResult, PrintStream out) {
+        return review(originalTask, executionResult, out, null);
+    }
+
+    AgentMessage review(String originalTask, String executionResult, PrintStream out,
+                        AgentRunContext runContext) {
+        return review(originalTask, executionResult, out, runContext, null);
+    }
+
+    AgentMessage review(String originalTask, String executionResult, PrintStream out,
+                        AgentRunContext runContext, RunStore runStore) {
         String reviewInput = "原始任务：" + originalTask + "\n\n执行结果：\n" + executionResult;
         AgentMessage reviewTask = AgentMessage.task("orchestrator", reviewInput);
-        return execute(reviewTask, out);
+        return executeWithRunContext(reviewTask, out, runContext, runStore);
+    }
+
+    private AgentMessage withRuntimeContext(AgentRunContext runContext, RunStore runStore,
+                                            Supplier<AgentMessage> action) {
+        if (runContext == null && runStore == null) {
+            return action.get();
+        }
+        AgentRunContext previousContext = activeRunContext.get();
+        RunStore previousStore = activeRunStore.get();
+        if (runContext == null) {
+            activeRunContext.remove();
+        } else {
+            activeRunContext.set(runContext);
+        }
+        if (runStore == null) {
+            activeRunStore.remove();
+        } else {
+            activeRunStore.set(runStore);
+        }
+        try {
+            return action.get();
+        } finally {
+            if (previousContext == null) {
+                activeRunContext.remove();
+            } else {
+                activeRunContext.set(previousContext);
+            }
+            if (previousStore == null) {
+                activeRunStore.remove();
+            } else {
+                activeRunStore.set(previousStore);
+            }
+        }
     }
 
     /**
@@ -374,7 +447,50 @@ public class SubAgent {
         if (invocations.size() > 1) {
             log.info("[{}] executing {} tool calls in parallel", name, invocations.size());
         }
-        return toolRegistry.executeTools(invocations);
+        AgentRunContext dispatchContext = toolDispatchContext();
+        List<ToolOutcome> outcomes = toolDispatcher.dispatchInvocations(invocations, dispatchContext);
+        appendToolOutcomeEvents(dispatchContext, outcomes);
+        return outcomes.stream()
+                .map(SubAgent::toLegacyResult)
+                .toList();
+    }
+
+    private AgentRunContext toolDispatchContext() {
+        AgentRunContext base = activeRunContext.get();
+        if (base == null) {
+            base = AgentRunContext.create(AgentMode.TEAM, "", toolRegistry.getProjectPath());
+        }
+        Map<String, String> metadata = new LinkedHashMap<>(base.metadata());
+        metadata.put("agentName", name);
+        metadata.put("role", role.name());
+        return new AgentRunContext(
+                base.runId(),
+                base.mode(),
+                base.input(),
+                base.workspace(),
+                base.startedAt(),
+                metadata);
+    }
+
+    private void appendToolOutcomeEvents(AgentRunContext context, List<ToolOutcome> outcomes) {
+        RunStore runStore = activeRunStore.get();
+        if (runStore == null || outcomes == null || outcomes.isEmpty()) {
+            return;
+        }
+        for (ToolOutcome outcome : outcomes) {
+            runStore.append(ToolOutcomeEventFactory.create(context, outcome, Map.of()));
+        }
+    }
+
+    private static ToolExecutionResult toLegacyResult(ToolOutcome outcome) {
+        return new ToolExecutionResult(
+                outcome.id(),
+                outcome.name(),
+                outcome.argumentsJson(),
+                outcome.text(),
+                outcome.elapsedMillis(),
+                outcome.status() == ToolOutcomeStatus.TIMED_OUT,
+                outcome.imageParts());
     }
 
     private void appendImageToolMessages(List<ToolExecutionResult> toolResults) {

@@ -37,6 +37,58 @@ class ToolOutcomeTest {
     }
 
     @Test
+    void mapsPolicyDenialTextToDeniedByPolicyOutcome() {
+        ToolRegistry.ToolExecutionResult legacy = new ToolRegistry.ToolExecutionResult(
+                "call_1", "write_file", "{}", "🛡️ 策略拒绝: path escapes workspace",
+                0, false, List.of());
+
+        ToolOutcome outcome = ToolOutcome.fromLegacy(legacy);
+
+        assertEquals(ToolOutcomeStatus.DENIED_BY_POLICY, outcome.status());
+        assertEquals("path escapes workspace", outcome.errorMessage());
+        assertEquals("path escapes workspace", outcome.metadata().get("deniedReason"));
+    }
+
+    @Test
+    void mapsNetworkPolicyDenialTextToDeniedByPolicyOutcome() {
+        ToolRegistry.ToolExecutionResult legacy = new ToolRegistry.ToolExecutionResult(
+                "call_1", "web_fetch", "{}", "❌ 网络访问被拒绝: host not allowed",
+                0, false, List.of());
+
+        ToolOutcome outcome = ToolOutcome.fromLegacy(legacy);
+
+        assertEquals(ToolOutcomeStatus.DENIED_BY_POLICY, outcome.status());
+        assertEquals("host not allowed", outcome.errorMessage());
+        assertEquals("host not allowed", outcome.metadata().get("deniedReason"));
+    }
+
+    @Test
+    void mapsWechatPolicyDenialTextToDeniedByPolicyOutcome() {
+        ToolRegistry.ToolExecutionResult legacy = new ToolRegistry.ToolExecutionResult(
+                "call_1", "execute_command", "{}", "微信通道策略拒绝: command not allowlisted",
+                0, false, List.of());
+
+        ToolOutcome outcome = ToolOutcome.fromLegacy(legacy);
+
+        assertEquals(ToolOutcomeStatus.DENIED_BY_POLICY, outcome.status());
+        assertEquals("command not allowlisted", outcome.errorMessage());
+        assertEquals("command not allowlisted", outcome.metadata().get("deniedReason"));
+    }
+
+    @Test
+    void mapsHitlRejectionTextToDeniedByUserOutcome() {
+        ToolRegistry.ToolExecutionResult legacy = new ToolRegistry.ToolExecutionResult(
+                "call_1", "execute_command", "{}", "[HITL] 操作已被拒绝：用户拒绝了此操作",
+                0, false, List.of());
+
+        ToolOutcome outcome = ToolOutcome.fromLegacy(legacy);
+
+        assertEquals(ToolOutcomeStatus.DENIED_BY_USER, outcome.status());
+        assertEquals("用户拒绝了此操作", outcome.errorMessage());
+        assertEquals("用户拒绝了此操作", outcome.metadata().get("deniedReason"));
+    }
+
+    @Test
     void mapsPrefixedUserCancellationToCancelledOutcome() {
         ToolRegistry.ToolExecutionResult legacy = new ToolRegistry.ToolExecutionResult(
                 "call_1", "execute_command", "{}", "工具执行失败: 用户取消了此次工具调用",

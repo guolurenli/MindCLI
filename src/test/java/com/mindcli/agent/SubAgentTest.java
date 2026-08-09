@@ -2,21 +2,37 @@ package com.mindcli.agent;
 
 import com.mindcli.llm.GLMClient;
 import com.mindcli.llm.LlmClient;
+import com.mindcli.runtime.agent.AgentMode;
+import com.mindcli.runtime.agent.AgentRunContext;
+import com.mindcli.runtime.agent.ToolDispatcher;
 import com.mindcli.tool.ToolRegistry;
+import com.mindcli.tool.ToolRegistry.ToolExecutionResult;
+import com.mindcli.tool.ToolRegistry.ToolInvocation;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SubAgentTest {
+
+    @TempDir
+    Path tempDir;
 
     @Test
     void shouldOnlyEnableToolsForWorker() throws Exception {
@@ -138,10 +154,116 @@ class SubAgentTest {
         assertTrue(output.contains("答案"), "content should still appear");
     }
 
+    @Test
+    void workerToolCallsWaitForSharedDispatcherLocks() throws Exception {
+        CountDownLatch lockEntered = new CountDownLatch(1);
+        CountDownLatch releaseLock = new CountDownLatch(1);
+        CountDownLatch workerToolStarted = new CountDownLatch(1);
+        ToolDispatcher lockHolder = new ToolDispatcher(new LockHoldingToolRegistry(lockEntered, releaseLock));
+        RecordingToolRegistry registry = new RecordingToolRegistry(workerToolStarted);
+        registry.setProjectPath(tempDir.toString());
+        MultiCallStreamClient llm = new MultiCallStreamClient(List.of(
+                new CallScript(
+                        listener -> listener.onContentDelta("准备写入"),
+                        new LlmClient.ChatResponse(
+                                "assistant",
+                                "准备写入",
+                                null,
+                                List.of(new LlmClient.ToolCall(
+                                        "call_worker",
+                                        new LlmClient.ToolCall.Function("write_file",
+                                                "{\"path\":\"shared.txt\",\"content\":\"worker\"}")
+                                )),
+                                10,
+                                5
+                        )
+                ),
+                new CallScript(
+                        listener -> listener.onContentDelta("写入完成"),
+                        new LlmClient.ChatResponse(
+                                "assistant",
+                                "写入完成",
+                                null,
+                                null,
+                                10,
+                                5
+                        )
+                )
+        ));
+        SubAgent worker = new SubAgent("w-lock", AgentRole.WORKER, llm, registry);
+        AgentRunContext lockContext = AgentRunContext.create(AgentMode.TEAM, "lock", tempDir.toString());
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+
+        try {
+            Future<?> lockFuture = executor.submit(() -> lockHolder.dispatch(List.of(
+                    new LlmClient.ToolCall("call_lock", new LlmClient.ToolCall.Function(
+                            "write_file", "{\"path\":\"shared.txt\",\"content\":\"lock\"}"))
+            ), lockContext));
+            assertTrue(lockEntered.await(1, TimeUnit.SECONDS));
+
+            Future<AgentMessage> workerFuture = executor.submit(() -> {
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                PrintStream ps = new PrintStream(output, true, StandardCharsets.UTF_8);
+                return worker.execute(AgentMessage.task("orchestrator", "写入 shared.txt"), ps);
+            });
+
+            assertFalse(workerToolStarted.await(1, TimeUnit.SECONDS),
+                    "SubAgent worker tool execution must wait for the shared dispatcher lock");
+            releaseLock.countDown();
+
+            AgentMessage result = workerFuture.get(2, TimeUnit.SECONDS);
+            assertEquals(AgentMessage.Type.RESULT, result.type());
+            lockFuture.get(1, TimeUnit.SECONDS);
+            assertTrue(workerToolStarted.await(1, TimeUnit.SECONDS));
+        } finally {
+            releaseLock.countDown();
+            executor.shutdownNow();
+        }
+    }
+
     private boolean invokeShouldUseTools(SubAgent agent) throws Exception {
         Method method = SubAgent.class.getDeclaredMethod("shouldUseTools");
         method.setAccessible(true);
         return (boolean) method.invoke(agent);
+    }
+
+    private static final class RecordingToolRegistry extends ToolRegistry {
+        private final CountDownLatch toolStarted;
+
+        private RecordingToolRegistry(CountDownLatch toolStarted) {
+            this.toolStarted = toolStarted;
+        }
+
+        @Override
+        public String executeTool(String name, String argumentsJson) {
+            toolStarted.countDown();
+            return "文件已写入: shared.txt";
+        }
+    }
+
+    private static final class LockHoldingToolRegistry extends ToolRegistry {
+        private final CountDownLatch lockEntered;
+        private final CountDownLatch releaseLock;
+
+        private LockHoldingToolRegistry(CountDownLatch lockEntered, CountDownLatch releaseLock) {
+            this.lockEntered = lockEntered;
+            this.releaseLock = releaseLock;
+        }
+
+        @Override
+        public List<ToolExecutionResult> executeTools(List<ToolInvocation> invocations) {
+            lockEntered.countDown();
+            try {
+                assertTrue(releaseLock.await(2, TimeUnit.SECONDS));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return invocations.stream()
+                    .map(invocation -> new ToolExecutionResult(
+                            invocation.id(), invocation.name(), invocation.argumentsJson(),
+                            "lock released", 1, false, List.of()))
+                    .toList();
+        }
     }
 
     /**

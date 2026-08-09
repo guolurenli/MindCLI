@@ -1,5 +1,7 @@
 package com.mindcli.agent;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -7,23 +9,31 @@ import com.mindcli.llm.GLMClient;
 import com.mindcli.llm.LlmClient;
 import com.mindcli.memory.LongTermMemory;
 import com.mindcli.memory.MemoryManager;
+import com.mindcli.runtime.agent.AgentRunEvent;
+import com.mindcli.runtime.agent.AgentRunEventType;
+import com.mindcli.runtime.agent.JsonlRunStore;
+import com.mindcli.runtime.agent.RunStore;
 import com.mindcli.tool.ToolRegistry;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static java.util.stream.Collectors.toSet;
 
 class AgentOrchestratorTest {
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     @Test
     void shouldParseSimplePlan() {
@@ -414,6 +424,245 @@ class AgentOrchestratorTest {
         assertTrue(finalResult.contains("[step_2] ⏳ 第二步"));
     }
 
+    @Test
+    void teamRunRecordsLifecycleEventsInSharedRunStore(@TempDir Path tempDir) {
+        StubGLMClient llmClient = new StubGLMClient(List.of(
+                response("""
+                        {
+                          "summary": "单步计划",
+                          "steps": [
+                            {
+                              "id": "s1",
+                              "description": "第一步",
+                              "type": "ANALYSIS",
+                              "dependencies": []
+                            }
+                          ]
+                        }
+                        """),
+                response("团队执行结果"),
+                response("{\"approved\": true, \"summary\": \"通过\", \"issues\": []}")
+        ));
+        RecordingRunStore runStore = new RecordingRunStore();
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                llmClient,
+                new ToolRegistry(),
+                new NoOpMemoryManager(tempDir.toFile()),
+                System.out,
+                runStore
+        );
+
+        String result = orchestrator.run("测试 team 账本");
+
+        assertTrue(result.contains("团队执行结果") || result.contains("✅"));
+        List<AgentRunEventType> types = runStore.allEvents().stream()
+                .map(AgentRunEvent::type)
+                .toList();
+        assertTrue(types.contains(AgentRunEventType.RUN_STARTED));
+        assertTrue(types.contains(AgentRunEventType.MODE_SELECTED));
+        assertTrue(types.contains(AgentRunEventType.RUN_FINISHED));
+    }
+
+    @Test
+    void teamRunRecordsPlannerWorkerAndReviewerChildRuns(@TempDir Path tempDir) {
+        StubGLMClient llmClient = new StubGLMClient(List.of(
+                response("""
+                        {
+                          "summary": "单步计划",
+                          "steps": [
+                            {
+                              "id": "s1",
+                              "description": "第一步",
+                              "type": "ANALYSIS",
+                              "dependencies": []
+                            }
+                          ]
+                        }
+                        """),
+                response("团队执行结果"),
+                response("{\"approved\": true, \"summary\": \"通过\", \"issues\": []}")
+        ));
+        RecordingRunStore runStore = new RecordingRunStore();
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                llmClient,
+                new ToolRegistry(),
+                new NoOpMemoryManager(tempDir.toFile()),
+                System.out,
+                runStore
+        );
+
+        orchestrator.run("测试 team child run");
+
+        List<AgentRunEvent> allEvents = runStore.allEvents();
+        String parentRunId = allEvents.stream()
+                .filter(event -> event.type() == AgentRunEventType.RUN_STARTED)
+                .filter(event -> !event.attributes().containsKey("parentRunId"))
+                .findFirst()
+                .orElseThrow()
+                .runId();
+        List<AgentRunEvent> childStarts = allEvents.stream()
+                .filter(event -> event.type() == AgentRunEventType.RUN_STARTED)
+                .filter(event -> parentRunId.equals(event.attributes().get("parentRunId")))
+                .toList();
+
+        assertEquals(3, childStarts.size());
+        assertEquals(Set.of("planner", "worker", "reviewer"),
+                childStarts.stream().map(event -> event.attributes().get("role")).collect(toSet()));
+        assertTrue(childStarts.stream()
+                .filter(event -> "worker".equals(event.attributes().get("role"))
+                        || "reviewer".equals(event.attributes().get("role")))
+                .allMatch(event -> "step_1".equals(event.attributes().get("stepId"))));
+        assertTrue(childStarts.stream()
+                .allMatch(event -> parentRunId.equals(event.attributes().get("rootRunId"))));
+        assertEquals(3, childStarts.stream().map(AgentRunEvent::runId).collect(toSet()).size());
+    }
+
+    @Test
+    void teamWorkerToolCallsRecordStructuredToolOutcomeEvents(@TempDir Path tempDir) {
+        StubGLMClient llmClient = new StubGLMClient(List.of(
+                response("""
+                        {
+                          "summary": "单步计划",
+                          "steps": [
+                            {
+                              "id": "s1",
+                              "description": "写入文件",
+                              "type": "FILE_WRITE",
+                              "dependencies": []
+                            }
+                          ]
+                        }
+                        """),
+                new LlmClient.ChatResponse(
+                        "assistant",
+                        "准备写入",
+                        null,
+                        List.of(new LlmClient.ToolCall(
+                                "call_worker",
+                                new LlmClient.ToolCall.Function("write_file",
+                                        "{\"path\":\"team.txt\",\"content\":\"team\"}")
+                        )),
+                        10,
+                        5
+                ),
+                response("worker finished"),
+                response("{\"approved\": true, \"summary\": \"通过\", \"issues\": []}")
+        ));
+        RecordingRunStore runStore = new RecordingRunStore();
+        ToolRegistry registry = new ToolRegistry();
+        registry.setProjectPath(tempDir.toString());
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                llmClient,
+                registry,
+                new NoOpMemoryManager(tempDir.toFile()),
+                System.out,
+                runStore
+        );
+
+        orchestrator.run("测试 team worker tool outcome");
+
+        AgentRunEvent outcome = runStore.allEvents().stream()
+                .filter(event -> event.type() == AgentRunEventType.TOOL_OUTCOME)
+                .findFirst()
+                .orElseThrow();
+        assertEquals("COMPLETED", outcome.attributes().get("status"));
+        assertEquals("write_file", outcome.attributes().get("toolName"));
+        assertEquals("call_worker", outcome.attributes().get("toolId"));
+        assertEquals("ALLOW", outcome.attributes().get("hookDecision"));
+        assertEquals("worker-1", outcome.attributes().get("agentName"));
+        assertEquals("WORKER", outcome.attributes().get("role"));
+        assertTrue(outcome.attributes().containsKey("parentRunId"));
+        assertTrue(outcome.attributes().get("lockKeys").contains("FILE:"));
+    }
+
+    @Test
+    void reviewerFailureDoesNotCompleteWorkerResult(@TempDir Path tempDir) {
+        StubGLMClient llmClient = new StubGLMClient(List.of(
+                response("""
+                        {
+                          "summary": "单步计划",
+                          "steps": [
+                            {
+                              "id": "s1",
+                              "description": "第一步",
+                              "type": "ANALYSIS",
+                              "dependencies": []
+                            }
+                          ]
+                        }
+                        """),
+                response("未经审查的执行结果")
+        ));
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                llmClient,
+                new ToolRegistry(),
+                new NoOpMemoryManager(tempDir.toFile())
+        );
+
+        String finalResult = orchestrator.run("测试 reviewer fail closed");
+
+        assertTrue(finalResult.contains("未完全完成"));
+        assertTrue(finalResult.contains("[step_1] ❌ 第一步"));
+        assertFalse(finalResult.contains("✅ 多 Agent 协作任务完成"));
+    }
+
+    @Test
+    void rejectedReviewerChildrenAreBlockedInJsonlState(@TempDir Path tempDir) throws Exception {
+        StubGLMClient llmClient = new StubGLMClient(List.of(
+                response("""
+                        {
+                          "summary": "单步计划",
+                          "steps": [
+                            {
+                              "id": "s1",
+                              "description": "第一步",
+                              "type": "ANALYSIS",
+                              "dependencies": []
+                            }
+                          ]
+                        }
+                        """),
+                response("第一次候选结果"),
+                response("{\"approved\": false, \"summary\": \"拒绝\", \"issues\": [\"缺证据\"]}"),
+                response("第二次候选结果"),
+                response("{\"approved\": false, \"summary\": \"拒绝\", \"issues\": [\"仍缺证据\"]}"),
+                response("第三次候选结果"),
+                response("{\"approved\": false, \"summary\": \"拒绝\", \"issues\": [\"还是缺证据\"]}")
+        ));
+        Path runsRoot = tempDir.resolve("runs");
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                llmClient,
+                new ToolRegistry(),
+                new NoOpMemoryManager(tempDir.toFile()),
+                System.out,
+                new JsonlRunStore(runsRoot)
+        );
+
+        String finalResult = orchestrator.run("测试 reviewer durable fail closed");
+
+        assertTrue(finalResult.contains("未完全完成"));
+        Path parentRunDir = Files.list(runsRoot)
+                .filter(Files::isDirectory)
+                .findFirst()
+                .orElseThrow();
+        JsonNode childRuns = MAPPER.readTree(Files.readString(parentRunDir.resolve("run.state.json")))
+                .path("childRuns");
+        List<JsonNode> reviewerSummaries = new ArrayList<>();
+        childRuns.forEach(child -> {
+            if ("reviewer".equals(child.path("role").asText())) {
+                reviewerSummaries.add(child);
+            }
+        });
+
+        assertEquals(3, reviewerSummaries.size());
+        assertTrue(reviewerSummaries.stream()
+                .allMatch(child -> "false".equals(child.path("approved").asText())));
+        assertTrue(reviewerSummaries.stream()
+                .allMatch(child -> "BLOCKED".equals(child.path("businessStatus").asText())));
+        assertTrue(reviewerSummaries.stream()
+                .noneMatch(child -> "SUCCESS".equals(child.path("businessStatus").asText())));
+    }
+
     private static LlmClient.ChatResponse response(String content) {
         return new LlmClient.ChatResponse("assistant", content, null, 100, 20);
     }
@@ -421,6 +670,26 @@ class AgentOrchestratorTest {
     private static final class NoOpMemoryManager extends MemoryManager {
         private NoOpMemoryManager(File storageDir) {
             super(new GLMClient("test-key"), 200000, new LongTermMemory(storageDir));
+        }
+    }
+
+    private static final class RecordingRunStore implements RunStore {
+        private final List<AgentRunEvent> events = new ArrayList<>();
+
+        @Override
+        public void append(AgentRunEvent event) {
+            events.add(event);
+        }
+
+        @Override
+        public List<AgentRunEvent> events(String runId) {
+            return events.stream()
+                    .filter(event -> event.runId().equals(runId))
+                    .toList();
+        }
+
+        private List<AgentRunEvent> allEvents() {
+            return List.copyOf(events);
         }
     }
 
