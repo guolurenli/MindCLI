@@ -57,6 +57,68 @@ class PlannerTest {
         assertTrue(client.lastSystemPrompt.contains("计划前必须读取项目规则"));
     }
 
+    @Test
+    void repairsMalformedPlanBeforeBuildingExecutionPlan() throws Exception {
+        RepairingStubGLMClient client = new RepairingStubGLMClient(
+                """
+                {
+                  "summary": "复杂任务",
+                  "tasks": [
+                    {
+                      "id": "task_a",
+                      "description": "先读取 pom.xml",
+                      "type": "FILE_READ",
+                      "dependencies": []
+                    }
+                  ]
+                """,
+                """
+                {
+                  "summary": "复杂任务",
+                  "tasks": [
+                    {
+                      "id": "task_a",
+                      "description": "先读取 pom.xml",
+                      "type": "FILE_READ",
+                      "dependencies": []
+                    }
+                  ]
+                }
+                """
+        );
+        Planner planner = new Planner(client);
+
+        ExecutionPlan plan = planner.createPlan("先读取 pom.xml");
+
+        assertEquals("复杂任务", plan.getSummary());
+        assertEquals(List.of("task_1"), plan.getExecutionOrder());
+        assertEquals(Task.TaskType.FILE_READ, plan.getTask("task_1").getType());
+        assertTrue(client.lightQueryCalled);
+    }
+
+    @Test
+    void rejectsUnknownTaskTypeInsteadOfDefaulting() {
+        StubGLMClient client = new StubGLMClient("""
+                {
+                  "summary": "非法类型任务",
+                  "tasks": [
+                    {
+                      "id": "task_a",
+                      "description": "读取文件",
+                      "type": "MAGIC",
+                      "dependencies": []
+                    }
+                  ]
+                }
+                """);
+        Planner planner = new Planner(client);
+
+        IOException error = org.junit.jupiter.api.Assertions.assertThrows(IOException.class,
+                () -> planner.createPlan("先分析项目结构，再输出非法类型计划"));
+
+        assertTrue(error.getMessage().contains("MAGIC"));
+    }
+
     private static final class FailingGLMClient extends GLMClient {
         private FailingGLMClient() {
             super("test-key");
@@ -65,6 +127,29 @@ class PlannerTest {
         @Override
         public ChatResponse chat(List<Message> messages, List<Tool> tools, StreamListener listener) throws IOException {
             throw new IOException("simple goal should not call llm");
+        }
+    }
+
+    private static final class RepairingStubGLMClient extends GLMClient {
+        private final String malformedContent;
+        private final String repairedContent;
+        private boolean lightQueryCalled;
+
+        private RepairingStubGLMClient(String malformedContent, String repairedContent) {
+            super("test-key");
+            this.malformedContent = malformedContent;
+            this.repairedContent = repairedContent;
+        }
+
+        @Override
+        public ChatResponse chat(List<Message> messages, List<Tool> tools, StreamListener listener) {
+            return new ChatResponse("assistant", malformedContent, null, 100, 20);
+        }
+
+        @Override
+        public ChatResponse lightQuery(List<Message> messages, int maxTokens) {
+            lightQueryCalled = true;
+            return new ChatResponse("assistant", repairedContent, null, 30, 10);
         }
     }
 

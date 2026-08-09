@@ -138,6 +138,26 @@ class AgentOrchestratorTest {
     }
 
     @Test
+    void shouldRejectUnknownTaskType() {
+        AgentOrchestrator orchestrator = new AgentOrchestrator(new GLMClient("test-key"));
+        String planJson = """
+                {
+                    "summary": "非法类型",
+                    "tasks": [
+                        {
+                            "id": "task_1",
+                            "description": "读取文件",
+                            "type": "MAGIC",
+                            "dependencies": []
+                        }
+                    ]
+                }
+                """;
+
+        assertTrue(orchestrator.parsePlan(planJson).isEmpty());
+    }
+
+    @Test
     void shouldReturnEmptyListForInvalidJson() {
         AgentOrchestrator orchestrator = new AgentOrchestrator(new GLMClient("test-key"));
 

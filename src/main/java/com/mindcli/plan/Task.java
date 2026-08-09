@@ -20,6 +20,8 @@ public class Task {
     private volatile int retryCount = 0;
     // 是否为关键路径任务（默认 true，LLM 可在计划 JSON 中指定 critical: false）
     private volatile boolean critical = true;
+    private volatile String degradation = "REPLAN";
+    private volatile List<String> expectedEvidence = new ArrayList<>();
 
     public enum TaskType {
         PLANNING,      // 规划任务
@@ -63,6 +65,8 @@ public class Task {
     public List<String> getDependents() { return new ArrayList<>(dependents); }
     public long getStartTime() { return startTime; }
     public long getEndTime() { return endTime; }
+    public String getDegradation() { return degradation; }
+    public List<String> getExpectedEvidence() { return new ArrayList<>(expectedEvidence); }
 
     // Setters
     public void setStatus(TaskStatus status) { this.status = status; }
@@ -122,6 +126,12 @@ public class Task {
     public void setMaxRetries(int maxRetries) { this.maxRetries = maxRetries; }
     public int getRetryCount() { return retryCount; }
     public void incrementRetry() { retryCount++; }
+    public void setDegradation(String degradation) {
+        this.degradation = (degradation == null || degradation.isBlank()) ? "REPLAN" : degradation;
+    }
+    public void setExpectedEvidence(List<String> expectedEvidence) {
+        this.expectedEvidence = expectedEvidence == null ? new ArrayList<>() : new ArrayList<>(expectedEvidence);
+    }
 
     /**
      * 判断异常是否可重试（网络超时、限流、连接失败等瞬态错误）。

@@ -46,6 +46,15 @@ public class ExecutionPlan {
      * 添加任务
      */
     public void addTask(Task task) {
+        if (task == null) {
+            throw new IllegalArgumentException("task 不能为空");
+        }
+        if (task.getId() == null || task.getId().isBlank()) {
+            throw new IllegalArgumentException("task id 不能为空");
+        }
+        if (tasks.containsKey(task.getId())) {
+            throw new IllegalArgumentException("task id 重复: " + task.getId());
+        }
         tasks.put(task.getId(), task);
         // 更新依赖关系
         for (String depId : task.getDependencies()) {
@@ -128,10 +137,11 @@ public class ExecutionPlan {
 
         for (String depId : task.getDependencies()) {
             Task dep = tasks.get(depId);
-            if (dep != null) {
-                if (!topologicalSort(dep, visited, visiting)) {
-                    return false;
-                }
+            if (dep == null) {
+                return false;
+            }
+            if (!topologicalSort(dep, visited, visiting)) {
+                return false;
             }
         }
 
@@ -281,7 +291,8 @@ public class ExecutionPlan {
 
         while (!remaining.isEmpty()) {
             List<Task> batch = remaining.values().stream()
-                    .filter(task -> completed.containsAll(task.getDependencies()))
+                    .filter(task -> task.getDependencies().stream()
+                            .allMatch(dep -> completed.contains(dep) && tasks.containsKey(dep)))
                     .toList();
 
             if (batch.isEmpty()) {
@@ -342,6 +353,9 @@ public class ExecutionPlan {
      * 已完成的 COMPLETED 任务保留不动，子树中的新任务替换原有同区域任务。
      */
     public void mergeSubtree(ExecutionPlan subtree) {
+        if (subtree == null) {
+            return;
+        }
         // 移除当前计划中 PENDING/FAILED 状态的任务（将被子树替换）
         List<String> toRemove = new ArrayList<>();
         for (Task t : tasks.values()) {

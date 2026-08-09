@@ -3,8 +3,11 @@ package com.mindcli.plan;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ExecutionPlanTest {
@@ -119,5 +122,26 @@ class ExecutionPlanTest {
 
         assertEquals(List.of(task1, task2, task3, task4), batches.get(0));
         assertEquals(List.of(task5), batches.get(1));
+    }
+
+    @Test
+    void duplicateTaskIdShouldBeRejected() {
+        ExecutionPlan plan = new ExecutionPlan("plan_7", "demo");
+        plan.addTask(new Task("task_1", "read pom", Task.TaskType.FILE_READ));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> plan.addTask(new Task("task_1", "overwrite", Task.TaskType.COMMAND)));
+    }
+
+    @Test
+    void missingDependencyShouldPreventExecutionOrderFromSilentlyPassing() {
+        ExecutionPlan plan = new ExecutionPlan("plan_8", "demo");
+        Task task = new Task("task_1", "verify", Task.TaskType.VERIFICATION, List.of("task_missing"));
+
+        plan.addTask(task);
+
+        assertFalse(plan.computeExecutionOrder());
+        assertFalse(plan.getExecutableTasks().contains(task));
+        assertFalse(task.isExecutable(Map.of("task_1", task)));
     }
 }

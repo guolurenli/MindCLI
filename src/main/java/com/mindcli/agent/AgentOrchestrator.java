@@ -4,6 +4,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.llm.LlmClient;
 import com.mindcli.memory.MemoryManager;
+import com.mindcli.plan.PlanSchema;
+import com.mindcli.plan.PlanSchemaParser;
+import com.mindcli.plan.PlanSchemaValidator;
+import com.mindcli.plan.PlanTaskSpec;
+import com.mindcli.plan.PlanValidationResult;
 import com.mindcli.runtime.CancellationContext;
 import com.mindcli.tool.ToolRegistry;
 import com.mindcli.util.AnsiStyle;
@@ -51,6 +56,8 @@ public class AgentOrchestrator {
     private final MemoryManager memoryManager;
     private final ToolRegistry toolRegistry;
     private final PrintStream out;
+    private final PlanSchemaParser planSchemaParser = new PlanSchemaParser(mapper);
+    private final PlanSchemaValidator planSchemaValidator = new PlanSchemaValidator();
     private Supplier<String> externalContextSupplier = () -> "";
 
     // 执行步骤的数据结构（package-private 供测试访问）
@@ -230,56 +237,41 @@ public class AgentOrchestrator {
      */
     List<ExecutionStep> parsePlan(String planJson) {
         try {
-            String cleaned = planJson.replaceAll("```json\\s*", "")
-                    .replaceAll("```\\s*", "")
-                    .trim();
-
-            JsonNode root = mapper.readTree(cleaned);
-            JsonNode stepsNode = root.path("steps");
-
-            if (!stepsNode.isArray() || stepsNode.isEmpty()) {
-                // 尝试 "tasks" 字段（兼容 Plan-and-Execute 的格式）
-                stepsNode = root.path("tasks");
-            }
-
-            if (!stepsNode.isArray() || stepsNode.isEmpty()) {
-                log.warn("Plan JSON has no 'steps' or 'tasks' array");
+            PlanSchema schema = planSchemaParser.parse(planJson);
+            PlanValidationResult validation = planSchemaValidator.validate(schema);
+            if (!validation.isValid()) {
+                log.warn("Plan schema invalid: {}", validation.toIOException().getMessage());
                 return List.of();
             }
 
-            List<ExecutionStep> steps = new ArrayList<>();
+            List<PlanTaskSpec> specs = schema.tasks();
+            List<ExecutionStep> steps = new ArrayList<>(specs.size());
             Map<String, String> idMapping = new HashMap<>();
-            int stepIndex = 1;
 
-            // 第一遍：创建步骤（重编号）
-            for (JsonNode stepNode : stepsNode) {
-                String originalId = stepNode.path("id").asText();
+            int stepIndex = 1;
+            for (PlanTaskSpec spec : specs) {
+                String originalId = spec.id();
                 String newId = "step_" + stepIndex++;
                 idMapping.put(originalId, newId);
-
-                String description = stepNode.path("description").asText();
-                String type = stepNode.path("type").asText("COMMAND");
-                steps.add(ExecutionStep.pending(newId, description, type, new ArrayList<>()));
+                steps.add(ExecutionStep.pending(newId, spec.description(), spec.type().name(), new ArrayList<>()));
             }
 
             // 第二遍：建立依赖
             stepIndex = 1;
-            for (JsonNode stepNode : stepsNode) {
+            for (PlanTaskSpec spec : specs) {
                 String newId = "step_" + stepIndex++;
-                JsonNode depsNode = stepNode.path("dependencies");
-                if (depsNode.isArray()) {
-                    List<String> deps = new ArrayList<>();
-                    for (JsonNode dep : depsNode) {
-                        String mapped = idMapping.getOrDefault(dep.asText(), dep.asText());
+                List<String> deps = new ArrayList<>();
+                for (String dep : spec.dependencies()) {
+                    String mapped = idMapping.get(dep);
+                    if (mapped != null) {
                         deps.add(mapped);
                     }
-                    // 替换步骤的依赖
-                    int idx = stepIndex - 2;
-                    if (idx >= 0 && idx < steps.size()) {
-                        ExecutionStep old = steps.get(idx);
-                        steps.set(idx, new ExecutionStep(old.id(), old.description(), old.type(),
-                                deps, old.result(), old.status()));
-                    }
+                }
+                int idx = stepIndex - 2;
+                if (idx >= 0 && idx < steps.size()) {
+                    ExecutionStep old = steps.get(idx);
+                    steps.set(idx, new ExecutionStep(old.id(), old.description(), old.type(),
+                            deps, old.result(), old.status()));
                 }
             }
 
