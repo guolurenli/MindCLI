@@ -1,4 +1,4 @@
-package com.mindcli.platform.policy;
+package com.mindcli.platform.security;
 
 /**
  * 安全策略拦截时抛出。

@@ -8,8 +8,8 @@ import com.mindcli.platform.prompt.PromptAssembler;
 import com.mindcli.platform.prompt.PromptContext;
 import com.mindcli.platform.prompt.PromptMode;
 import com.mindcli.platform.prompt.ProjectMemoryLoader;
-import com.mindcli.util.AnsiStyle;
-import com.mindcli.util.TerminalMarkdownRenderer;
+import com.mindcli.platform.render.terminal.AnsiStyle;
+import com.mindcli.platform.render.terminal.TerminalMarkdownRenderer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

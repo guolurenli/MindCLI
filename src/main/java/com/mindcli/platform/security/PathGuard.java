@@ -1,4 +1,4 @@
-package com.mindcli.platform.policy;
+package com.mindcli.platform.security;
 
 import java.io.IOException;
 import java.nio.file.Files;

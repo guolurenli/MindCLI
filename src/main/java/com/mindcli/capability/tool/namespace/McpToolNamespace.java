@@ -1,4 +1,4 @@
-package com.mindcli.capability.tool.mcp;
+package com.mindcli.capability.tool.namespace;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.mindcli.capability.mcp.protocol.McpToolDescriptor;

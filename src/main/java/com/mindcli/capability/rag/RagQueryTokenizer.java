@@ -1,7 +1,7 @@
 package com.mindcli.capability.rag;
 
 import com.huaban.analysis.jieba.JiebaSegmenter;
-import com.mindcli.util.JiebaSegmenterFactory;
+import com.mindcli.platform.text.JiebaSegmenterFactory;
 
 import java.util.LinkedHashSet;
 import java.util.List;

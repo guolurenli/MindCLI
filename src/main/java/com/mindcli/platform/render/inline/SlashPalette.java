@@ -1,6 +1,6 @@
 package com.mindcli.platform.render.inline;
 
-import com.mindcli.util.AnsiStyle;
+import com.mindcli.platform.render.terminal.AnsiStyle;
 import org.jline.terminal.Attributes;
 import org.jline.terminal.Terminal;
 

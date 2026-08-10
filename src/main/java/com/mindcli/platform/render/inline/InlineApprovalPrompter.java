@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.platform.hitl.ApprovalPolicy;
 import com.mindcli.platform.hitl.ApprovalRequest;
 import com.mindcli.platform.hitl.ApprovalResult;
-import com.mindcli.util.AnsiStyle;
+import com.mindcli.platform.render.terminal.AnsiStyle;
 import org.jline.terminal.Attributes;
 import org.jline.terminal.Terminal;
 

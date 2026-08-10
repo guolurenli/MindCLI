@@ -39,7 +39,7 @@ import com.mindcli.capability.mcp.mention.AtMentionExpander;
 import com.mindcli.agent.plan.ExecutionPlan;
 import com.mindcli.capability.rag.CodeIndex;
 import com.mindcli.platform.hitl.ApprovalPolicy;
-import com.mindcli.platform.policy.AuditLog;
+import com.mindcli.platform.security.AuditLog;
 import com.mindcli.capability.rag.CodeRetriever;
 import com.mindcli.capability.rag.CodeRelation;
 import com.mindcli.capability.rag.SearchResultFormatter;
@@ -53,7 +53,7 @@ import com.mindcli.runtime.task.TaskCommandFormatter;
 import com.mindcli.platform.snapshot.SnapshotService;
 import com.mindcli.capability.skill.SkillRegistry;
 import com.mindcli.capability.tool.ToolRegistry;
-import com.mindcli.util.AnsiStyle;
+import com.mindcli.platform.render.terminal.AnsiStyle;
 import com.mindcli.app.wechat.WechatCommandMain;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
@@ -100,7 +100,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *   - inline 流式：prompt 下方 inline 状态区、行内可折叠工具块、行内 git diff、单字符 HITL 提示、命令 palette
  *   - lanterna：保留 phase-16 全屏窗口（向后兼容 MINDCLI_TUI=true）
  *   - plain：纯 println 兜底
- * HITL 增强：路径围栏（PathGuard）、命令快速拒绝（CommandGuard）、操作审计链（AuditLog）—— 见 com.mindcli.platform.policy
+ * HITL 增强：路径围栏（PathGuard）、命令快速拒绝（CommandGuard）、操作审计链（AuditLog）—— 见 com.mindcli.platform.security
  */
 public class Main {
     private static final String VERSION = "16.1.0";

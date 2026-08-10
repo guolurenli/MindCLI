@@ -1,4 +1,4 @@
-package com.mindcli.platform.context;
+package com.mindcli.platform.llm.context;
 
 import com.mindcli.platform.llm.LlmClient;
 

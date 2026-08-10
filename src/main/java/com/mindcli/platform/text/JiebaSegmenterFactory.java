@@ -1,4 +1,4 @@
-package com.mindcli.util;
+package com.mindcli.platform.text;
 
 import com.huaban.analysis.jieba.JiebaSegmenter;
 

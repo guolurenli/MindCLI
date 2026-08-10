@@ -1,7 +1,7 @@
 package com.mindcli.platform.hitl;
 
 import com.mindcli.capability.browser.BrowserCheckResult;
-import com.mindcli.platform.policy.AuditLog;
+import com.mindcli.platform.security.AuditLog;
 import com.mindcli.capability.tool.ToolOutput;
 import com.mindcli.capability.tool.ToolRegistry;
 

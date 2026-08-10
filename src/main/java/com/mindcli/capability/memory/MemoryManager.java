@@ -1,7 +1,7 @@
 package com.mindcli.capability.memory;
 
 import com.mindcli.platform.llm.LlmClient;
-import com.mindcli.platform.context.ContextProfile;
+import com.mindcli.platform.llm.context.ContextProfile;
 import com.mindcli.runtime.run.AgentRunContext;
 import com.mindcli.runtime.run.AgentRunEvent;
 import com.mindcli.runtime.run.AgentRunEventType;

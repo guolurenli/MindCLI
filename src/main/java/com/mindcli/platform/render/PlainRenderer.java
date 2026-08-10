@@ -6,7 +6,7 @@ import com.mindcli.platform.hitl.ApprovalPolicy;
 import com.mindcli.platform.hitl.ApprovalRequest;
 import com.mindcli.platform.hitl.ApprovalResult;
 import com.mindcli.platform.llm.LlmClient;
-import com.mindcli.util.AnsiStyle;
+import com.mindcli.platform.render.terminal.AnsiStyle;
 
 import java.io.BufferedReader;
 import java.io.IOException;

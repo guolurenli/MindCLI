@@ -5,7 +5,7 @@ import com.googlecode.lanterna.gui2.LinearLayout.Alignment;
 import com.googlecode.lanterna.gui2.LinearLayout.GrowPolicy;
 import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.app.tui.highlight.CodeHighlighter;
-import com.mindcli.util.AnsiStyle;
+import com.mindcli.platform.render.terminal.AnsiStyle;
 
 import java.util.function.Consumer;
 import java.util.regex.Matcher;

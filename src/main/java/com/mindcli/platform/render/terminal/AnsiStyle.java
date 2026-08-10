@@ -1,4 +1,4 @@
-package com.mindcli.util;
+package com.mindcli.platform.render.terminal;
 
 /**
  * 终端 ANSI 样式辅助。

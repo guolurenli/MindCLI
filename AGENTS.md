@@ -58,7 +58,7 @@ Agent Runtime 账本默认通过 `RunStoreFactory` 写到 `~/.mindcli/runs`（�
 
 核心内置工具 11 个：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `create_project` / `search_code` / `web_search` / `web_fetch` / `revert_turn`
 
-`ToolRegistry` 是工具对外 facade；内置工具的名称、描述、参数 schema 由 `capability/tool/builtin/*ToolRegistrar.java` 维护，通过 `capability/tool/registry/ToolRegistrar` / `ToolRegistrationContext` 注册。MCP 动态工具状态由 `capability/tool/mcp/McpToolNamespace.java` 管理，`ToolRegistry` 继续保留原有 `registerMcpTool*` / `replaceMcpTool*` 兼容入口。
+`ToolRegistry` 是工具对外 facade；内置工具的名称、描述、参数 schema 由 `capability/tool/builtin/*ToolRegistrar.java` 维护，通过 `capability/tool/registry/ToolRegistrar` / `ToolRegistrationContext` 注册。MCP 动态工具状态由 `capability/tool/namespace/McpToolNamespace.java` 管理，`ToolRegistry` 继续保留原有 `registerMcpTool*` / `replaceMcpTool*` 兼容入口。
 
 代码库理解默认走 Claude Code 式实时探索：`glob_files` 找候选文件、`grep_code` 精确定位符号或字符串、`read_file` 按需读取具体行段。`grep_code` 优先使用本机 `ripgrep`，不可用时回退到 Java 扫描；结果受 `max_results` / `head_limit` / `max_chars` 预算约束，返回 `partial: true` 或 `suggested_reads` 时应继续缩小搜索范围或按建议读取行段。`search_code` 是 RAG 语义辅助，适合模糊自然语言、关键词不明确、常规搜索无果、巨型/跨知识检索场景，不作为精确代码定位的首选。
 
@@ -78,9 +78,8 @@ src/main/java/com/mindcli/
 ├── agent/       ReAct / Plan / Multi-Agent 编排；plan/ 放 Planner / ExecutionPlan / Task，profile/ 放 AgentProfile / AgentPool
 ├── app/         用户入口适配：cli/、tui/、wechat/
 ├── capability/  Agent 能力：browser/、image/、lsp/、mcp/、memory/、rag/、skill/、tool/、web/
-├── platform/    平台支撑：config/、context/、hitl/、llm/、policy/、prompt/、render/、snapshot/
-├── runtime/     run/ (AgentRuntime / ToolDispatcher / RunStore) + api/ (RuntimeApiServer) + task/ (DurableTaskManager)
-└── util/        少量通用工具
+├── platform/    平台支撑：config/、hitl/、llm/、prompt/、render/、security/、snapshot/、text/
+└── runtime/     run/ (AgentRuntime / ToolDispatcher / RunStore) + api/ (RuntimeApiServer) + task/ (DurableTaskManager)
 ```
 
 启动与 inline 渲染当前约定：
@@ -189,7 +188,7 @@ src/main/java/com/mindcli/
 
 ### 5.3 改 Memory → `capability/memory/MemoryManager` + `LongTermMemory` + `TokenBudget` + 测试 + 文档
 
-### 5.4 改 HITL/策略 → `platform/policy/` + ToolRegistry + HitlToolRegistry + 提示词 + `.env.example` + 文档 + 测试
+### 5.4 改 HITL/策略 → `platform/security/` + ToolRegistry + HitlToolRegistry + 提示词 + `.env.example` + 文档 + 测试
 
 ### 5.5 改 MCP → `capability/mcp/` + ToolRegistry + HITL + AuditLog + 提示词 + 文档 + 测试
 
@@ -217,7 +216,7 @@ src/main/java/com/mindcli/
 |----------|------|
 | CLI 命令 / 启动 | app/cli/Main.java + CliBootstrap.java + CliStartupView.java + CliCommandParser.java + app/cli/command/* + app/cli/interaction/* |
 | 规划/DAG | Agent.java + PlanExecuteAgent.java + agent/plan/Planner.java + agent/plan/ExecutionPlan.java |
-| 工具调用 | capability/tool/ToolRegistry.java + capability/tool/builtin/* + capability/tool/mcp/McpToolNamespace.java + runtime/run/ToolDispatcher.java + runtime/run/ToolOutcome.java |
+| 工具调用 | capability/tool/ToolRegistry.java + capability/tool/builtin/* + capability/tool/namespace/McpToolNamespace.java + runtime/run/ToolDispatcher.java + runtime/run/ToolOutcome.java |
 | ReAct loop | Agent.java + runtime/run/AgentLoopExecutor.java |
 | 代码搜索 | capability/tool/builtin/FileToolRegistrar.java + ToolRegistry.java (`glob_files` / `grep_code` / `read_file`) |
 | 模型/API | platform/llm/*Client.java + LlmClientFactory.java |

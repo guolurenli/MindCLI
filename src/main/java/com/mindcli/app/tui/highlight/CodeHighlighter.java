@@ -1,6 +1,6 @@
 package com.mindcli.app.tui.highlight;
 
-import com.mindcli.util.AnsiStyle;
+import com.mindcli.platform.render.terminal.AnsiStyle;
 
 /**
  * 代码高亮器（基于正则表达式的轻量级实现）。

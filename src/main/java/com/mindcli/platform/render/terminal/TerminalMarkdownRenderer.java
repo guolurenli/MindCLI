@@ -1,4 +1,4 @@
-package com.mindcli.util;
+package com.mindcli.platform.render.terminal;
 
 import java.io.PrintStream;
 import java.util.ArrayList;

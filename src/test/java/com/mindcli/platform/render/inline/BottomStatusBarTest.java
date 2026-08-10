@@ -1,7 +1,7 @@
 package com.mindcli.platform.render.inline;
 
 import com.mindcli.platform.render.StatusInfo;
-import com.mindcli.util.AnsiStyle;
+import com.mindcli.platform.render.terminal.AnsiStyle;
 import org.jline.terminal.Size;
 import org.jline.terminal.Terminal;
 import org.jline.utils.AttributedStyle;

@@ -8,7 +8,7 @@ import com.mindcli.capability.mcp.resources.McpResourceCache;
 import com.mindcli.capability.mcp.resources.McpResourceContent;
 import com.mindcli.capability.mcp.resources.McpResourceDescriptor;
 import com.mindcli.capability.mcp.resources.McpResourceTool;
-import com.mindcli.platform.policy.AuditLog;
+import com.mindcli.platform.security.AuditLog;
 import com.mindcli.capability.mcp.transport.McpTransport;
 import com.mindcli.capability.mcp.transport.StdioTransport;
 import com.mindcli.capability.mcp.transport.StreamableHttpTransport;

@@ -1,7 +1,7 @@
-package com.mindcli.platform.context;
+package com.mindcli.platform.llm.context;
 
 import com.mindcli.platform.llm.LlmClient;
-import com.mindcli.util.AnsiStyle;
+import com.mindcli.platform.render.terminal.AnsiStyle;
 
 import java.util.Locale;
 

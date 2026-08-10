@@ -2,7 +2,7 @@ package com.mindcli.app.wechat;
 
 import com.mindcli.platform.render.PlainRenderer;
 import com.mindcli.platform.render.Renderer;
-import com.mindcli.util.AnsiStyle;
+import com.mindcli.platform.render.terminal.AnsiStyle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

@@ -3,7 +3,7 @@ package com.mindcli.platform.render.inline;
 /**
  * 原生 ANSI 控制序列常量与工具方法。
  *
- * <p>区别于 {@link com.mindcli.util.AnsiStyle}（只做颜色与文字样式），
+ * <p>区别于 {@link com.mindcli.platform.render.terminal.AnsiStyle}（只做颜色与文字样式），
  * 这里覆盖光标控制、行清理、滚动区域等结构化操作，inline 流式 TUI 的所有
  * 局部重绘 / 底部状态栏都依赖这些原语。
  *

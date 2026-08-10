@@ -6,7 +6,7 @@ import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.platform.render.PlainRenderer;
 import com.mindcli.platform.render.Renderer;
 import com.mindcli.platform.render.StatusInfo;
-import com.mindcli.util.AnsiStyle;
+import com.mindcli.platform.render.terminal.AnsiStyle;
 import org.jline.reader.LineReader;
 import org.jline.reader.Widget;
 import org.jline.terminal.Terminal;

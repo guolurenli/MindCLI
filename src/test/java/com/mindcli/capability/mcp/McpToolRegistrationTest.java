@@ -5,7 +5,7 @@ import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.capability.tool.ToolOutput;
 import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
 import com.mindcli.capability.tool.ToolRegistry;
-import com.mindcli.capability.tool.mcp.McpToolNamespace;
+import com.mindcli.capability.tool.namespace.McpToolNamespace;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

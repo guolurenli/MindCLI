@@ -6,7 +6,7 @@ import com.mindcli.platform.hitl.RendererHitlHandler;
 import com.mindcli.platform.hitl.SwitchableHitlHandler;
 import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.app.tui.config.TuiConfigPanel;
-import com.mindcli.util.AnsiStyle;
+import com.mindcli.platform.render.terminal.AnsiStyle;
 import org.jline.terminal.Size;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;

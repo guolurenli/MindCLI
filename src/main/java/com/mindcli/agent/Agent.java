@@ -2,8 +2,8 @@ package com.mindcli.agent;
 
 import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.platform.llm.LlmTraceLogger;
-import com.mindcli.platform.context.ContextProfile;
-import com.mindcli.platform.context.TokenUsageFormatter;
+import com.mindcli.platform.llm.context.ContextProfile;
+import com.mindcli.platform.llm.context.TokenUsageFormatter;
 import com.mindcli.capability.lsp.LspDiagnosticReport;
 import com.mindcli.capability.memory.MemoryManager;
 import com.mindcli.platform.prompt.PromptAssembler;
@@ -31,9 +31,9 @@ import com.mindcli.runtime.run.ToolDispatcher;
 import com.mindcli.runtime.run.ToolOutcome;
 import com.mindcli.capability.skill.SkillIndexFormatter;
 import com.mindcli.capability.skill.SkillRegistry;
-import com.mindcli.util.AnsiStyle;
+import com.mindcli.platform.render.terminal.AnsiStyle;
 import com.mindcli.capability.tool.ToolRegistry;
-import com.mindcli.util.TerminalMarkdownRenderer;
+import com.mindcli.platform.render.terminal.TerminalMarkdownRenderer;
 import com.mindcli.capability.image.ImageReferenceParser;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -604,7 +604,7 @@ public class Agent {
     }
 
     public String getContextStatus() {
-        com.mindcli.platform.context.ContextProfile profile = memoryManager.getContextProfile();
+        com.mindcli.platform.llm.context.ContextProfile profile = memoryManager.getContextProfile();
         int window = profile.maxContextWindow();
 
         // 分类估算 token 占用

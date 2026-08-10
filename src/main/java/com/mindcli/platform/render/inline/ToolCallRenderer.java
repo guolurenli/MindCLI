@@ -3,7 +3,7 @@ package com.mindcli.platform.render.inline;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.platform.llm.LlmClient;
-import com.mindcli.util.AnsiStyle;
+import com.mindcli.platform.render.terminal.AnsiStyle;
 
 import java.io.PrintStream;
 import java.util.ArrayList;

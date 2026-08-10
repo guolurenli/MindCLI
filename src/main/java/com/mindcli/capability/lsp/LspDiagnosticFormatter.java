@@ -1,6 +1,6 @@
 package com.mindcli.capability.lsp;
 
-import com.mindcli.util.AnsiStyle;
+import com.mindcli.platform.render.terminal.AnsiStyle;
 
 import java.util.List;
 

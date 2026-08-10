@@ -8,7 +8,7 @@ import com.mindcli.capability.mcp.McpServerStatus;
 import com.mindcli.platform.render.StatusInfo;
 import com.mindcli.capability.skill.Skill;
 import com.mindcli.capability.skill.SkillRegistry;
-import com.mindcli.util.AnsiStyle;
+import com.mindcli.platform.render.terminal.AnsiStyle;
 
 import java.io.PrintStream;
 import java.util.ArrayList;

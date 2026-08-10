@@ -1,4 +1,4 @@
-package com.mindcli.platform.policy;
+package com.mindcli.platform.security;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.type.TypeReference;

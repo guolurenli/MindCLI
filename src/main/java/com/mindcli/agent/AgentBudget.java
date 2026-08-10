@@ -1,7 +1,7 @@
 package com.mindcli.agent;
 
 import com.mindcli.platform.llm.LlmClient;
-import com.mindcli.platform.context.ContextProfile;
+import com.mindcli.platform.llm.context.ContextProfile;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
