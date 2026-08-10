@@ -188,6 +188,15 @@ class MainInputNormalizationTest {
     }
 
     @Test
+    void slashCommandHintsIncludeMemoryPolicyCommand() {
+        List<String> commands = Main.slashCommandHints().stream()
+                .map(Main.SlashCommandHint::display)
+                .toList();
+
+        assertTrue(commands.contains("/memory policy"));
+    }
+
+    @Test
     void slashCommandChoicesAreRenderedDirectlyWithoutJLineConfirmationText() {
         String choices = Main.formatSlashCommandChoices(120);
 

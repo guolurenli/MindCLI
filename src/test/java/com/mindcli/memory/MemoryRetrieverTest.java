@@ -8,6 +8,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Map;
@@ -114,6 +115,34 @@ class MemoryRetrieverTest {
         assertTrue(results.stream().anyMatch(e -> e.getId().equals("global")));
         assertTrue(results.stream().anyMatch(e -> e.getId().equals("current")));
         assertTrue(results.stream().noneMatch(e -> e.getId().equals("other")));
+    }
+
+    @Test
+    void shouldFilterRevokedDeletedExpiredAndPastTtlMemories() {
+        longTerm.store(new MemoryEntry("legacy", "旧记忆仍可见", MemoryEntry.MemoryType.PROJECT_FACT,
+                Map.of("scope", "global"), 10));
+        longTerm.store(new MemoryEntry("active", "活跃记忆仍可见", MemoryEntry.MemoryType.PROJECT_FACT,
+                Map.of("scope", "global", "status", "active"), 10));
+        longTerm.store(new MemoryEntry("revoked", "撤销记忆不可见", MemoryEntry.MemoryType.PROJECT_FACT,
+                Map.of("scope", "global", "status", "revoked"), 10));
+        longTerm.store(new MemoryEntry("deleted", "删除记忆不可见", MemoryEntry.MemoryType.PROJECT_FACT,
+                Map.of("scope", "global", "status", "deleted"), 10));
+        longTerm.store(new MemoryEntry("expired", "状态过期记忆不可见", MemoryEntry.MemoryType.PROJECT_FACT,
+                Map.of("scope", "global", "status", "expired"), 10));
+        longTerm.store(new MemoryEntry("past-ttl", "TTL 过期记忆不可见", MemoryEntry.MemoryType.PROJECT_FACT,
+                Map.of("scope", "global", "expiresAt", Instant.now().minusSeconds(60).toString()), 10));
+        longTerm.store(new MemoryEntry("future-ttl", "TTL 未过期记忆可见", MemoryEntry.MemoryType.PROJECT_FACT,
+                Map.of("scope", "global", "expiresAt", Instant.now().plusSeconds(3600).toString()), 10));
+
+        var results = retriever.retrieveLongTerm("记忆", 10, null);
+
+        assertTrue(results.stream().anyMatch(e -> e.getId().equals("legacy")));
+        assertTrue(results.stream().anyMatch(e -> e.getId().equals("active")));
+        assertTrue(results.stream().anyMatch(e -> e.getId().equals("future-ttl")));
+        assertTrue(results.stream().noneMatch(e -> e.getId().equals("revoked")));
+        assertTrue(results.stream().noneMatch(e -> e.getId().equals("deleted")));
+        assertTrue(results.stream().noneMatch(e -> e.getId().equals("expired")));
+        assertTrue(results.stream().noneMatch(e -> e.getId().equals("past-ttl")));
     }
 
     @Test

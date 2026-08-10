@@ -604,7 +604,9 @@ public class PlanExecuteAgent {
         // 注入长期记忆上下文
         String memoryContext = memoryManager.buildContextForQuery(
                 task.getDescription(),
-                memoryManager.getContextProfile().memoryContextTokens());
+                memoryManager.getContextProfile().memoryContextTokens(),
+                activeRunContext,
+                activeRunStore);
         String taskInput = buildTaskContext(goal, plan, task);
         if (!memoryContext.isEmpty()) {
             taskInput = taskInput + "\n\n" + memoryContext;
@@ -693,7 +695,7 @@ public class PlanExecuteAgent {
             if (!response.hasToolCalls()) {
                 memoryManager.recordTokenUsage(totalInputTokens, totalOutputTokens, totalCachedInputTokens);
                 // 子任务结束，增量提取长期记忆
-                memoryManager.extractFactsIncrementalAsync(messages);
+                memoryManager.extractFactsIncrementalAsync(messages, activeRunContext, activeRunStore);
                 if (!allResults.isEmpty() && (response.content() == null || response.content().isBlank())) {
                     String toolOnlyResult = allResults.toString().trim();
                     streamRenderer.finish();

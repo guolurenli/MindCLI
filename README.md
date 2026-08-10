@@ -67,8 +67,12 @@ ReAct / Plan / Multi-Agent 的工具调用都会先进入 Agent Runtime 的 `Too
 |---|---|
 | `/save <事实>` | 保存长期记忆（项目级）；`--global` 存为跨项目通用 |
 | `/memory` | 查看记忆系统状态 |
+| `/memory policy` | 查看自动提取、候选、存储、检索过滤和审计事件策略 |
 | `/memory list` / `search <关键词>` / `delete <id>` | 管理长期记忆 |
 | `/clear` | 清空当前对话历史与短期记忆 |
+
+长期记忆默认只通过 `/save` 或用户明确要求保存。自动长期记忆提取默认关闭；如显式设置 `-Dmindcli.memory.autoExtract.enabled=true` 或 `MINDCLI_MEMORY_AUTO_EXTRACT=true`，系统只会生成待确认记忆候选，不会直接写入长期记忆。
+长期记忆注入 prompt 前会跳过 `status=revoked/deleted/expired` 或 `expiresAt` 已过期的条目。
 
 ### MCP 管理
 

@@ -2,16 +2,23 @@ package com.mindcli.memory;
 
 import com.mindcli.llm.LlmClient;
 import com.mindcli.context.ContextProfile;
+import com.mindcli.runtime.agent.AgentRunContext;
+import com.mindcli.runtime.agent.AgentRunEvent;
+import com.mindcli.runtime.agent.AgentRunEventType;
+import com.mindcli.runtime.agent.RunStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 
 /**
  * Memory 管理器 - Memory 系统的门面类
@@ -21,9 +28,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class MemoryManager {
     private static final Logger log = LoggerFactory.getLogger(MemoryManager.class);
+    private static final String AUTO_EXTRACT_PROPERTY = "mindcli.memory.autoExtract.enabled";
+    private static final String AUTO_EXTRACT_ENV = "MINDCLI_MEMORY_AUTO_EXTRACT";
     private final LongTermMemory longTermMemory;
     private final MemoryExtractor extractor;
     private final MemoryRetriever retriever;
+    private final List<MemoryProposal> pendingMemoryProposals;
     private TokenBudget tokenBudget;
     private ContextProfile contextProfile;
     private String currentProject;
@@ -52,6 +62,7 @@ public class MemoryManager {
         this.longTermMemory = longTermMemory != null ? longTermMemory : new LongTermMemory();
         this.extractor = new MemoryExtractor(llmClient, this.longTermMemory);
         this.retriever = new MemoryRetriever(llmClient, this.longTermMemory);
+        this.pendingMemoryProposals = Collections.synchronizedList(new ArrayList<>());
         this.tokenBudget = new TokenBudget(contextProfile.maxContextWindow());
         this.currentProject = defaultProjectKey();
     }
@@ -76,14 +87,19 @@ public class MemoryManager {
     /**
      * 从对话历史中提取事实并存入长期记忆。
      * 替代旧版 ContextCompressor.extractFacts()。
+     * 默认关闭自动提取；只有显式开启兼容开关时才执行。
      * 如果本轮已有手动记忆写入，跳过自动提取（互斥保护）。
      */
     public void extractFacts(List<LlmClient.Message> conversationHistory) {
+        if (!isAutoExtractEnabled()) {
+            log.debug("自动长期记忆提取默认关闭，跳过本轮提取");
+            return;
+        }
         if (memoryWrittenThisRun.getAndSet(false)) {
             log.debug("本轮已有手动记忆写入，跳过自动提取");
             return;
         }
-        extractor.extractFacts(conversationHistory);
+        addPendingProposals(extractor.extractFactProposalsIncremental(conversationHistory));
     }
 
     /**
@@ -102,8 +118,19 @@ public class MemoryManager {
      * 对齐 Claude Code Stop hook：hook 每次只收到新增 exchange，不是整段历史。
      */
     public void extractFactsIncrementalAsync(List<LlmClient.Message> conversationHistory) {
+        extractFactsIncrementalAsync(conversationHistory, null, null);
+    }
+
+    public void extractFactsIncrementalAsync(List<LlmClient.Message> conversationHistory,
+                                             AgentRunContext runContext, RunStore runStore) {
+        if (!isAutoExtractEnabled()) {
+            log.debug("自动长期记忆提取默认关闭，跳过本轮增量提取");
+            return;
+        }
         CompletableFuture.runAsync(() -> {
-            extractor.extractFactsIncremental(conversationHistory);
+            List<MemoryProposal> proposals = extractor.extractFactProposalsIncremental(conversationHistory);
+            addPendingProposals(proposals);
+            appendMemoryProposedEvent(runContext, runStore, proposals);
         });
     }
 
@@ -161,14 +188,32 @@ public class MemoryManager {
      * 构建用于 LLM 的记忆上下文
      */
     public String buildContextForQuery(String query, int maxTokens) {
-        return retriever.buildContextForQuery(query, maxTokens, currentProject);
+        return buildContextForQuery(query, maxTokens, Set.of(), null, null);
+    }
+
+    public String buildContextForQuery(String query, int maxTokens, AgentRunContext runContext, RunStore runStore) {
+        return buildContextForQuery(query, maxTokens, Set.of(), runContext, runStore);
     }
 
     /**
      * 构建用于 LLM 的记忆上下文，支持工具感知过滤。
      */
     public String buildContextForQuery(String query, int maxTokens, Set<String> activeToolNames) {
-        return retriever.buildContextForQuery(query, maxTokens, currentProject, activeToolNames);
+        return buildContextForQuery(query, maxTokens, activeToolNames, null, null);
+    }
+
+    public String buildContextForQuery(String query, int maxTokens, Set<String> activeToolNames,
+                                       AgentRunContext runContext, RunStore runStore) {
+        Set<String> effectiveToolNames = activeToolNames == null ? Set.of() : activeToolNames;
+        String context = retriever.buildContextForQuery(query, maxTokens, currentProject, effectiveToolNames);
+        appendMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_CONTEXT_BUILT, Map.of(
+                "queryLength", String.valueOf(query == null ? 0 : query.length()),
+                "maxTokens", String.valueOf(maxTokens),
+                "activeToolCount", String.valueOf(effectiveToolNames.size()),
+                "contextChars", String.valueOf(context.length()),
+                "injected", String.valueOf(!context.isBlank())
+        ));
+        return context;
     }
 
     /**
@@ -198,6 +243,22 @@ public class MemoryManager {
                 tokenBudget.getUsageReport();
     }
 
+    public String getPolicyStatus() {
+        boolean autoExtractEnabled = isAutoExtractEnabled();
+        MemoryStore store = getMemoryStore();
+        String storeAdapter = store.getClass().getSimpleName();
+        String storePath = store.storagePath()
+                .map(Path::toString)
+                .orElse("n/a");
+        return "自动提取: " + (autoExtractEnabled ? "enabled" : "disabled") + "\n" +
+                "自动提取模式: " + (autoExtractEnabled ? "proposal-only" : "disabled") + "\n" +
+                "待确认候选: " + listPendingMemoryProposals().size() + "\n" +
+                "存储适配器: " + storeAdapter + "\n" +
+                "存储路径: " + storePath + "\n" +
+                "检索治理: 过滤 status=revoked/deleted/expired 和已过期 expiresAt\n" +
+                "审计事件: MEMORY_CONTEXT_BUILT, MEMORY_PROPOSED";
+    }
+
     /**
      * 新一轮对话开始时调用，重置本轮已注入记忆的去重集合。
      */
@@ -207,11 +268,69 @@ public class MemoryManager {
 
     // Getters
     public LongTermMemory getLongTermMemory() { return longTermMemory; }
+    public MemoryStore getMemoryStore() { return longTermMemory; }
     public MemoryRetriever getMemoryRetriever() { return retriever; }
     public TokenBudget getTokenBudget() { return tokenBudget; }
     public ContextProfile getContextProfile() { return contextProfile; }
 
     public String getCurrentProject() { return currentProject; }
+
+    public List<MemoryProposal> listPendingMemoryProposals() {
+        synchronized (pendingMemoryProposals) {
+            return List.copyOf(pendingMemoryProposals);
+        }
+    }
+
+    private void addPendingProposals(List<MemoryProposal> proposals) {
+        if (proposals == null || proposals.isEmpty()) {
+            return;
+        }
+        synchronized (pendingMemoryProposals) {
+            pendingMemoryProposals.addAll(proposals);
+        }
+        log.info("生成了 {} 条待确认长期记忆候选", proposals.size());
+    }
+
+    private void appendMemoryProposedEvent(AgentRunContext runContext, RunStore runStore,
+                                           List<MemoryProposal> proposals) {
+        if (proposals == null || proposals.isEmpty()) {
+            return;
+        }
+        appendMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_PROPOSED, Map.of(
+                "proposalCount", String.valueOf(proposals.size()),
+                "proposalIds", proposals.stream().map(MemoryProposal::id).collect(Collectors.joining(",")),
+                "proposalTypes", proposals.stream()
+                        .map(proposal -> proposal.type().name())
+                        .collect(Collectors.joining(",")),
+                "source", "extractor"
+        ));
+    }
+
+    private void appendMemoryEvent(AgentRunContext runContext, RunStore runStore, AgentRunEventType type,
+                                   Map<String, String> attributes) {
+        if (runContext == null || runStore == null) {
+            return;
+        }
+        try {
+            runStore.append(AgentRunEvent.of(runContext, type, attributes));
+        } catch (RuntimeException e) {
+            log.warn("写入记忆审计事件失败: type={}, error={}", type, e.getMessage());
+        }
+    }
+
+    static boolean isAutoExtractEnabled() {
+        String value = System.getProperty(AUTO_EXTRACT_PROPERTY);
+        if (value == null || value.isBlank()) {
+            value = System.getenv(AUTO_EXTRACT_ENV);
+        }
+        if (value == null) {
+            return false;
+        }
+        return switch (value.trim().toLowerCase()) {
+            case "true", "1", "yes", "on" -> true;
+            default -> false;
+        };
+    }
 
     private static String normalizeScope(String scope) {
         if (scope == null || scope.isBlank()) {

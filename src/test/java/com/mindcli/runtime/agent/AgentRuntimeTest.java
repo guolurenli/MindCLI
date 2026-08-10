@@ -101,6 +101,7 @@ class AgentRuntimeTest {
         assertEventTypes(runStore.events(context.runId()),
                 AgentRunEventType.RUN_STARTED,
                 AgentRunEventType.MODE_SELECTED,
+                AgentRunEventType.MEMORY_CONTEXT_BUILT,
                 AgentRunEventType.LLM_RESPONSE,
                 AgentRunEventType.RUN_FINISHED);
     }
@@ -122,6 +123,7 @@ class AgentRuntimeTest {
                 AgentRunEventType.SNAPSHOT_CREATED,
                 AgentRunEventType.RUN_STARTED,
                 AgentRunEventType.MODE_SELECTED,
+                AgentRunEventType.MEMORY_CONTEXT_BUILT,
                 AgentRunEventType.LLM_RESPONSE,
                 AgentRunEventType.RUN_FINISHED,
                 AgentRunEventType.SNAPSHOT_CREATED);
@@ -143,6 +145,7 @@ class AgentRuntimeTest {
         assertEventTypes(runStore.events(context.runId()),
                 AgentRunEventType.RUN_STARTED,
                 AgentRunEventType.MODE_SELECTED,
+                AgentRunEventType.MEMORY_CONTEXT_BUILT,
                 AgentRunEventType.RUN_FAILED);
     }
 

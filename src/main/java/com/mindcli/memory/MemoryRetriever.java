@@ -25,14 +25,14 @@ public class MemoryRetriever {
     private static final Logger log = LoggerFactory.getLogger(MemoryRetriever.class);
 
     private final LlmClient llmClient;
-    private final LongTermMemory longTermMemory;
+    private final MemoryStore memoryStore;
 
     /** 本轮对话中已注入的记忆 id 集合，防止同一条记忆反复注入 */
     private final Set<String> surfacedThisTurn = new HashSet<>();
 
-    public MemoryRetriever(LlmClient llmClient, LongTermMemory longTermMemory) {
+    public MemoryRetriever(LlmClient llmClient, MemoryStore memoryStore) {
         this.llmClient = llmClient;
-        this.longTermMemory = longTermMemory;
+        this.memoryStore = memoryStore;
     }
 
     /** 新一轮对话开始时调用，重置去重集合 */
@@ -57,8 +57,8 @@ public class MemoryRetriever {
      */
     public List<MemoryEntry> retrieveLongTerm(String query, int limit, String projectKey,
                                                Set<String> activeToolNames) {
-        List<MemoryEntry> candidates = longTermMemory.getAll().stream()
-                .filter(e -> LongTermMemory.isVisibleInProject(e, projectKey))
+        List<MemoryEntry> candidates = memoryStore.getAll(projectKey).stream()
+                .filter(e -> !isGovernedOut(e))
                 .filter(e -> !surfacedThisTurn.contains(e.getId()))
                 .filter(e -> !isToolRefNoise(e, activeToolNames))
                 .collect(Collectors.toList());
@@ -129,6 +129,32 @@ public class MemoryRetriever {
             return false;
         }
         return activeToolNames.stream().anyMatch(tool -> content.contains(tool.toLowerCase()));
+    }
+
+    /** 过滤被治理状态排除或 TTL 已过期的记忆。 */
+    private static boolean isGovernedOut(MemoryEntry entry) {
+        Map<String, String> metadata = entry.getMetadata();
+        String status = metadata.get("status");
+        if (status != null) {
+            switch (status.trim().toLowerCase()) {
+                case "revoked", "deleted", "expired" -> {
+                    return true;
+                }
+                default -> {
+                    // keep legacy/active/unknown statuses visible in Phase 4
+                }
+            }
+        }
+
+        String expiresAt = metadata.get("expiresAt");
+        if (expiresAt == null || expiresAt.isBlank()) {
+            return false;
+        }
+        try {
+            return !Instant.parse(expiresAt.trim()).isAfter(Instant.now());
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private List<MemoryEntry> llmRoutedRetrieve(

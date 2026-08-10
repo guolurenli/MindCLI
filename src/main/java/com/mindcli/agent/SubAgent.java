@@ -251,7 +251,9 @@ public class SubAgent {
             memoryManager.resetSurfaced();
             String memoryContext = memoryManager.buildContextForQuery(
                     taskContent,
-                    memoryManager.getContextProfile().memoryContextTokens());
+                    memoryManager.getContextProfile().memoryContextTokens(),
+                    activeRunContext.get(),
+                    activeRunStore.get());
             if (!memoryContext.isEmpty()) {
                 taskContent = "## 相关长期记忆\n\n" + memoryContext + "\n\n## 当前任务\n\n" + taskContent;
             }
@@ -328,7 +330,10 @@ public class SubAgent {
 
                 // 增量提取长期记忆，子任务中的关键发现不丢失
                 if (memoryManager != null) {
-                    memoryManager.extractFactsIncrementalAsync(conversationHistory);
+                    memoryManager.extractFactsIncrementalAsync(
+                            conversationHistory,
+                            activeRunContext.get(),
+                            activeRunStore.get());
                 }
 
                 return AgentMessage.result(name, role, response.content());

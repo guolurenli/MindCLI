@@ -5,10 +5,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 
 /**
  * 记忆提取器 - 一次 LLM 调用从对话历史中提取分类长期记忆
@@ -19,7 +19,7 @@ import java.util.UUID;
 public class MemoryExtractor {
     private static final Logger log = LoggerFactory.getLogger(MemoryExtractor.class);
     private final LlmClient llmClient;
-    private final LongTermMemory longTermMemory;
+    private final MemoryStore memoryStore;
 
     /**
      * 上次提取时 conversationHistory 的消息数，用于增量提取。
@@ -60,9 +60,9 @@ public class MemoryExtractor {
         如果没有任何值得长期记住的内容，请输出 NO_FACTS。
         """;
 
-    public MemoryExtractor(LlmClient llmClient, LongTermMemory longTermMemory) {
+    public MemoryExtractor(LlmClient llmClient, MemoryStore memoryStore) {
         this.llmClient = llmClient;
-        this.longTermMemory = longTermMemory;
+        this.memoryStore = memoryStore;
     }
 
     public void setLlmClient(LlmClient llmClient) {
@@ -88,7 +88,16 @@ public class MemoryExtractor {
      *   lastExtractedSize 自动重置到当前 size，下一轮提取从新的尾部重新开始
      */
     public synchronized void extractFactsIncremental(List<LlmClient.Message> conversationHistory) {
-        if (conversationHistory == null || conversationHistory.isEmpty()) return;
+        List<MemoryProposal> proposals = extractFactProposalsIncremental(conversationHistory);
+        storeProposals(proposals);
+    }
+
+    /**
+     * 增量提取长期记忆候选, 不直接写入长期记忆。
+     */
+    public synchronized List<MemoryProposal> extractFactProposalsIncremental(
+            List<LlmClient.Message> conversationHistory) {
+        if (conversationHistory == null || conversationHistory.isEmpty()) return List.of();
 
         // trimConversationHistory 截断后 size 可能回退，此时重置位置
         if (lastExtractedSize > conversationHistory.size()) {
@@ -105,7 +114,7 @@ public class MemoryExtractor {
 
         // 新增内容太少，攒着下次一起提（至少 2 条真实 user 消息才算一轮有效对话）
         long newUserCount = memoryMessages.stream().filter(m -> "user".equals(m.role())).count();
-        if (newUserCount < 2) return;
+        if (newUserCount < 2) return List.of();
 
         // 标记本次提取位置
         lastExtractedSize = conversationHistory.size();
@@ -114,16 +123,17 @@ public class MemoryExtractor {
                 .map(m -> m.role().toUpperCase() + ": " + truncate(m.content(), 2000))
                 .reduce("", (a, b) -> a + "\n\n" + b);
 
-        if (dialogue.length() < 500) return;
+        if (dialogue.length() < 500) return List.of();
 
         try {
             String result = doExtractRound(dialogue, null, 0, 1);
             if (result != null && !"NO_FACTS".equals(result.trim())) {
-                storeExtractedFacts(result);
+                return parseExtractedFacts(result);
             }
         } catch (IOException e) {
             log.warn("增量事实提取失败，跳过: {}", e.getMessage());
         }
+        return List.of();
     }
 
     /**
@@ -158,7 +168,7 @@ public class MemoryExtractor {
             }
             // 最终轮结果已包含确认后的事实，直接解析存储
             if (result != null && !"NO_FACTS".equals(result.trim())) {
-                storeExtractedFacts(result);
+                storeProposals(parseExtractedFacts(result));
             }
         } catch (IOException e) {
             log.warn("事实提取 LLM 调用失败，跳过本轮记忆提取: {}", e.getMessage());
@@ -209,8 +219,8 @@ public class MemoryExtractor {
         return !(content.startsWith("工具 ") && content.contains(" 返回了图片内容"));
     }
 
-    private void storeExtractedFacts(String result) {
-        int count = 0;
+    private List<MemoryProposal> parseExtractedFacts(String result) {
+        List<MemoryProposal> proposals = new ArrayList<>();
         for (String line : result.split("\n")) {
             String trimmed = line.trim();
             if (trimmed.isEmpty() || "NO_FACTS".equals(trimmed)) continue;
@@ -244,15 +254,28 @@ public class MemoryExtractor {
                 continue;
             }
 
-            MemoryEntry entry = new MemoryEntry(
-                    "fact-" + UUID.randomUUID().toString().substring(0, 8),
+            proposals.add(MemoryProposal.proposed(
                     name,
                     factBody,
                     type,
-                    Map.of("source", "extractor"),
-                    MemoryEntry.estimateTokens(factBody)
+                    Map.of("source", "extractor")
+            ));
+        }
+        return proposals;
+    }
+
+    private void storeProposals(List<MemoryProposal> proposals) {
+        int count = 0;
+        for (MemoryProposal proposal : proposals) {
+            MemoryEntry entry = new MemoryEntry(
+                    proposal.id().replaceFirst("^proposal-", "fact-"),
+                    proposal.name(),
+                    proposal.content(),
+                    proposal.type(),
+                    proposal.metadata(),
+                    MemoryEntry.estimateTokens(proposal.content())
             );
-            longTermMemory.store(entry);
+            memoryStore.store(entry);
             count++;
         }
         if (count > 0) {

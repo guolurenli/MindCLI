@@ -125,12 +125,17 @@ public final class TuiSessionController implements AutoCloseable {
         }
         if ("/memory".equals(lower) || "/mem".equals(lower)) {
             appendSystem(reactAgent.getMemoryManager().getSystemStatus()
+                    + "\n/memory policy - 查看记忆治理策略"
                     + "\n/memory list - 查看长期记忆"
                     + "\n/memory search <关键词> - 搜索当前项目可见长期记忆"
                     + "\n/memory delete <id> - 删除单条长期记忆"
                     + "\n/memory clear - 清空长期记忆"
                     + "\n/save <事实> - 保存项目级长期记忆"
                     + "\n/save --global <事实> - 保存全局长期记忆");
+            return true;
+        }
+        if ("/memory policy".equals(lower) || "/mem policy".equals(lower)) {
+            appendSystem(reactAgent.getMemoryManager().getPolicyStatus());
             return true;
         }
         if ("/memory list".equals(lower) || "/mem list".equals(lower)) {

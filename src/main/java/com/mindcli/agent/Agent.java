@@ -174,7 +174,7 @@ public class Agent {
                 .map(LlmClient.Tool::name)
                 .collect(java.util.stream.Collectors.toSet());
         String memoryContext = memoryManager.buildContextForQuery(
-                userInput, contextProfile.memoryContextTokens(), activeToolNames);
+                userInput, contextProfile.memoryContextTokens(), activeToolNames, runContext, effectiveRunStore);
 
         // 预加载 MEMORY.md 索引（会话级缓存，只在首次运行时加载）
         String memoryIndexSection = buildMemoryIndexSection();
@@ -250,10 +250,11 @@ public class Agent {
                         streamRenderer,
                         observer));
 
-        return handleLoopResult(runContext, loopResult, budget, streamRenderer, startNanos);
+        return handleLoopResult(runContext, effectiveRunStore, loopResult, budget, streamRenderer, startNanos);
     }
 
-    private AgentRunResult handleLoopResult(AgentRunContext runContext, AgentLoopResult loopResult, AgentBudget budget,
+    private AgentRunResult handleLoopResult(AgentRunContext runContext, RunStore effectiveRunStore,
+                                            AgentLoopResult loopResult, AgentBudget budget,
                                             StreamRenderer streamRenderer, long startNanos) {
         if (loopResult.status() == AgentLoopStatus.CANCELLED) {
             log.info("ReAct run cancelled");
@@ -283,7 +284,7 @@ public class Agent {
 
         // 增量异步提取本轮新增的长期记忆事实。
         // 对齐 Claude Code Stop hook：只传本轮新增 exchange，不重传整段历史。
-        memoryManager.extractFactsIncrementalAsync(conversationHistory);
+        memoryManager.extractFactsIncrementalAsync(conversationHistory, runContext, effectiveRunStore);
         memoryManager.recordTokenUsage(
                 loopResult.inputTokens(),
                 loopResult.outputTokens(),

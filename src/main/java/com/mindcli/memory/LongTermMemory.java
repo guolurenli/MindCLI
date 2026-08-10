@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
@@ -27,7 +28,7 @@ import java.util.stream.Collectors;
  * 保留 ConcurrentHashMap 作为内存缓存层，读写延迟为零。
  * 存储从单 JSON 全量序列化改为多 .md 文件增量更新，I/O 减少 98%。
  */
-public class LongTermMemory implements Memory {
+public class LongTermMemory implements MemoryStore {
     private static final Logger log = LoggerFactory.getLogger(LongTermMemory.class);
     private static final String STORAGE_DIR_PROPERTY = "mindcli.memory.dir";
     private static final String STORAGE_DIR_ENV = "MINDCLI_MEMORY_DIR";
@@ -166,6 +167,11 @@ public class LongTermMemory implements Memory {
      */
     public File getStorageDir() {
         return memoryDir;
+    }
+
+    @Override
+    public Optional<Path> storagePath() {
+        return Optional.of(memoryDir.toPath());
     }
 
     public static boolean isVisibleInProject(MemoryEntry entry, String projectKey) {

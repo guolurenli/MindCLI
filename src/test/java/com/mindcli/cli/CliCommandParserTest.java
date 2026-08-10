@@ -211,6 +211,18 @@ class CliCommandParserTest {
     }
 
     @Test
+    void parsesMemoryPolicySlashCommand() {
+        CliCommandParser.ParsedCommand command = CliCommandParser.parse("/memory policy");
+
+        assertEquals(CliCommandParser.CommandType.MEMORY_POLICY, command.type());
+        assertNull(command.payload());
+
+        CliCommandParser.ParsedCommand alias = CliCommandParser.parse("/mem policy");
+        assertEquals(CliCommandParser.CommandType.MEMORY_POLICY, alias.type());
+        assertNull(alias.payload());
+    }
+
+    @Test
     void parsesMemoryClearSlashCommand() {
         CliCommandParser.ParsedCommand command = CliCommandParser.parse("/memory clear");
 

@@ -497,11 +497,18 @@ public class Main {
                         ui.println("📋 记忆系统状态：");
                         ui.println(reactAgent.getMemoryManager().getSystemStatus());
                         ui.println("   当前项目作用域: " + reactAgent.getMemoryManager().getCurrentProject());
+                        ui.println("   /memory policy - 查看记忆治理策略");
                         ui.println("   /memory list - 查看长期记忆");
                         ui.println("   /memory search <关键词> - 搜索当前项目可见长期记忆");
                         ui.println("   /memory delete <id> - 删除单条长期记忆");
                         ui.println("   /memory clear - 清空长期记忆");
                         ui.println("   /save <事实> - 保存项目级长期记忆；/save --global <事实> 保存全局记忆");
+                        ui.println();
+                        continue;
+                    }
+                    case MEMORY_POLICY -> {
+                        ui.println("📋 记忆治理策略：");
+                        ui.println(reactAgent.getMemoryManager().getPolicyStatus());
                         ui.println();
                         continue;
                     }
@@ -1594,6 +1601,7 @@ public class Main {
                 new SlashCommandHint("/history clear", "/history clear", "清空本机输入历史"),
                 new SlashCommandHint("/context", "/context", "查看上下文和记忆状态"),
                 new SlashCommandHint("/memory", "/memory", "查看记忆状态"),
+                new SlashCommandHint("/memory policy", "/memory policy", "查看记忆治理策略"),
                 new SlashCommandHint("/memory list", "/memory list", "查看长期记忆列表"),
                 new SlashCommandHint("/memory search ", "/memory search <关键词>", "搜索当前项目可见长期记忆"),
                 new SlashCommandHint("/memory delete ", "/memory delete <id>", "删除单条长期记忆"),

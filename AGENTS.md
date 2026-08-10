@@ -123,9 +123,11 @@ src/main/java/com/mindcli/
 ### Memory
 
 - 长期记忆只通过 `/save` 或用户明确要求保存；不要自动提取事实
+- 自动长期记忆提取默认关闭；即使显式设置 `mindcli.memory.autoExtract.enabled=true` 或 `MINDCLI_MEMORY_AUTO_EXTRACT=true`，也只能生成 `MemoryProposal` 候选，不得直接写入长期记忆。
 - `PAI.md` 管团队共享的项目规则，长期记忆管个人或项目作用域的稳定事实；不要把一次性协作经验写进 `PAI.md`
 - 长期记忆只保存跨会话稳定事实，不保存临时指令；默认项目级作用域，跨项目通用偏好才用 global
-- 长期记忆必须可审计和可删除：`/memory list` / `/memory search <关键词>` / `/memory delete <id>` / `/memory clear`
+- 长期记忆注入 prompt 前必须过滤 `status=revoked/deleted/expired` 或 `expiresAt` 已过期的条目；缺失这些治理 metadata 的旧记忆按原兼容规则可见。
+- 长期记忆必须可审计和可删除：`/memory policy` / `/memory list` / `/memory search <关键词>` / `/memory delete <id>` / `/memory clear`
 - 两道压缩不要混淆：shortTermMemory 压缩 vs conversationHistory 压缩（后者是防 window 超限的关键）
 - 自动压缩阈值按 Claude Code 风格预留摘要输出和安全缓冲：大窗口使用 `window - 20k - 13k`，例如 200k 窗口约 167k 触发、1M 窗口约 967k 触发；小窗口按比例缩小预留。
 
