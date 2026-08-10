@@ -1,9 +1,13 @@
 package com.mindcli.agent;
 
+import com.mindcli.agent.profile.AgentProfile;
 import com.mindcli.llm.GLMClient;
 import com.mindcli.llm.LlmClient;
 import com.mindcli.runtime.agent.AgentMode;
+import com.mindcli.runtime.agent.AgentRunEvent;
+import com.mindcli.runtime.agent.AgentRunEventType;
 import com.mindcli.runtime.agent.AgentRunContext;
+import com.mindcli.runtime.agent.RunStore;
 import com.mindcli.runtime.agent.ToolDispatcher;
 import com.mindcli.tool.ToolRegistry;
 import com.mindcli.tool.ToolRegistry.ToolExecutionResult;
@@ -40,8 +44,72 @@ class SubAgentTest {
                 new GLMClient("test-key"), new ToolRegistry())));
         assertTrue(invokeShouldUseTools(new SubAgent("worker", AgentRole.WORKER,
                 new GLMClient("test-key"), new ToolRegistry())));
-        assertFalse(invokeShouldUseTools(new SubAgent("reviewer", AgentRole.REVIEWER,
+        assertTrue(invokeShouldUseTools(new SubAgent("reviewer", AgentRole.REVIEWER,
                 new GLMClient("test-key"), new ToolRegistry())));
+    }
+
+    @Test
+    void profilePolicyDenialsAreRecordedWithSubAgentMetadata() {
+        MultiCallStreamClient llm = new MultiCallStreamClient(List.of(
+                new CallScript(
+                        listener -> listener.onContentDelta("尝试写入"),
+                        new LlmClient.ChatResponse(
+                                "assistant",
+                                "尝试写入",
+                                null,
+                                List.of(new LlmClient.ToolCall(
+                                        "call_denied",
+                                        new LlmClient.ToolCall.Function("write_file",
+                                                "{\"path\":\"blocked.txt\",\"content\":\"x\"}")
+                                )),
+                                10,
+                                5
+                        )
+                ),
+                new CallScript(
+                        listener -> listener.onContentDelta("无法写入，权限不足"),
+                        new LlmClient.ChatResponse(
+                                "assistant",
+                                "无法写入，权限不足",
+                                null,
+                                null,
+                                10,
+                                5
+                        )
+                )
+        ));
+        AgentProfile reader = new AgentProfile(
+                "code-reader",
+                AgentRole.WORKER,
+                "只读分析",
+                List.of("read_file"),
+                List.of(),
+                List.of(),
+                "auto",
+                1,
+                "READ_ONLY",
+                "PARENT_SUMMARY",
+                "balanced");
+        ToolRegistry registry = new ToolRegistry();
+        registry.setProjectPath(tempDir.toString());
+        SubAgent worker = new SubAgent(reader, llm, registry);
+        RecordingRunStore runStore = new RecordingRunStore();
+        AgentRunContext context = AgentRunContext.create(AgentMode.TEAM, "task", tempDir.toString());
+
+        worker.executeWithRunContext(
+                AgentMessage.task("orchestrator", "写入 blocked.txt"),
+                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
+                context,
+                runStore);
+
+        AgentRunEvent outcome = runStore.allEvents().stream()
+                .filter(event -> event.type() == AgentRunEventType.TOOL_OUTCOME)
+                .findFirst()
+                .orElseThrow();
+        assertEquals("DENIED_BY_POLICY", outcome.attributes().get("status"));
+        assertEquals("code-reader", outcome.attributes().get("profileName"));
+        assertEquals("READ_ONLY", outcome.attributes().get("permissionMode"));
+        assertEquals("DENY", outcome.attributes().get("policyDecision"));
     }
 
     @Test
@@ -225,6 +293,26 @@ class SubAgentTest {
         Method method = SubAgent.class.getDeclaredMethod("shouldUseTools");
         method.setAccessible(true);
         return (boolean) method.invoke(agent);
+    }
+
+    private static final class RecordingRunStore implements RunStore {
+        private final List<AgentRunEvent> events = new java.util.ArrayList<>();
+
+        @Override
+        public void append(AgentRunEvent event) {
+            events.add(event);
+        }
+
+        @Override
+        public List<AgentRunEvent> events(String runId) {
+            return events.stream()
+                    .filter(event -> event.runId().equals(runId))
+                    .toList();
+        }
+
+        private List<AgentRunEvent> allEvents() {
+            return List.copyOf(events);
+        }
     }
 
     private static final class RecordingToolRegistry extends ToolRegistry {

@@ -88,6 +88,31 @@ class ToolDispatcherTest {
     }
 
     @Test
+    void contextDispatchReturnsDeniedOutcomeWhenProfilePolicyRejects() {
+        AtomicBoolean executorCalled = new AtomicBoolean(false);
+        ToolDispatcher dispatcher = dispatcher(invocations -> {
+            executorCalled.set(true);
+            return List.of();
+        }, new HookManager(List.of(event -> HookDecision.allow())));
+        AgentRunContext context = AgentRunContext.create(AgentMode.TEAM, "test", "workspace", java.util.Map.of(
+                "profileName", "code-reader",
+                "profileRole", "WORKER",
+                "permissionMode", "READ_ONLY",
+                "allowedTools", "read_file"));
+
+        List<ToolOutcome> outcomes = dispatcher.dispatch(List.of(
+                toolCall("call_1", "write_file", "{\"path\":\"a.txt\",\"content\":\"x\"}")
+        ), context);
+
+        assertEquals(1, outcomes.size());
+        assertEquals(ToolOutcomeStatus.DENIED_BY_POLICY, outcomes.get(0).status());
+        assertEquals("code-reader", outcomes.get(0).metadata().get("profileName"));
+        assertEquals("DENY", outcomes.get(0).metadata().get("policyDecision"));
+        assertTrue(outcomes.get(0).metadata().get("policyReason").contains("read-only"));
+        assertFalse(executorCalled.get());
+    }
+
+    @Test
     void preHookDenialsFireTerminalErrorHook() {
         List<HookType> seenTypes = new ArrayList<>();
         HookManager hookManager = new HookManager(List.of(event -> {

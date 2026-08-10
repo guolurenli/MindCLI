@@ -148,6 +148,34 @@ class AgentOrchestratorTest {
     }
 
     @Test
+    void shouldCarryProfileRequirementsFromPlanSchema() {
+        AgentOrchestrator orchestrator = new AgentOrchestrator(new GLMClient("test-key"));
+        String planJson = """
+                {
+                    "schemaVersion": 3,
+                    "summary": "写代码",
+                    "tasks": [
+                        {
+                            "id": "task_1",
+                            "description": "修改文件",
+                            "type": "FILE_WRITE",
+                            "dependencies": [],
+                            "requiredTools": ["read_file", "write_file"],
+                            "preferredAgent": "code-writer",
+                            "riskLevel": "medium"
+                        }
+                    ]
+                }
+                """;
+
+        List<AgentOrchestrator.ExecutionStep> steps = orchestrator.parsePlan(planJson);
+
+        assertEquals(List.of("read_file", "write_file"), steps.get(0).requiredTools());
+        assertEquals("code-writer", steps.get(0).preferredAgent());
+        assertEquals("medium", steps.get(0).riskLevel());
+    }
+
+    @Test
     void shouldRejectUnknownTaskType() {
         AgentOrchestrator orchestrator = new AgentOrchestrator(new GLMClient("test-key"));
         String planJson = """
@@ -509,6 +537,10 @@ class AgentOrchestratorTest {
         assertEquals(Set.of("planner", "worker", "reviewer"),
                 childStarts.stream().map(event -> event.attributes().get("role")).collect(toSet()));
         assertTrue(childStarts.stream()
+                .allMatch(event -> event.attributes().containsKey("profileName")));
+        assertTrue(childStarts.stream()
+                .allMatch(event -> event.attributes().containsKey("permissionMode")));
+        assertTrue(childStarts.stream()
                 .filter(event -> "worker".equals(event.attributes().get("role"))
                         || "reviewer".equals(event.attributes().get("role")))
                 .allMatch(event -> "step_1".equals(event.attributes().get("stepId"))));
@@ -569,10 +601,93 @@ class AgentOrchestratorTest {
         assertEquals("write_file", outcome.attributes().get("toolName"));
         assertEquals("call_worker", outcome.attributes().get("toolId"));
         assertEquals("ALLOW", outcome.attributes().get("hookDecision"));
+        assertEquals("worker-1", outcome.attributes().get("profileName"));
+        assertEquals("LEGACY_COMPAT", outcome.attributes().get("permissionMode"));
+        assertEquals("ALLOW", outcome.attributes().get("policyDecision"));
         assertEquals("worker-1", outcome.attributes().get("agentName"));
         assertEquals("WORKER", outcome.attributes().get("role"));
         assertTrue(outcome.attributes().containsKey("parentRunId"));
         assertTrue(outcome.attributes().get("lockKeys").contains("FILE:"));
+    }
+
+    @Test
+    void teamRunSelectsPreferredProfileWhenItSatisfiesRequiredTools(@TempDir Path tempDir) throws Exception {
+        Path configDir = tempDir.resolve(".mindcli");
+        Files.createDirectories(configDir);
+        Files.writeString(configDir.resolve("agents.json"), """
+                {
+                  "profiles": [
+                    {
+                      "name": "planner",
+                      "role": "PLANNER",
+                      "tools": [],
+                      "permissionMode": "READ_ONLY"
+                    },
+                    {
+                      "name": "code-reader",
+                      "role": "WORKER",
+                      "tools": ["read_file"],
+                      "permissionMode": "READ_ONLY"
+                    },
+                    {
+                      "name": "code-writer",
+                      "role": "WORKER",
+                      "tools": ["read_file", "write_file"],
+                      "permissionMode": "WRITE_LIMITED"
+                    },
+                    {
+                      "name": "verifier",
+                      "role": "REVIEWER",
+                      "tools": ["read_file", "grep_code", "execute_command"],
+                      "commandAllowlist": ["git status --short"],
+                      "permissionMode": "READ_ONLY"
+                    }
+                  ]
+                }
+                """);
+        StubGLMClient llmClient = new StubGLMClient(List.of(
+                response("""
+                        {
+                          "schemaVersion": 3,
+                          "summary": "写入任务",
+                          "tasks": [
+                            {
+                              "id": "s1",
+                              "description": "写入文件",
+                              "type": "FILE_WRITE",
+                              "dependencies": [],
+                              "requiredTools": ["read_file", "write_file"],
+                              "preferredAgent": "code-writer",
+                              "riskLevel": "medium"
+                            }
+                          ]
+                        }
+                        """),
+                response("writer profile result"),
+                response("{\"approved\": true, \"summary\": \"通过\", \"issues\": []}")
+        ));
+        RecordingRunStore runStore = new RecordingRunStore();
+        ToolRegistry registry = new ToolRegistry();
+        registry.setProjectPath(tempDir.toString());
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                llmClient,
+                registry,
+                new NoOpMemoryManager(tempDir.toFile()),
+                System.out,
+                runStore
+        );
+
+        orchestrator.run("测试 preferred agent");
+
+        AgentRunEvent workerStart = runStore.allEvents().stream()
+                .filter(event -> event.type() == AgentRunEventType.RUN_STARTED)
+                .filter(event -> "worker".equals(event.attributes().get("role")))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("code-writer", workerStart.attributes().get("profileName"));
+        assertEquals("WRITE_LIMITED", workerStart.attributes().get("permissionMode"));
+        assertEquals("preferredAgent matched", workerStart.attributes().get("selectedReason"));
+        assertEquals("read_file,write_file", workerStart.attributes().get("requiredTools"));
     }
 
     @Test

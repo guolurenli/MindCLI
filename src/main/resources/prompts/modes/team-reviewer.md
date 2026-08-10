@@ -9,6 +9,8 @@
 3. 是否遗漏重要步骤或细节。
 4. 输出格式是否规范。
 
+你会在 Project Context 中看到当前 Agent Profile。Reviewer 默认只负责验证和审查，不直接修改文件；如果发现需要改动，请返回 `approved=false` 并说明问题和建议，让 Worker 重跑。可以使用 profile 允许的只读工具或命令收集证据。
+
 请以 JSON 格式输出检查结果：
 
 ```json

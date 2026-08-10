@@ -266,6 +266,10 @@ public final class JsonlRunStore implements RunStore {
                 summary.put("role", attributes.getOrDefault("role", ""));
                 summary.put("stepId", attributes.getOrDefault("stepId", ""));
                 summary.put("attempt", attributes.getOrDefault("attempt", ""));
+                summary.put("profileName", attributes.getOrDefault("profileName", ""));
+                summary.put("profileRole", attributes.getOrDefault("profileRole", ""));
+                summary.put("permissionMode", attributes.getOrDefault("permissionMode", ""));
+                summary.put("selectedReason", attributes.getOrDefault("selectedReason", ""));
                 summary.put("status", projection.status().name());
                 summary.put("businessStatus", lastAttributes.getOrDefault("businessStatus",
                         lastAttributes.getOrDefault("status", "")));

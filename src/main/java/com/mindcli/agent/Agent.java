@@ -148,7 +148,8 @@ public class Agent {
                 AgentMode.REACT,
                 userInput,
                 toolRegistry.getProjectPath());
-        return userFacingContent(new AgentRuntime(runStore).run(runContext, new ReActModeAdapter(this)));
+        return userFacingContent(new AgentRuntime(runStore, toolRegistry.getSnapshotService())
+                .run(runContext, new ReActModeAdapter(this)));
     }
 
     public RunStore runStore() {

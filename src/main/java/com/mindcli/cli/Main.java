@@ -37,6 +37,9 @@ import com.mindcli.rag.CodeRelation;
 import com.mindcli.rag.SearchResultFormatter;
 import com.mindcli.runtime.CancellationContext;
 import com.mindcli.runtime.CancellationToken;
+import com.mindcli.runtime.agent.RunRecoveryPlan;
+import com.mindcli.runtime.agent.RunRecoveryService;
+import com.mindcli.runtime.agent.RunStore;
 import com.mindcli.runtime.api.RuntimeApiServer;
 import com.mindcli.runtime.api.RuntimeThreadStore;
 import com.mindcli.runtime.task.DurableTaskManager;
@@ -630,6 +633,10 @@ public class Main {
                     }
                     case AUDIT_TAIL -> {
                         printAuditTail(ui, reactAgent, command.payload());
+                        continue;
+                    }
+                    case RUN_INSPECT -> {
+                        printRunInspect(ui, reactAgent.runStore(), command.payload());
                         continue;
                     }
                     case SNAPSHOT -> {
@@ -1571,6 +1578,7 @@ public class Main {
                 new SlashCommandHint("/config", "/config", "打开配置 palette（只读视图 + 切换提示）"),
                 new SlashCommandHint("/audit", "/audit", "查看今日最近 10 条危险工具审计"),
                 new SlashCommandHint("/audit ", "/audit [N]", "查看今日最近 N 条危险工具审计"),
+                new SlashCommandHint("/run inspect ", "/run inspect <runId>", "检查 run ledger 与 snapshot checkpoint"),
                 new SlashCommandHint("/snapshot", "/snapshot", "查看最近 Side-Git 快照"),
                 new SlashCommandHint("/snapshot status", "/snapshot status", "查看 Side-Git 快照状态"),
                 new SlashCommandHint("/snapshot clean", "/snapshot clean", "清理当前项目 Side-Git 快照"),
@@ -2379,6 +2387,32 @@ public class Main {
         }
     }
 
+    private static void printRunInspect(PrintStream out, RunStore runStore, String payload) {
+        String normalized = payload == null ? "" : payload.trim();
+        if (!normalized.regionMatches(true, 0, "inspect ", 0, 8)) {
+            out.println("""
+                    ❌ 用法: /run inspect <runId>
+                    """.trim());
+            out.println();
+            return;
+        }
+        String runId = normalized.substring(8).trim();
+        if (runId.isBlank()) {
+            out.println("❌ 用法: /run inspect <runId>\n");
+            return;
+        }
+        RunRecoveryPlan plan = new RunRecoveryService(runStore).inspect(runId);
+        out.println("🧾 Run Inspect");
+        out.println("   Run: " + plan.runId());
+        out.println("   Status: " + plan.stateStatus());
+        out.println("   Last event: " + (plan.lastEventType() == null ? "" : plan.lastEventType().name()));
+        out.println("   Last completed: " + (plan.lastCompletedEventType() == null ? "" : plan.lastCompletedEventType().name()));
+        out.println("   Pre-run snapshot: " + blankToNone(plan.preRunSnapshotCommitId()));
+        out.println("   Post-run snapshot: " + blankToNone(plan.postRunSnapshotCommitId()));
+        out.println("   Hint: " + plan.restoreHint());
+        out.println();
+    }
+
     private static void printRestoreCommand(PrintStream out, SnapshotService snapshotService, String payload) {
         int offset = parseAuditCount(payload, 1);
         try {
@@ -2388,6 +2422,10 @@ public class Main {
         } catch (Exception e) {
             out.println("❌ 恢复快照失败: " + e.getMessage() + "\n");
         }
+    }
+
+    private static String blankToNone(String value) {
+        return value == null || value.isBlank() ? "none" : value;
     }
 
     private static int parseAuditCount(String payload, int defaultN) {

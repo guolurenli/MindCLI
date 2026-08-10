@@ -2,6 +2,11 @@ package com.mindcli.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.mindcli.agent.profile.AgentPool;
+import com.mindcli.agent.profile.AgentProfile;
+import com.mindcli.agent.profile.AgentProfileLoader;
+import com.mindcli.agent.profile.AgentTaskRequirements;
+import com.mindcli.agent.profile.AgentToolPolicy;
 import com.mindcli.llm.LlmClient;
 import com.mindcli.memory.MemoryManager;
 import com.mindcli.plan.PlanSchema;
@@ -17,6 +22,7 @@ import com.mindcli.runtime.agent.AgentRunEventType;
 import com.mindcli.runtime.agent.AgentRunStatus;
 import com.mindcli.runtime.agent.RunStore;
 import com.mindcli.runtime.agent.RunStoreFactory;
+import com.mindcli.skill.SkillRegistry;
 import com.mindcli.tool.ToolRegistry;
 import com.mindcli.util.AnsiStyle;
 import org.slf4j.Logger;
@@ -24,6 +30,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
+import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
@@ -62,6 +69,8 @@ public class AgentOrchestrator {
     private final SubAgent reviewer;
     private final MemoryManager memoryManager;
     private final ToolRegistry toolRegistry;
+    private final List<AgentProfile> agentProfiles;
+    private final AgentPool agentPool;
     private final PrintStream out;
     private final RunStore runStore;
     private volatile RunStore activeRunStore;
@@ -69,30 +78,45 @@ public class AgentOrchestrator {
     private final PlanSchemaParser planSchemaParser = new PlanSchemaParser(mapper);
     private final PlanSchemaValidator planSchemaValidator = new PlanSchemaValidator();
     private Supplier<String> externalContextSupplier = () -> "";
+    private SkillRegistry skillRegistry;
 
     // 执行步骤的数据结构（package-private 供测试访问）
     record ExecutionStep(String id, String description, String type,
-                                  List<String> dependencies, String result,
-                                  StepStatus status) {
+                                  List<String> dependencies, List<String> requiredTools,
+                                  String preferredAgent, String riskLevel,
+                                  String result, StepStatus status) {
         static ExecutionStep pending(String id, String description, String type, List<String> dependencies) {
-            return new ExecutionStep(id, description, type, dependencies, null, StepStatus.PENDING);
+            return pending(id, description, type, dependencies, List.of(), "", "");
+        }
+
+        static ExecutionStep pending(String id, String description, String type, List<String> dependencies,
+                                     List<String> requiredTools, String preferredAgent, String riskLevel) {
+            return new ExecutionStep(id, description, type, dependencies,
+                    requiredTools == null ? List.of() : List.copyOf(requiredTools),
+                    preferredAgent == null ? "" : preferredAgent,
+                    riskLevel == null || riskLevel.isBlank() ? "low" : riskLevel,
+                    null, StepStatus.PENDING);
         }
 
         ExecutionStep withResult(String result) {
-            return new ExecutionStep(id, description, type, dependencies, result, StepStatus.COMPLETED);
+            return new ExecutionStep(id, description, type, dependencies, requiredTools,
+                    preferredAgent, riskLevel, result, StepStatus.COMPLETED);
         }
 
         ExecutionStep withFailed(String result) {
-            return new ExecutionStep(id, description, type, dependencies, result, StepStatus.FAILED);
+            return new ExecutionStep(id, description, type, dependencies, requiredTools,
+                    preferredAgent, riskLevel, result, StepStatus.FAILED);
         }
 
         ExecutionStep withSkipped(String reason) {
             return new ExecutionStep(id, description, type, dependencies,
+                    requiredTools, preferredAgent, riskLevel,
                     reason != null ? reason : "步骤被跳过", StepStatus.SKIPPED);
         }
 
         ExecutionStep started() {
-            return new ExecutionStep(id, description, type, dependencies, result, StepStatus.RUNNING);
+            return new ExecutionStep(id, description, type, dependencies, requiredTools,
+                    preferredAgent, riskLevel, result, StepStatus.RUNNING);
         }
     }
 
@@ -129,19 +153,17 @@ public class AgentOrchestrator {
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
         memoryManager.setProjectPath(this.toolRegistry.getProjectPath());
         this.toolRegistry.setScopedMemorySaver(memoryManager::storeFact);
-        this.planner = new SubAgent("planner", AgentRole.PLANNER, llmClient, toolRegistry);
-        this.workers = List.of(
-                new SubAgent("worker-1", AgentRole.WORKER, llmClient, toolRegistry),
-                new SubAgent("worker-2", AgentRole.WORKER, llmClient, toolRegistry)
-        );
-        this.reviewer = new SubAgent("reviewer", AgentRole.REVIEWER, llmClient, toolRegistry);
         this.memoryManager = memoryManager;
+        this.agentProfiles = AgentProfileLoader.load(Path.of(this.toolRegistry.getProjectPath()));
+        this.agentPool = new AgentPool(this.agentProfiles);
+        this.planner = createSubAgent(firstProfile(AgentRole.PLANNER, "planner"));
+        this.workers = this.agentProfiles.stream()
+                .filter(profile -> profile.role() == AgentRole.WORKER)
+                .map(this::createSubAgent)
+                .toList();
+        this.reviewer = createSubAgent(firstProfile(AgentRole.REVIEWER, "reviewer"));
         this.runStore = runStore == null ? RunStoreFactory.create() : runStore;
         this.activeRunStore = this.runStore;
-        // 统一记忆体系：所有 SubAgent 共享 MemoryManager
-        this.planner.setMemoryManager(memoryManager);
-        this.workers.forEach(w -> w.setMemoryManager(memoryManager));
-        this.reviewer.setMemoryManager(memoryManager);
     }
 
     public void setExternalContextSupplier(Supplier<String> externalContextSupplier) {
@@ -155,11 +177,53 @@ public class AgentOrchestrator {
      * 把 Skill 系统下发给所有 SubAgent。
      */
     public void setSkillSystem(com.mindcli.skill.SkillRegistry skillRegistry) {
+        this.skillRegistry = skillRegistry;
         planner.setSkillRegistry(skillRegistry);
         for (SubAgent worker : workers) {
             worker.setSkillRegistry(skillRegistry);
         }
         reviewer.setSkillRegistry(skillRegistry);
+    }
+
+    private AgentProfile firstProfile(AgentRole role, String fallbackName) {
+        return agentProfiles.stream()
+                .filter(profile -> profile.role() == role)
+                .findFirst()
+                .orElseGet(() -> AgentProfile.legacy(fallbackName, role));
+    }
+
+    private SubAgent createSubAgent(AgentProfile profile) {
+        SubAgent agent = new SubAgent(profile, llmClient, toolRegistry);
+        agent.setMemoryManager(memoryManager);
+        agent.setExternalContextSupplier(externalContextSupplier);
+        if (skillRegistry != null) {
+            agent.setSkillRegistry(skillRegistry);
+        }
+        return agent;
+    }
+
+    private int workerParallelism() {
+        int configured = agentProfiles.stream()
+                .filter(profile -> profile.role() == AgentRole.WORKER)
+                .mapToInt(AgentProfile::maxConcurrency)
+                .sum();
+        return Math.max(1, configured);
+    }
+
+    private AgentTaskRequirements requirementsFor(ExecutionStep step) {
+        return new AgentTaskRequirements(
+                step.id(),
+                step.requiredTools(),
+                step.preferredAgent(),
+                step.riskLevel());
+    }
+
+    private AgentTaskRequirements reviewerRequirementsFor(ExecutionStep step) {
+        return new AgentTaskRequirements(
+                step.id(),
+                List.of(),
+                "",
+                step.riskLevel());
     }
 
     /**
@@ -215,7 +279,8 @@ public class AgentOrchestrator {
 
         AgentMessage planMessage = AgentMessage.task("orchestrator",
                 "请为以下任务制定执行计划：\n" + userInput);
-        AgentRunContext plannerRunContext = childRunContext(runContext, "planner", null, 0);
+        AgentRunContext plannerRunContext = childRunContext(runContext, "planner", null, 0,
+                planner.getProfile(), null, "planner profile");
         appendChildRunStarted(plannerRunContext, "plan");
         AgentMessage planResult = planner.executeWithRunContext(planMessage, out, plannerRunContext, activeRunStore);
         appendRunEvent(plannerRunContext, AgentRunEventType.LLM_RESPONSE, Map.of(
@@ -260,7 +325,6 @@ public class AgentOrchestrator {
         // 3. 执行阶段：按依赖顺序分配给执行者
         out.println(AnsiStyle.heading("⚡ 第二阶段：执行"));
         Map<String, Integer> retryCount = new ConcurrentHashMap<>();
-        int singleStepCursor = 0;
         int batchIndex = 0;
 
         while (true) {
@@ -278,15 +342,12 @@ public class AgentOrchestrator {
             if (executable.size() == 1) {
                 // 单步批次：直接串行流式输出，保持实时打字观感
                 ExecutionStep step = executable.get(0);
-                SubAgent worker = workers.get(singleStepCursor % workers.size());
-                singleStepCursor++;
                 String context = buildStepContext(steps, step);
-                runStep(runContext, step, steps, retryCount, worker, reviewer, context, out);
-                worker.clearHistory();
+                runStep(runContext, step, steps, retryCount, context, out);
             } else {
                 // 多步批次：真正并行执行，每步用独立的 PrintStream 缓冲，完成后按 step_id 顺序 flush
                 out.println("⚡ 批次 #" + batchIndex + "：" + executable.size()
-                        + " 个独立步骤并行执行（最多 " + workers.size() + " 个并发 Worker）\n");
+                        + " 个独立步骤并行执行（最多 " + workerParallelism() + " 个并发 Worker）\n");
                 runBatchParallel(runContext, executable, steps, retryCount);
             }
         }
@@ -333,7 +394,8 @@ public class AgentOrchestrator {
                 String originalId = spec.id();
                 String newId = "step_" + stepIndex++;
                 idMapping.put(originalId, newId);
-                steps.add(ExecutionStep.pending(newId, spec.description(), spec.type().name(), new ArrayList<>()));
+                steps.add(ExecutionStep.pending(newId, spec.description(), spec.type().name(), new ArrayList<>(),
+                        spec.requiredTools(), spec.preferredAgent(), spec.riskLevel()));
             }
 
             // 第二遍：建立依赖
@@ -351,7 +413,8 @@ public class AgentOrchestrator {
                 if (idx >= 0 && idx < steps.size()) {
                     ExecutionStep old = steps.get(idx);
                     steps.set(idx, new ExecutionStep(old.id(), old.description(), old.type(),
-                            deps, old.result(), old.status()));
+                            deps, old.requiredTools(), old.preferredAgent(), old.riskLevel(),
+                            old.result(), old.status()));
                 }
             }
 
@@ -531,7 +594,9 @@ public class AgentOrchestrator {
                 || type == AgentRunEventType.BUDGET_EXHAUSTED);
     }
 
-    private AgentRunContext childRunContext(AgentRunContext parent, String role, String stepId, int attempt) {
+    private AgentRunContext childRunContext(AgentRunContext parent, String role, String stepId, int attempt,
+                                            AgentProfile profile, AgentTaskRequirements requirements,
+                                            String selectedReason) {
         Map<String, String> metadata = new LinkedHashMap<>();
         metadata.put("parentRunId", parent.runId());
         metadata.put("rootRunId", parent.metadata().getOrDefault("rootRunId", parent.runId()));
@@ -540,7 +605,42 @@ public class AgentOrchestrator {
         if (stepId != null && !stepId.isBlank()) {
             metadata.put("stepId", stepId);
         }
+        if (profile != null) {
+            metadata.put("profileName", profile.name());
+            metadata.put("profileRole", profile.role().name());
+            metadata.put("permissionMode", profile.permissionMode());
+            metadata.put("allowedTools", AgentToolPolicy.formatTools(profile.tools()));
+            metadata.put("deniedTools", AgentToolPolicy.formatTools(profile.deniedTools()));
+            metadata.put("commandAllowlist", AgentToolPolicy.formatTools(profile.commandAllowlist()));
+            metadata.put("memoryScope", profile.memoryScope());
+            metadata.put("model", profile.model());
+            metadata.put("contextMode", profile.contextMode());
+        }
+        if (requirements != null) {
+            metadata.put("requiredTools", AgentToolPolicy.formatTools(requirements.requiredTools()));
+            metadata.put("preferredAgent", requirements.preferredAgent());
+            metadata.put("riskLevel", requirements.riskLevel());
+        }
+        if (selectedReason != null && !selectedReason.isBlank()) {
+            metadata.put("selectedReason", selectedReason);
+        }
         return AgentRunContext.create(parent.mode(), parent.input(), parent.workspace(), metadata);
+    }
+
+    private void appendAgentSelected(AgentRunContext parentContext, String role, ExecutionStep step,
+                                     AgentProfile profile, AgentTaskRequirements requirements,
+                                     String selectedReason) {
+        Map<String, String> attributes = new LinkedHashMap<>();
+        attributes.put("stepId", step.id());
+        attributes.put("role", role);
+        attributes.put("profileName", profile.name());
+        attributes.put("profileRole", profile.role().name());
+        attributes.put("permissionMode", profile.permissionMode());
+        attributes.put("requiredTools", AgentToolPolicy.formatTools(requirements.requiredTools()));
+        attributes.put("preferredAgent", requirements.preferredAgent());
+        attributes.put("riskLevel", requirements.riskLevel());
+        attributes.put("selectedReason", selectedReason);
+        appendRunEvent(parentContext, AgentRunEventType.AGENT_SELECTED, attributes);
     }
 
     private void appendChildRunStarted(AgentRunContext context, String phase) {
@@ -566,8 +666,11 @@ public class AgentOrchestrator {
 
     private AgentMessage executeWorkerChild(AgentRunContext parentContext, ExecutionStep step,
                                             SubAgent worker, AgentMessage taskMsg, String context,
-                                            PrintStream out, int attempt) {
-        AgentRunContext childContext = childRunContext(parentContext, "worker", step.id(), attempt);
+                                            PrintStream out, int attempt,
+                                            AgentTaskRequirements requirements,
+                                            String selectedReason) {
+        AgentRunContext childContext = childRunContext(parentContext, "worker", step.id(), attempt,
+                worker.getProfile(), requirements, selectedReason);
         appendChildRunStarted(childContext, "execute");
         AgentMessage result;
         try {
@@ -585,8 +688,11 @@ public class AgentOrchestrator {
 
     private ReviewChildResult executeReviewerChild(AgentRunContext parentContext, ExecutionStep step,
                                                    SubAgent reviewer, String workerResult,
-                                                   PrintStream out, int attempt) {
-        AgentRunContext childContext = childRunContext(parentContext, "reviewer", step.id(), attempt);
+                                                   PrintStream out, int attempt,
+                                                   AgentTaskRequirements requirements,
+                                                   String selectedReason) {
+        AgentRunContext childContext = childRunContext(parentContext, "reviewer", step.id(), attempt,
+                reviewer.getProfile(), requirements, selectedReason);
         appendChildRunStarted(childContext, "review");
         AgentMessage result;
         try {
@@ -636,15 +742,13 @@ public class AgentOrchestrator {
      */
     private void runBatchParallel(AgentRunContext runContext, List<ExecutionStep> batch, List<ExecutionStep> steps,
                                   Map<String, Integer> retryCount) {
-        int parallelism = Math.min(batch.size(), workers.size());
+        int parallelism = Math.min(batch.size(), workerParallelism());
         //创建固定线程池，线程命名、设为守护线程
         ExecutorService executor = Executors.newFixedThreadPool(parallelism, r -> {
             Thread t = new Thread(r, "mindcli-multi-agent");
             t.setDaemon(true);
             return t;
         });
-        //Worker代理池：阻塞队列承载所有可用Worker SubAgent
-        BlockingQueue<SubAgent> workerPool = new LinkedBlockingQueue<>(workers);
         //存放每个步骤独立输出缓冲区，并发Map保证多线程安全读写
         Map<String, ByteArrayOutputStream> buffers = new ConcurrentHashMap<>();
         //保存所有异步任务句柄，用于后续阻塞等待全部执行完成
@@ -659,28 +763,13 @@ public class AgentOrchestrator {
             String context = buildStepContext(steps, step);
 
             futures.add(executor.submit(() -> {
-                SubAgent worker = null;
-                //每个步骤单独新建一个Review审查代理，不池化
-                SubAgent localReviewer = new SubAgent(
-                        "reviewer-" + step.id(), AgentRole.REVIEWER, llmClient, toolRegistry);
-                localReviewer.setMemoryManager(memoryManager);
                 try {
-                    //阻塞从代理池获取空闲Worker，拿不到就等待
-                    worker = workerPool.take();
-                    runStep(runContext, step, steps, retryCount, worker, localReviewer, context, stepOut);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    updateStep(steps, step.id(), step.withFailed("并行执行被中断"));
-                    stepOut.println("❌ 步骤 [" + step.id() + "] 被中断\n");
+                    runStep(runContext, step, steps, retryCount, context, stepOut);
                 } catch (RuntimeException e) {
                     log.error("Parallel step {} failed unexpectedly", step.id(), e);
                     updateStep(steps, step.id(), step.withFailed("并行执行异常: " + e.getMessage()));
                     stepOut.println("❌ 步骤 [" + step.id() + "] 并行执行异常：" + e.getMessage() + "\n");
                 } finally {
-                    if (worker != null) {
-                        worker.clearHistory();
-                        workerPool.offer(worker);
-                    }
                     stepOut.flush();
                 }
                 return null;
@@ -716,8 +805,27 @@ public class AgentOrchestrator {
      */
     private void runStep(AgentRunContext runContext, ExecutionStep step, List<ExecutionStep> steps,
                          Map<String, Integer> retryCount,
-                         SubAgent worker, SubAgent reviewer, String context,
-                         PrintStream out) {
+                         String context, PrintStream out) {
+        AgentTaskRequirements workerRequirements = requirementsFor(step);
+        AgentTaskRequirements reviewerRequirements = reviewerRequirementsFor(step);
+        try (AgentPool.AgentLease workerLease = agentPool.acquire(AgentRole.WORKER, workerRequirements)) {
+            SubAgent worker = createSubAgent(workerLease.profile());
+            appendAgentSelected(runContext, "worker", step, workerLease.profile(),
+                    workerRequirements, workerLease.selectionReason());
+            runStepWithWorker(runContext, step, steps, retryCount, worker, context, out,
+                    workerRequirements, workerLease.selectionReason(), reviewerRequirements);
+        } catch (IllegalStateException e) {
+            updateStep(steps, step.id(), step.withFailed("Agent profile 选择失败: " + e.getMessage()));
+            out.println("❌ 步骤 [" + step.id() + "] Agent profile 选择失败：" + e.getMessage() + "\n");
+        }
+    }
+
+    private void runStepWithWorker(AgentRunContext runContext, ExecutionStep step, List<ExecutionStep> steps,
+                                   Map<String, Integer> retryCount,
+                                   SubAgent worker, String context, PrintStream out,
+                                   AgentTaskRequirements workerRequirements,
+                                   String workerSelectionReason,
+                                   AgentTaskRequirements reviewerRequirements) {
         out.println("🛠️ " + worker.getName() + " 执行步骤 [" + step.id() + "]: " + step.description());
         if (CancellationContext.isCancelled()) {
             updateStep(steps, step.id(), step.withFailed("用户取消"));
@@ -726,7 +834,8 @@ public class AgentOrchestrator {
         }
 
         AgentMessage taskMsg = AgentMessage.task("orchestrator", step.description());
-        AgentMessage result = executeWorkerChild(runContext, step, worker, taskMsg, context, out, 0);
+        AgentMessage result = executeWorkerChild(runContext, step, worker, taskMsg, context, out, 0,
+                workerRequirements, workerSelectionReason);
         if (CancellationContext.isCancelled()) {
             updateStep(steps, step.id(), step.withFailed("用户取消"));
             out.println("⏹️ 步骤 [" + step.id() + "] 已取消\n");
@@ -744,8 +853,14 @@ public class AgentOrchestrator {
             return;
         }
 
+        try (AgentPool.AgentLease reviewerLease = agentPool.acquire(AgentRole.REVIEWER, reviewerRequirements)) {
+            SubAgent reviewer = createSubAgent(reviewerLease.profile());
+            String reviewerSelectionReason = reviewerLease.selectionReason();
+            appendAgentSelected(runContext, "reviewer", step, reviewerLease.profile(),
+                    reviewerRequirements, reviewerSelectionReason);
         out.println("🔍 " + reviewer.getName() + " 正在审查步骤 [" + step.id() + "] 的结果...");
-        ReviewChildResult reviewChild = executeReviewerChild(runContext, step, reviewer, result.content(), out, 0);
+        ReviewChildResult reviewChild = executeReviewerChild(runContext, step, reviewer, result.content(), out, 0,
+                reviewerRequirements, reviewerSelectionReason);
         AgentMessage reviewResult = reviewChild.message();
         reviewer.clearHistory();
 
@@ -780,7 +895,8 @@ public class AgentOrchestrator {
             out.println("   反馈: " + issues + "\n");
 
             String feedbackContext = context + "\n\n之前的执行结果被审查拒绝，原因：\n" + issues;
-            AgentMessage retryResult = executeWorkerChild(runContext, step, worker, taskMsg, feedbackContext, out, retries);
+            AgentMessage retryResult = executeWorkerChild(runContext, step, worker, taskMsg, feedbackContext, out, retries,
+                    workerRequirements, workerSelectionReason);
             if (retryResult.type() == AgentMessage.Type.ERROR) {
                 log.warn("Step {} retry {} failed at LLM layer: {}", step.id(), retries, retryResult.content());
                 issues = "重试时 LLM 调用失败：" + retryResult.content();
@@ -796,7 +912,8 @@ public class AgentOrchestrator {
             }
 
             acceptedResult = retryResult.content();
-            ReviewChildResult retryReviewChild = executeReviewerChild(runContext, step, reviewer, acceptedResult, out, retries);
+            ReviewChildResult retryReviewChild = executeReviewerChild(runContext, step, reviewer, acceptedResult, out, retries,
+                    reviewerRequirements, reviewerSelectionReason);
             AgentMessage retryReview = retryReviewChild.message();
             reviewer.clearHistory();
 
@@ -822,6 +939,7 @@ public class AgentOrchestrator {
             updateStep(steps, step.id(), step.withFailed("审查未通过：" + issues
                     + "\n候选结果：" + acceptedResult));
             out.println("❌ 步骤 [" + step.id() + "] 超过最大重试次数，结果未通过审查\n");
+        }
         }
     }
 

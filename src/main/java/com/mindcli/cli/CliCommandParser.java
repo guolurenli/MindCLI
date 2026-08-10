@@ -27,6 +27,7 @@ final class CliCommandParser {
         CONTEXT_STATUS,
         POLICY_STATUS,
         AUDIT_TAIL,
+        RUN_INSPECT,
         SNAPSHOT,
         RESTORE_SNAPSHOT,
         MCP_LIST,
@@ -216,6 +217,14 @@ final class CliCommandParser {
 
         if (trimmed.regionMatches(true, 0, "/audit ", 0, 7)) {
             return new ParsedCommand(CommandType.AUDIT_TAIL, trimmed.substring(7).trim());
+        }
+
+        if (trimmed.equalsIgnoreCase("/run")) {
+            return new ParsedCommand(CommandType.RUN_INSPECT, null);
+        }
+
+        if (trimmed.regionMatches(true, 0, "/run ", 0, 5)) {
+            return new ParsedCommand(CommandType.RUN_INSPECT, trimmed.substring(5).trim());
         }
 
         if (trimmed.equalsIgnoreCase("/snapshot")) {

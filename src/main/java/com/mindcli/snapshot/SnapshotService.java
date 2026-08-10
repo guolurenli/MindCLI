@@ -1,5 +1,8 @@
 package com.mindcli.snapshot;
 
+import com.mindcli.runtime.agent.AgentRunContext;
+import com.mindcli.runtime.agent.AgentRunStatus;
+
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
@@ -7,6 +10,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 public class SnapshotService implements AutoCloseable {
     private final SideGitManager manager;
@@ -61,6 +65,40 @@ public class SnapshotService implements AutoCloseable {
         });
     }
 
+    public TurnSnapshot snapshotBeforeRun(AgentRunContext context) {
+        if (!manager.config().enabled() || context == null) {
+            return null;
+        }
+        String turnId = runSnapshotTurnId(context);
+        String summary = runSnapshotSummary(context, null);
+        try {
+            return manager.createSnapshot(SnapshotPhase.PRE_RUN, turnId, summary);
+        } catch (Exception e) {
+            System.err.println("⚠️ pre-run 快照失败: " + e.getMessage());
+            return null;
+        }
+    }
+
+    public void snapshotAfterRunAsync(AgentRunContext context, AgentRunStatus status,
+                                      Consumer<TurnSnapshot> onSnapshot) {
+        if (!manager.config().enabled() || context == null) {
+            return;
+        }
+        lastAsyncTask = executor.submit(() -> {
+            try {
+                TurnSnapshot snapshot = manager.createSnapshot(
+                        SnapshotPhase.POST_RUN,
+                        runSnapshotTurnId(context),
+                        runSnapshotSummary(context, status));
+                if (snapshot != null && onSnapshot != null) {
+                    onSnapshot.accept(snapshot);
+                }
+            } catch (Exception e) {
+                System.err.println("⚠️ post-run 快照失败: " + e.getMessage());
+            }
+        });
+    }
+
     public List<TurnSnapshot> listSnapshots(int limit) throws Exception {
         awaitIdle();
         return manager.listSnapshots(limit);
@@ -106,6 +144,16 @@ public class SnapshotService implements AutoCloseable {
             normalized = normalized.substring(0, 120) + "...";
         }
         return "mode=" + (mode == null ? "turn" : mode) + "\ninput=" + normalized;
+    }
+
+    private static String runSnapshotTurnId(AgentRunContext context) {
+        return "run-" + context.runId();
+    }
+
+    private static String runSnapshotSummary(AgentRunContext context, AgentRunStatus status) {
+        String summary = summarize(context.mode().name(), context.input());
+        String statusLine = status == null ? "" : "\nstatus=" + status.name();
+        return summary + "\nrunId=" + context.runId() + statusLine;
     }
 
     @FunctionalInterface

@@ -2,6 +2,8 @@ package com.mindcli.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.mindcli.agent.profile.AgentProfile;
+import com.mindcli.agent.profile.AgentToolPolicy;
 import com.mindcli.llm.LlmClient;
 import com.mindcli.llm.LlmTraceLogger;
 import com.mindcli.lsp.LspDiagnosticReport;
@@ -48,6 +50,7 @@ public class SubAgent {
     private static final Logger log = LoggerFactory.getLogger(SubAgent.class);
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
 
+    private final AgentProfile profile;
     private final String name;
     private final AgentRole role;
     private final LlmClient llmClient;
@@ -62,8 +65,13 @@ public class SubAgent {
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
 
     public SubAgent(String name, AgentRole role, LlmClient llmClient, ToolRegistry toolRegistry) {
-        this.name = name;
-        this.role = role;
+        this(AgentProfile.legacy(name, role), llmClient, toolRegistry);
+    }
+
+    public SubAgent(AgentProfile profile, LlmClient llmClient, ToolRegistry toolRegistry) {
+        this.profile = profile;
+        this.name = profile.name();
+        this.role = profile.role();
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
         this.toolDispatcher = new ToolDispatcher(toolRegistry);
@@ -92,7 +100,7 @@ public class SubAgent {
     private String getSystemPrompt() {
         return promptAssembler.assemble(promptMode(), PromptContext.builder()
                 .projectMemoryContext(buildProjectMemoryContext())
-                .externalContext(buildExternalContext())
+                .externalContext(buildProfileAndExternalContext())
                 .skillIndex(buildSkillIndex())
                 .toolsEnabled(llmClient == null || llmClient.supportsTools())
                 .build());
@@ -176,6 +184,42 @@ public class SubAgent {
         }
     }
 
+    private String buildProfileAndExternalContext() {
+        String profileContext = buildProfileContext();
+        String externalContext = buildExternalContext();
+        if (profileContext.isBlank()) {
+            return externalContext;
+        }
+        if (externalContext.isBlank()) {
+            return profileContext;
+        }
+        return profileContext + "\n\n" + externalContext;
+    }
+
+    private String buildProfileContext() {
+        return """
+                当前 Agent Profile:
+                - name: %s
+                - role: %s
+                - permissionMode: %s
+                - allowedTools: %s
+                - deniedTools: %s
+                - commandAllowlist: %s
+                - memoryScope: %s
+                - model: %s
+
+                只能调用 allowedTools 声明的工具；如果当前任务需要越权能力，请说明缺少的能力，不要反复调用被拒绝的工具。
+                """.formatted(
+                profile.name(),
+                profile.role().name(),
+                profile.permissionMode(),
+                AgentToolPolicy.formatTools(profile.tools()),
+                AgentToolPolicy.formatTools(profile.deniedTools()),
+                AgentToolPolicy.formatTools(profile.commandAllowlist()),
+                profile.memoryScope(),
+                profile.model()).trim();
+    }
+
     private String buildProjectMemoryContext() {
         try {
             return ProjectMemoryLoader.createDefault(Path.of(toolRegistry.getProjectPath())).loadForPrompt();
@@ -244,7 +288,7 @@ public class SubAgent {
                 LlmClient.ChatResponse response = com.mindcli.llm.LlmRetryPolicy.withRetry(() ->
                         llmClient.chat(
                                 conversationHistory,
-                                shouldUseTools() && llmClient.supportsTools() ? toolRegistry.getToolDefinitions() : null,
+                                toolDefinitionsForProfile(),
                                 streamRenderer
                         ),
                         "sub-agent-" + name + "-" + role
@@ -418,10 +462,23 @@ public class SubAgent {
     }
 
     /**
-     * 只有执行者需要工具；规划者和检查者都只输出分析结果。
+     * profile 声明了工具能力的子代理才向模型暴露工具。
      */
     private boolean shouldUseTools() {
-        return role == AgentRole.WORKER;
+        return profile != null && !profile.tools().isEmpty();
+    }
+
+    private List<LlmClient.Tool> toolDefinitionsForProfile() {
+        if (!shouldUseTools() || llmClient == null || !llmClient.supportsTools()) {
+            return null;
+        }
+        List<LlmClient.Tool> definitions = toolRegistry.getToolDefinitions();
+        if (profile.tools().contains("*")) {
+            return definitions;
+        }
+        return definitions.stream()
+                .filter(tool -> AgentToolPolicy.toolAllowed(profile, tool.name()))
+                .toList();
     }
 
     private void injectPendingLspDiagnostics(PrintStream out) {
@@ -463,6 +520,15 @@ public class SubAgent {
         Map<String, String> metadata = new LinkedHashMap<>(base.metadata());
         metadata.put("agentName", name);
         metadata.put("role", role.name());
+        metadata.put("profileName", profile.name());
+        metadata.put("profileRole", profile.role().name());
+        metadata.put("permissionMode", profile.permissionMode());
+        metadata.put("allowedTools", AgentToolPolicy.formatTools(profile.tools()));
+        metadata.put("deniedTools", AgentToolPolicy.formatTools(profile.deniedTools()));
+        metadata.put("commandAllowlist", AgentToolPolicy.formatTools(profile.commandAllowlist()));
+        metadata.put("memoryScope", profile.memoryScope());
+        metadata.put("model", profile.model());
+        metadata.put("contextMode", profile.contextMode());
         return new AgentRunContext(
                 base.runId(),
                 base.mode(),
@@ -582,6 +648,10 @@ public class SubAgent {
 
     public AgentRole getRole() {
         return role;
+    }
+
+    public AgentProfile getProfile() {
+        return profile;
     }
 
     /**

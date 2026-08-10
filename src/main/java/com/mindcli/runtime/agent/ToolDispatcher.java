@@ -1,6 +1,7 @@
 package com.mindcli.runtime.agent;
 
 import com.mindcli.llm.LlmClient;
+import com.mindcli.agent.profile.AgentToolPolicy;
 import com.mindcli.tool.ToolRegistry;
 
 import java.util.ArrayList;
@@ -88,6 +89,15 @@ public final class ToolDispatcher {
             if (decision.type() == HookDecisionType.MODIFY_ARGUMENTS) {
                 effectiveInvocation = new ToolRegistry.ToolInvocation(
                         invocation.id(), invocation.name(), decision.effectiveArgumentsJson());
+            }
+            AgentToolPolicy.Decision policyDecision = AgentToolPolicy.evaluate(effectiveContext, effectiveInvocation);
+            metadata.putAll(policyDecision.metadata());
+            if (!policyDecision.allowed()) {
+                ToolOutcome outcome = ToolOutcome.denied(effectiveInvocation, ToolOutcomeStatus.DENIED_BY_POLICY,
+                        policyDecision.reason(), metadata);
+                fireTerminalHook(effectiveContext, effectiveInvocation, outcome);
+                outcomes.set(i, outcome);
+                continue;
             }
             List<ResourceKey> resourceKeys = resourceClassifier.classify(effectiveInvocation, effectiveContext);
             metadata.put("lockKeys", formatResourceKeys(resourceKeys));

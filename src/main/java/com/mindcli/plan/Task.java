@@ -22,6 +22,9 @@ public class Task {
     private volatile boolean critical = true;
     private volatile String degradation = "REPLAN";
     private volatile List<String> expectedEvidence = new ArrayList<>();
+    private volatile List<String> requiredTools = new ArrayList<>();
+    private volatile String preferredAgent = "";
+    private volatile String riskLevel = "low";
 
     public enum TaskType {
         PLANNING,      // 规划任务
@@ -67,6 +70,9 @@ public class Task {
     public long getEndTime() { return endTime; }
     public String getDegradation() { return degradation; }
     public List<String> getExpectedEvidence() { return new ArrayList<>(expectedEvidence); }
+    public List<String> getRequiredTools() { return new ArrayList<>(requiredTools); }
+    public String getPreferredAgent() { return preferredAgent; }
+    public String getRiskLevel() { return riskLevel; }
 
     // Setters
     public void setStatus(TaskStatus status) { this.status = status; }
@@ -131,6 +137,15 @@ public class Task {
     }
     public void setExpectedEvidence(List<String> expectedEvidence) {
         this.expectedEvidence = expectedEvidence == null ? new ArrayList<>() : new ArrayList<>(expectedEvidence);
+    }
+    public void setRequiredTools(List<String> requiredTools) {
+        this.requiredTools = requiredTools == null ? new ArrayList<>() : new ArrayList<>(requiredTools);
+    }
+    public void setPreferredAgent(String preferredAgent) {
+        this.preferredAgent = preferredAgent == null ? "" : preferredAgent;
+    }
+    public void setRiskLevel(String riskLevel) {
+        this.riskLevel = (riskLevel == null || riskLevel.isBlank()) ? "low" : riskLevel;
     }
 
     /**

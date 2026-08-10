@@ -1,19 +1,31 @@
 package com.mindcli.runtime.agent;
 
+import com.mindcli.snapshot.SnapshotPhase;
+import com.mindcli.snapshot.SnapshotService;
+import com.mindcli.snapshot.TurnSnapshot;
+
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 
 public final class AgentRuntime {
     private final RunStore runStore;
+    private final SnapshotService snapshotService;
 
     public AgentRuntime(RunStore runStore) {
+        this(runStore, null);
+    }
+
+    public AgentRuntime(RunStore runStore, SnapshotService snapshotService) {
         this.runStore = Objects.requireNonNull(runStore, "runStore");
+        this.snapshotService = snapshotService;
     }
 
     public AgentRunResult run(AgentRunContext context, ModeAdapter adapter) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(adapter, "adapter");
 
+        appendSnapshotCreated(context, SnapshotPhase.PRE_RUN, snapshotBeforeRun(context), null);
         append(context, AgentRunEventType.RUN_STARTED);
         append(context, AgentRunEventType.MODE_SELECTED, Map.of(
                 "mode", context.mode().name(),
@@ -26,10 +38,12 @@ public final class AgentRuntime {
             }
             append(context, terminalEvent(result.status()),
                     Map.of("status", result.status().name()));
+            snapshotAfterRunAsync(context, result.status());
             return result;
         } catch (Exception e) {
             AgentRunResult result = AgentRunResult.failed(context, errorMessage(e));
             append(context, AgentRunEventType.RUN_FAILED, Map.of("status", result.status().name()));
+            snapshotAfterRunAsync(context, result.status());
             return result;
         }
     }
@@ -44,6 +58,49 @@ public final class AgentRuntime {
 
     private void append(AgentRunContext context, AgentRunEventType type, Map<String, String> attributes) {
         runStore.append(AgentRunEvent.of(context, type, attributes));
+    }
+
+    private TurnSnapshot snapshotBeforeRun(AgentRunContext context) {
+        if (snapshotService == null) {
+            return null;
+        }
+        return snapshotService.snapshotBeforeRun(context);
+    }
+
+    private void snapshotAfterRunAsync(AgentRunContext context, AgentRunStatus status) {
+        if (snapshotService == null) {
+            return;
+        }
+        snapshotService.snapshotAfterRunAsync(context, status,
+                snapshot -> appendSnapshotCreated(context, SnapshotPhase.POST_RUN, snapshot, status));
+    }
+
+    private void appendSnapshotCreated(AgentRunContext context, SnapshotPhase phase,
+                                       TurnSnapshot snapshot, AgentRunStatus status) {
+        if (snapshot == null) {
+            return;
+        }
+        Map<String, String> attributes = new LinkedHashMap<>();
+        attributes.put("snapshotPhase", phase.name());
+        attributes.put("snapshotCommitId", snapshot.commitId());
+        attributes.put("snapshotShortCommitId", snapshot.shortCommitId());
+        attributes.put("snapshotTurnId", snapshot.turnId());
+        attributes.put("recoverability", recoverability(status));
+        if (status != null) {
+            attributes.put("status", status.name());
+        }
+        append(context, AgentRunEventType.SNAPSHOT_CREATED, attributes);
+    }
+
+    private static String recoverability(AgentRunStatus status) {
+        if (status == null) {
+            return "NONE";
+        }
+        return switch (status) {
+            case SUCCESS -> "NONE";
+            case CANCELLED, BUDGET_EXHAUSTED -> "AUTO";
+            case BLOCKED, FAILED -> "MANUAL";
+        };
     }
 
     private static AgentRunEventType terminalEvent(AgentRunStatus status) {

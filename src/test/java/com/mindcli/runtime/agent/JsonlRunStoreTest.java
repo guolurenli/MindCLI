@@ -131,7 +131,11 @@ class JsonlRunStoreTest {
                 "rootRunId", parent.runId(),
                 "role", "worker",
                 "stepId", "step_1",
-                "attempt", "0"));
+                "attempt", "0",
+                "profileName", "code-writer",
+                "profileRole", "WORKER",
+                "permissionMode", "WRITE_LIMITED",
+                "selectedReason", "preferredAgent matched"));
 
         runStore.append(AgentRunEvent.of(parent, AgentRunEventType.RUN_STARTED));
         runStore.append(AgentRunEvent.of(child, AgentRunEventType.RUN_STARTED));
@@ -152,6 +156,10 @@ class JsonlRunStoreTest {
         assertEquals("worker", childSummary.path("role").asText());
         assertEquals("step_1", childSummary.path("stepId").asText());
         assertEquals("TERMINAL", childSummary.path("status").asText());
+        assertEquals("code-writer", childSummary.path("profileName").asText());
+        assertEquals("WORKER", childSummary.path("profileRole").asText());
+        assertEquals("WRITE_LIMITED", childSummary.path("permissionMode").asText());
+        assertEquals("preferredAgent matched", childSummary.path("selectedReason").asText());
     }
 
     @Test

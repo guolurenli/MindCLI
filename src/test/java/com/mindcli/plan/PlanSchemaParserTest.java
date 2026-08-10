@@ -66,6 +66,59 @@ class PlanSchemaParserTest {
     }
 
     @Test
+    void shouldParseAgentSelectionHintsFromSchemaVersion3() throws Exception {
+        PlanSchemaParser parser = new PlanSchemaParser(null);
+
+        PlanSchema schema = parser.parse("""
+                {
+                  "schemaVersion": 3,
+                  "summary": "修改并验证",
+                  "tasks": [
+                    {
+                      "id": "write",
+                      "description": "修改文件",
+                      "type": "FILE_WRITE",
+                      "dependencies": [],
+                      "requiredTools": ["read_file", "write_file"],
+                      "preferredAgent": "code-writer",
+                      "riskLevel": "medium"
+                    }
+                  ]
+                }
+                """);
+
+        PlanTaskSpec task = schema.tasks().get(0);
+        assertEquals(3, schema.schemaVersion());
+        assertEquals(List.of("read_file", "write_file"), task.requiredTools());
+        assertEquals("code-writer", task.preferredAgent());
+        assertEquals("medium", task.riskLevel());
+    }
+
+    @Test
+    void shouldInferRequiredToolsWhenAgentHintsAreMissing() throws Exception {
+        PlanSchemaParser parser = new PlanSchemaParser(null);
+
+        PlanSchema schema = parser.parse("""
+                {
+                  "summary": "验证",
+                  "tasks": [
+                    {
+                      "id": "verify",
+                      "description": "运行验证",
+                      "type": "VERIFICATION",
+                      "dependencies": []
+                    }
+                  ]
+                }
+                """);
+
+        PlanTaskSpec task = schema.tasks().get(0);
+        assertEquals(List.of("read_file", "grep_code", "execute_command"), task.requiredTools());
+        assertEquals("", task.preferredAgent());
+        assertEquals("low", task.riskLevel());
+    }
+
+    @Test
     void shouldRejectInvalidExpectedEvidenceType() {
         PlanSchemaParser parser = new PlanSchemaParser(null);
 

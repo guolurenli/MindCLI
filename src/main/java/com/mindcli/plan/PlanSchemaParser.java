@@ -84,8 +84,24 @@ public class PlanSchemaParser {
             degradation = "REPLAN";
         }
 
+        List<String> requiredTools = new ArrayList<>();
+        JsonNode toolsNode = node.path("requiredTools");
+        if (toolsNode.isArray()) {
+            for (JsonNode item : toolsNode) {
+                String value = item.asText("");
+                if (!value.isBlank()) {
+                    requiredTools.add(value);
+                }
+            }
+        } else if (!toolsNode.isMissingNode() && !toolsNode.isNull()) {
+            throw new PlanParseException("PLAN_INVALID_REQUIRED_TOOLS: requiredTools");
+        }
+        String preferredAgent = node.path("preferredAgent").asText("");
+        String riskLevel = node.path("riskLevel").asText("");
+
         return new PlanTaskSpec(id, description, type, List.copyOf(dependencies), critical,
-                maxRetries, degradation, List.copyOf(evidence));
+                maxRetries, degradation, List.copyOf(evidence), List.copyOf(requiredTools),
+                preferredAgent, riskLevel);
     }
 
     private String text(JsonNode node, String field) throws IOException {

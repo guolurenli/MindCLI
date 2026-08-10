@@ -41,6 +41,8 @@ java -jar target/mindcli-1.0-SNAPSHOT.jar
 
 ReAct / Plan / Multi-Agent 的工具调用都会先进入 Agent Runtime 的 `ToolDispatcher`：只读文件 / 搜索类工具可共享并行，写文件、目录创建、workspace 命令、浏览器会话、MCP server 和未知副作用工具会按资源锁串行化；文件与目录锁包含祖先目录关系，避免目录创建和子文件写入交叠；工具结果使用 `ToolOutcomeStatus` 区分策略拒绝、用户拒绝、超时、取消、部分成功和普通失败，并写入 JSONL run ledger 的 `TOOL_OUTCOME` 事件。
 
+`/team` 支持项目级 Agent Profile 配置：在 `.mindcli/agents.json` 中声明 `profiles`，可为 planner / worker / reviewer 配置 `tools`、`deniedTools`、`commandAllowlist`、`maxConcurrency`、`permissionMode` 等字段。未配置时使用兼容默认 profile；配置后编排器会按 task 的 `requiredTools` / `preferredAgent` 选择最小权限 worker，并把 `profileName`、`permissionMode`、`selectedReason` 写入 child run 审计。
+
 ## 常用命令
 
 ### 工作模式
@@ -84,6 +86,7 @@ ReAct / Plan / Multi-Agent 的工具调用都会先进入 Agent Runtime 的 `Too
 | `/hitl on` / `off` | 开关人工审批 |
 | `/policy` | 查看安全策略（路径围栏 / 命令黑名单 / 审计） |
 | `/audit [N]` | 查看最近 N 条审计记录 |
+| `/run inspect <runId>` | 检查指定 Agent Runtime run 的状态、checkpoint 与恢复提示 |
 | `/snapshot` | 查看 Side-Git 快照列表 |
 | `/restore <N>` | 回滚到最近第 N 个 pre-turn 快照 |
 

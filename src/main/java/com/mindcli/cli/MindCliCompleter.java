@@ -52,6 +52,7 @@ final class MindCliCompleter implements Completer {
                 || completeMcp(input, candidates)
                 || completeSkill(input, candidates)
                 || completeTask(input, candidates)
+                || completeRun(input, candidates)
                 || completeBrowser(input, candidates)
                 || completeSnapshot(input, candidates)) {
             return;
@@ -192,6 +193,16 @@ final class MindCliCompleter implements Completer {
                 option("add ", "提交后台任务"),
                 option("cancel ", "取消后台任务"),
                 option("log ", "查看后台任务结果"));
+        return true;
+    }
+
+    private boolean completeRun(String input, List<Candidate> candidates) {
+        if (!input.equalsIgnoreCase("/run") && !input.regionMatches(true, 0, "/run ", 0, 5)) {
+            return false;
+        }
+        String payload = input.length() <= 5 ? "" : input.substring(5);
+        addMatching(candidates, "Run", payload,
+                option("inspect ", "检查 run ledger 与 snapshot checkpoint"));
         return true;
     }
 

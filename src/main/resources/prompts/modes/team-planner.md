@@ -6,7 +6,7 @@
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "summary": "任务摘要",
   "tasks": [
     {
@@ -17,7 +17,10 @@
       "critical": true,
       "maxRetries": 3,
       "degradation": "REPLAN",
-      "expectedEvidence": []
+      "expectedEvidence": [],
+      "requiredTools": [],
+      "preferredAgent": "",
+      "riskLevel": "low | medium | high"
     }
   ]
 }
@@ -34,5 +37,8 @@
 7. 多个步骤可以独立完成时，不要添加依赖，保持 `dependencies` 为空，让编排器并行分配给多个 Worker。
 8. 只有后一步确实需要前一步结果时，才写 dependencies。
 9. `degradation` 默认填 `REPLAN`，`expectedEvidence` 默认空数组。
+10. 如步骤需要工具，尽量填写 `requiredTools`，例如 `read_file`、`write_file`、`execute_command`。
+11. 如果明显需要某个具名 agent，可以填写 `preferredAgent`；不确定时留空，由编排器自动选择。
+12. `riskLevel` 按副作用估计：只读为 `low`，写文件或命令为 `medium`，高风险外部副作用为 `high`。
 
 只输出 JSON，不要有其他内容。

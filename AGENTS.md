@@ -12,7 +12,7 @@
 
 - 项目名：`MindCLI`
 - 定位：面向商业使用的 Java Agent CLI 产品，对标 Claude Code
-- 已交付 23 期（ReAct → Plan+DAG → Memory → RAG → Multi-Agent → HITL → 并行工具 → 多模型 → 联网 → MCP 核心 → MCP 高级 → 长上下文 → Chrome DevTools → CDP 会话复用 → Skill → TUI → LSP 诊断 → Side-Git 快照 → Prompt 分层 → Runtime API → 图片输入 → 微信 iLink 通道文本 MVP）
+- 已交付 23 期 + Agent Runtime 企业级改造 Phase 6（ReAct → Plan+DAG → Memory → RAG → Multi-Agent → HITL → 并行工具 → 多模型 → 联网 → MCP 核心 → MCP 高级 → 长上下文 → Chrome DevTools → CDP 会话复用 → Skill → TUI → LSP 诊断 → Side-Git 快照 → Prompt 分层 → Runtime API → 图片输入 → 微信 iLink 通道文本 MVP；Runtime Spine / Dispatcher / Profile 化 Multi-Agent 已落地）
 - `PAI.md` 是 MindCLI 的项目级记忆文件：启动时自动注入 system prompt，适合团队共享的长期稳定规则；个人/会变化的经验继续用 `/save` 长期记忆。
 - 下一步：OAuth / sampling / recovery 作为后续 MCP 增强
 - Banner 版本：`v16.1.0`，Maven 产物：`mindcli-1.0-SNAPSHOT.jar`（两者不一致是正常状态）
@@ -38,6 +38,7 @@ mvn test -Dtest=XxxTest -DskipTests=false   # 针对性
 mvn test -DskipTests=false                  # 全量回归
 /init                    # 生成精简项目级记忆 PAI.md；已有文件不覆盖，/init --force 可重写
 /export                  # 导出当前 ReAct 会话为 Markdown，包含完整 system prompt
+/run inspect <runId>     # 检查指定 Agent Runtime run 的状态、snapshot checkpoint 与恢复提示
 ```
 
 ## 架构概览
@@ -48,11 +49,11 @@ mvn test -DskipTests=false                  # 全量回归
 |------|------|------|
 | ReAct | `Agent.java` | 默认模式 |
 | Plan-and-Execute | `PlanExecuteAgent.java` | `/plan` |
-| Multi-Agent | `AgentOrchestrator.java` | `/team` |
+| Multi-Agent | `AgentOrchestrator.java` + `agent/profile/*` | `/team` |
 
-ReAct 的 LLM/tool 循环已委托给 `runtime/agent/AgentLoopExecutor.java`；`Agent.java` 继续负责 prompt / memory / renderer / 状态栏等 ReAct 周边体验。三条路径的工具调用都会先经 `runtime/agent/ToolDispatcher.java` 进入内部 Hook、资源分类和资源锁，再映射为结构化 `ToolOutcome`；Plan 和 Multi-Agent 暂时仍保留各自 loop，但 `PlanExecuteAgent` / `SubAgent` 的实际工具执行也会写 `TOOL_OUTCOME` 事件，并由 `PlanModeAdapter` / `TeamModeAdapter` 传递 runtime 提供的 `AgentRunContext` 与共享 `RunStore`，避免分裂 runId / store。
+ReAct 的 LLM/tool 循环已委托给 `runtime/agent/AgentLoopExecutor.java`；`Agent.java` 继续负责 prompt / memory / renderer / 状态栏等 ReAct 周边体验。三条路径的工具调用都会先经 `runtime/agent/ToolDispatcher.java` 进入内部 Hook、资源分类和资源锁，再映射为结构化 `ToolOutcome`；Plan 和 Multi-Agent 暂时仍保留各自 loop，但 `PlanExecuteAgent` / `SubAgent` 的实际工具执行也会写 `TOOL_OUTCOME` 事件，并由 `PlanModeAdapter` / `TeamModeAdapter` 传递 runtime 提供的 `AgentRunContext` 与共享 `RunStore`，避免分裂 runId / store。`/team` 已接入 `AgentProfile` / `AgentPool`：默认使用兼容 profile，项目可通过 `.mindcli/agents.json` 配置 planner / worker / reviewer 的工具 allowlist、命令 allowlist、并发和权限模式；child run 与 `TOOL_OUTCOME` 会记录 `profileName`、`permissionMode`、`selectedReason` 和 profile policy 决策。
 
-Agent Runtime 账本默认通过 `RunStoreFactory` 写到 `~/.mindcli/runs`（可用 `mindcli.runs.dir` / `MINDCLI_RUNS_DIR` 改写），`InMemoryRunStore` 仅保留给测试和降级。JSONL ledger 是 source of truth：每个事件包含 run 内递增 `seq` 和唯一 `eventId`，`run.meta.json` / `run.state.json` 由事件投影生成；读取会忽略尾部坏行，继续 append 前会先截断坏尾，`runId` 只能使用安全路径字符。Multi-Agent 的 planner / worker / reviewer 会写入 child run：目录布局为 `parentRun/children/childRun/`，事件 attributes 带 `parentRunId`、`rootRunId`、`role`、`stepId`、`attempt`；parent `run.state.json` 会 materialize child run 摘要。Reviewer 调用失败、输出不可解析、重试后仍拒绝时必须 fail closed，不能把 worker 候选结果标记为完成；reviewer child 摘要要保留 `approved` / `businessStatus`，供恢复和审计判断。
+Agent Runtime 账本默认通过 `RunStoreFactory` 写到 `~/.mindcli/runs`（可用 `mindcli.runs.dir` / `MINDCLI_RUNS_DIR` 改写），`InMemoryRunStore` 仅保留给测试和降级。JSONL ledger 是 source of truth：每个事件包含 run 内递增 `seq` 和唯一 `eventId`，`run.meta.json` / `run.state.json` 由事件投影生成；读取会忽略尾部坏行，继续 append 前会先截断坏尾，`runId` 只能使用安全路径字符。AgentRuntime 可写 `SNAPSHOT_CREATED`，把 `PRE_RUN` / `POST_RUN` Side-Git checkpoint 与 runId 关联；`/run inspect <runId>` 通过 `RunRecoveryService` 展示状态、checkpoint 和恢复提示。Multi-Agent 的 planner / worker / reviewer 会写入 child run：目录布局为 `parentRun/children/childRun/`，事件 attributes 带 `parentRunId`、`rootRunId`、`role`、`stepId`、`attempt`；parent `run.state.json` 会 materialize child run 摘要。Reviewer 调用失败、输出不可解析、重试后仍拒绝时必须 fail closed，不能把 worker 候选结果标记为完成；reviewer child 摘要要保留 `approved` / `businessStatus`，供恢复和审计判断。
 
 核心内置工具 11 个：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `create_project` / `search_code` / `web_search` / `web_fetch` / `revert_turn`
 
@@ -234,6 +235,8 @@ src/main/java/com/mindcli/
 ## 当前已知边界
 
 以下在路线图但未交付：容器/VM 沙箱 / MCP OAuth + sampling + server 自动重启
+
+- TODO：Agent Runtime 当前只有 `/run inspect <runId>` 的恢复检查能力；后续补 `/run resume <runId>` 与启动期自动发现可恢复 run，涉及文件写入、命令执行、child run 未完成时必须先给出恢复计划并让用户确认。
 
 不要把 `ROADMAP.md` 中"将来要做"误读成"现在已有"。
 

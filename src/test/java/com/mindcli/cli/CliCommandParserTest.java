@@ -400,6 +400,14 @@ class CliCommandParserTest {
     }
 
     @Test
+    void parsesRunInspectCommand() {
+        CliCommandParser.ParsedCommand command = CliCommandParser.parse("/run inspect run_abc123");
+
+        assertEquals(CliCommandParser.CommandType.RUN_INSPECT, command.type());
+        assertEquals("inspect run_abc123", command.payload());
+    }
+
+    @Test
     void parsesCancelCommand() {
         assertEquals(CliCommandParser.CommandType.CANCEL, CliCommandParser.parse("/cancel").type());
         assertEquals(CliCommandParser.CommandType.CANCEL, CliCommandParser.parse("cancel").type());

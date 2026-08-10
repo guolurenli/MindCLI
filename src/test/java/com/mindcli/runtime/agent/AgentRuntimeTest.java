@@ -2,6 +2,7 @@ package com.mindcli.runtime.agent;
 
 import com.mindcli.agent.Agent;
 import com.mindcli.llm.LlmClient;
+import com.mindcli.snapshot.SnapshotService;
 import com.mindcli.tool.ToolRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -56,6 +57,33 @@ class AgentRuntimeTest {
     }
 
     @Test
+    void recordsSnapshotCheckpointsWhenSnapshotServiceIsConfigured() throws Exception {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        try (SnapshotService snapshotService = SnapshotService.forProject(tempDir)) {
+            AgentRuntime runtime = new AgentRuntime(runStore, snapshotService);
+            AgentRunContext context = AgentRunContext.create(AgentMode.REACT, "hello", tempDir.toString());
+
+            AgentRunResult result = runtime.run(context, adapterReturning(AgentMode.REACT,
+                    AgentRunResult.success(context, "done")));
+            snapshotService.awaitIdle();
+
+            assertEquals(AgentRunStatus.SUCCESS, result.status());
+            List<AgentRunEvent> events = runStore.events(context.runId());
+            assertEventTypes(events,
+                    AgentRunEventType.SNAPSHOT_CREATED,
+                    AgentRunEventType.RUN_STARTED,
+                    AgentRunEventType.MODE_SELECTED,
+                    AgentRunEventType.RUN_FINISHED,
+                    AgentRunEventType.SNAPSHOT_CREATED);
+            assertEquals("PRE_RUN", events.get(0).attributes().get("snapshotPhase"));
+            assertEquals("POST_RUN", events.get(4).attributes().get("snapshotPhase"));
+            assertEquals("SUCCESS", events.get(4).attributes().get("status"));
+            assertFalseBlank(events.get(0).attributes().get("snapshotCommitId"));
+            assertFalseBlank(events.get(4).attributes().get("snapshotCommitId"));
+        }
+    }
+
+    @Test
     void reactAdapterRecordsLoopEventsInRuntimeRunStore() {
         InMemoryRunStore runStore = new InMemoryRunStore();
         AgentRuntime runtime = new AgentRuntime(runStore);
@@ -78,7 +106,7 @@ class AgentRuntimeTest {
     }
 
     @Test
-    void agentRunStringRecordsLifecycleAndLoopEventsInItsDefaultRunStore() {
+    void agentRunStringRecordsLifecycleAndLoopEventsInItsDefaultRunStore() throws Exception {
         RecordingRunStore runStore = new RecordingRunStore();
         ToolRegistry registry = new ToolRegistry();
         registry.setProjectPath(tempDir.toString());
@@ -87,13 +115,16 @@ class AgentRuntimeTest {
         )), registry, runStore);
 
         String result = agent.run("hello");
+        registry.getSnapshotService().awaitIdle();
 
         assertEquals("done", result);
         assertEventTypes(runStore.allEvents(),
+                AgentRunEventType.SNAPSHOT_CREATED,
                 AgentRunEventType.RUN_STARTED,
                 AgentRunEventType.MODE_SELECTED,
                 AgentRunEventType.LLM_RESPONSE,
-                AgentRunEventType.RUN_FINISHED);
+                AgentRunEventType.RUN_FINISHED,
+                AgentRunEventType.SNAPSHOT_CREATED);
     }
 
     @Test
@@ -160,6 +191,10 @@ class AgentRuntimeTest {
         for (int i = 0; i < expected.length; i++) {
             assertEquals(expected[i], events.get(i).type());
         }
+    }
+
+    private static void assertFalseBlank(String value) {
+        assertTrue(value != null && !value.isBlank());
     }
 
     private static final class RecordingRunStore implements RunStore {

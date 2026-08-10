@@ -12,10 +12,16 @@ public record RunRecoveryPlan(
         AgentRunEventType lastEventType,
         AgentRunEventType lastCompletedEventType,
         Map<String, String> lastCompletedAttributes,
-        List<AgentRunEvent> events
+        List<AgentRunEvent> events,
+        String preRunSnapshotCommitId,
+        String postRunSnapshotCommitId,
+        String restoreHint
 ) {
     public RunRecoveryPlan {
         lastCompletedAttributes = lastCompletedAttributes == null ? Map.of() : Map.copyOf(lastCompletedAttributes);
         events = events == null ? List.of() : List.copyOf(events);
+        preRunSnapshotCommitId = preRunSnapshotCommitId == null ? "" : preRunSnapshotCommitId;
+        postRunSnapshotCommitId = postRunSnapshotCommitId == null ? "" : postRunSnapshotCommitId;
+        restoreHint = restoreHint == null ? "" : restoreHint;
     }
 }
