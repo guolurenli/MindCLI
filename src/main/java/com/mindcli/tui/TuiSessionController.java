@@ -8,6 +8,8 @@ import com.mindcli.hitl.HitlHandler;
 import com.mindcli.llm.LlmClient;
 import com.mindcli.memory.LongTermMemory;
 import com.mindcli.memory.MemoryEntry;
+import com.mindcli.memory.MemoryProposal;
+import com.mindcli.memory.MemoryWriteResult;
 import com.mindcli.runtime.CancellationContext;
 import com.mindcli.runtime.CancellationToken;
 import com.mindcli.snapshot.RestoreResult;
@@ -20,6 +22,7 @@ import com.mindcli.tui.pane.StatusPane;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
@@ -126,6 +129,10 @@ public final class TuiSessionController implements AutoCloseable {
         if ("/memory".equals(lower) || "/mem".equals(lower)) {
             appendSystem(reactAgent.getMemoryManager().getSystemStatus()
                     + "\n/memory policy - 查看记忆治理策略"
+                    + "\n/memory proposals - 查看待确认候选记忆"
+                    + "\n/memory export --audit - 导出记忆审计证据"
+                    + "\n/memory approve <id> - 批准候选并写入长期记忆"
+                    + "\n/memory reject <id> - 拒绝候选"
                     + "\n/memory list - 查看长期记忆"
                     + "\n/memory search <关键词> - 搜索当前项目可见长期记忆"
                     + "\n/memory delete <id> - 删除单条长期记忆"
@@ -136,6 +143,36 @@ public final class TuiSessionController implements AutoCloseable {
         }
         if ("/memory policy".equals(lower) || "/mem policy".equals(lower)) {
             appendSystem(reactAgent.getMemoryManager().getPolicyStatus());
+            return true;
+        }
+        if ("/memory proposals".equals(lower) || "/mem proposals".equals(lower)) {
+            appendSystem(formatMemoryProposals(reactAgent.getMemoryManager().listPendingMemoryProposals()));
+            return true;
+        }
+        if ("/memory export --audit".equals(lower) || "/mem export --audit".equals(lower)) {
+            try {
+                Path exported = reactAgent.getMemoryManager()
+                        .exportAudit(Path.of(System.getProperty("user.home"), ".mindcli", "exports"));
+                appendSystem("记忆审计已导出: " + exported.toAbsolutePath());
+            } catch (Exception e) {
+                appendSystem("导出记忆审计失败: " + e.getMessage());
+            }
+            return true;
+        }
+        if (lower.startsWith("/memory approve ") || lower.startsWith("/mem approve ")) {
+            int prefixLength = lower.startsWith("/mem approve ") ? 13 : 16;
+            String id = input.substring(prefixLength).trim();
+            appendSystem(reactAgent.getMemoryManager().approveMemoryProposal(id)
+                    ? "已批准候选记忆并写入长期记忆: " + id
+                    : "未找到可批准的待确认候选: " + id);
+            return true;
+        }
+        if (lower.startsWith("/memory reject ") || lower.startsWith("/mem reject ")) {
+            int prefixLength = lower.startsWith("/mem reject ") ? 12 : 15;
+            String id = input.substring(prefixLength).trim();
+            appendSystem(reactAgent.getMemoryManager().rejectMemoryProposal(id)
+                    ? "已拒绝候选记忆: " + id
+                    : "未找到可拒绝的待确认候选: " + id);
             return true;
         }
         if ("/memory list".equals(lower) || "/mem list".equals(lower)) {
@@ -173,8 +210,8 @@ public final class TuiSessionController implements AutoCloseable {
             if (fact.isEmpty()) {
                 appendSystem("请提供要保存的内容，例如 /save 这个项目使用 Java 17");
             } else {
-                reactAgent.getMemoryManager().storeFact(fact, scope);
-                appendSystem("已保存到长期记忆(" + scope + "): " + fact);
+                MemoryWriteResult result = reactAgent.getMemoryManager().storeFact(fact, scope);
+                appendSystem(result.message());
             }
             return true;
         }
@@ -244,7 +281,7 @@ public final class TuiSessionController implements AutoCloseable {
         if (input.startsWith("/")) {
             appendSystem("""
                     TUI 当前支持命令：
-                    /clear, /context, /memory, /memory clear, /save <事实>
+                    /clear, /context, /memory, /memory proposals, /memory export --audit, /memory approve <id>, /memory reject <id>, /memory clear, /save <事实>
                     /hitl, /hitl on, /hitl off
                     /snapshot, /snapshot status, /snapshot clean, /restore <N>
                     /config, /plan <任务>, /team <任务>, /cancel, /exit
@@ -415,6 +452,34 @@ public final class TuiSessionController implements AutoCloseable {
                     .append("\n");
         }
         return sb.toString().trim();
+    }
+
+    private static String formatMemoryProposals(List<MemoryProposal> proposals) {
+        if (proposals == null || proposals.isEmpty()) {
+            return "没有待确认候选记忆。";
+        }
+        StringBuilder sb = new StringBuilder("待确认候选记忆：\n");
+        for (MemoryProposal proposal : proposals) {
+            sb.append("- ")
+                    .append(proposal.id())
+                    .append(" [").append(proposal.status()).append("] ")
+                    .append(proposal.type())
+                    .append(" · ").append(proposal.createdAt()).append("\n")
+                    .append("  ").append(proposal.name()).append("\n")
+                    .append("  ").append(preview(proposal.content(), 120)).append("\n");
+        }
+        return sb.toString().trim();
+    }
+
+    private static String preview(String content, int maxChars) {
+        if (content == null || content.isBlank()) {
+            return "";
+        }
+        String normalized = content.replace('\n', ' ').trim();
+        if (normalized.length() <= maxChars) {
+            return normalized;
+        }
+        return normalized.substring(0, maxChars) + "...";
     }
 
     @Override

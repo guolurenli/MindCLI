@@ -13,7 +13,7 @@ java -jar target/mindcli-1.0-SNAPSHOT.jar
 ## 主要功能
 
 - **ReAct + Plan-and-Execute + Multi-Agent** 三种工作模式，覆盖从简单问答到复杂多步骤任务
-- **Memory + RAG**：短期/长期记忆 + SQLite 向量存储 + 代码语义检索 + 代码关系图谱
+- **Memory + RAG**：短期/长期记忆 + 候选审批 + 策略裁决 + 审计导出 + SQLite 向量存储 + 代码语义检索 + 代码关系图谱
 - **多模型自由切换**：GLM / DeepSeek / Kimi / StepFun / Xfyun / FreeLLMAPI，运行时 `/model` 即时切换
 - **MCP 协议**：支持 stdio + Streamable HTTP，60+ 工具自动注册，`~/.mindcli/mcp.json` 配置
 - **Chrome DevTools**：浏览器操作（navigate / click / fill / snapshot），支持登录态复用
@@ -68,11 +68,14 @@ ReAct / Plan / Multi-Agent 的工具调用都会先进入 Agent Runtime 的 `Too
 | `/save <事实>` | 保存长期记忆（项目级）；`--global` 存为跨项目通用 |
 | `/memory` | 查看记忆系统状态 |
 | `/memory policy` | 查看自动提取、候选、存储、检索过滤和审计事件策略 |
+| `/memory proposals` | 查看待确认候选记忆 |
+| `/memory export --audit` | 导出记忆审计证据 Markdown |
+| `/memory approve <id>` / `reject <id>` | 批准候选写入长期记忆，或拒绝候选 |
 | `/memory list` / `search <关键词>` / `delete <id>` | 管理长期记忆 |
 | `/clear` | 清空当前对话历史与短期记忆 |
 
-长期记忆默认只通过 `/save` 或用户明确要求保存。自动长期记忆提取默认关闭；如显式设置 `-Dmindcli.memory.autoExtract.enabled=true` 或 `MINDCLI_MEMORY_AUTO_EXTRACT=true`，系统只会生成待确认记忆候选，不会直接写入长期记忆。
-长期记忆注入 prompt 前会跳过 `status=revoked/deleted/expired` 或 `expiresAt` 已过期的条目。
+长期记忆默认只通过 `/save` 或用户明确要求保存。自动长期记忆提取默认关闭；如显式设置 `-Dmindcli.memory.autoExtract.enabled=true` 或 `MINDCLI_MEMORY_AUTO_EXTRACT=true`，系统只会生成待确认记忆候选，不会直接写入长期记忆；候选需经 `/memory approve <id>` 批准后才会落入长期记忆。
+长期记忆注入 prompt 前会跳过 `status=revoked/deleted/expired` 或 `expiresAt` 已过期的条目。删除长期记忆会保留 tombstone 文件并写入 `audit.jsonl`，`/memory export --audit` 会把写入、拒绝、审批、删除、注入和导出事件整理到 `~/.mindcli/exports/memory-audit-*.md`。
 
 ### MCP 管理
 

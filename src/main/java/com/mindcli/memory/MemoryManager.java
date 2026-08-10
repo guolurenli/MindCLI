@@ -9,7 +9,9 @@ import com.mindcli.runtime.agent.RunStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -33,6 +35,9 @@ public class MemoryManager {
     private final LongTermMemory longTermMemory;
     private final MemoryExtractor extractor;
     private final MemoryRetriever retriever;
+    private final MemoryProposalStore proposalStore;
+    private final MemoryPolicyEngine policyEngine;
+    private final MemoryAuditService auditService;
     private final List<MemoryProposal> pendingMemoryProposals;
     private TokenBudget tokenBudget;
     private ContextProfile contextProfile;
@@ -62,9 +67,13 @@ public class MemoryManager {
         this.longTermMemory = longTermMemory != null ? longTermMemory : new LongTermMemory();
         this.extractor = new MemoryExtractor(llmClient, this.longTermMemory);
         this.retriever = new MemoryRetriever(llmClient, this.longTermMemory);
+        this.proposalStore = new JsonlMemoryProposalStore(resolveProposalStorePath(this.longTermMemory));
+        this.policyEngine = new MemoryPolicyEngine();
+        this.auditService = new MemoryAuditService(resolveAuditStorePath(this.longTermMemory));
         this.pendingMemoryProposals = Collections.synchronizedList(new ArrayList<>());
         this.tokenBudget = new TokenBudget(contextProfile.maxContextWindow());
         this.currentProject = defaultProjectKey();
+        reloadPendingProposals();
     }
 
     public void setLlmClient(LlmClient llmClient) {
@@ -99,7 +108,7 @@ public class MemoryManager {
             log.debug("本轮已有手动记忆写入，跳过自动提取");
             return;
         }
-        addPendingProposals(extractor.extractFactProposalsIncremental(conversationHistory));
+        addPendingProposals(extractor.extractFactProposalsIncremental(conversationHistory), null, null);
     }
 
     /**
@@ -129,32 +138,62 @@ public class MemoryManager {
         }
         CompletableFuture.runAsync(() -> {
             List<MemoryProposal> proposals = extractor.extractFactProposalsIncremental(conversationHistory);
-            addPendingProposals(proposals);
-            appendMemoryProposedEvent(runContext, runStore, proposals);
+            List<MemoryProposal> accepted = addPendingProposals(proposals, runContext, runStore);
+            appendMemoryProposedEvent(runContext, runStore, accepted, "extractor");
         });
     }
 
     /**
      * 存储关键事实到长期记忆
      */
-    public void storeFact(String fact) {
-        storeFact(fact, "project");
+    public MemoryWriteResult storeFact(String fact) {
+        return storeFact(fact, "project", null, null);
     }
 
-    public void storeFact(String fact, String scope) {
+    public MemoryWriteResult storeFact(String fact, String scope) {
+        return storeFact(fact, scope, null, null);
+    }
+
+    public MemoryWriteResult storeFact(String fact, String scope, AgentRunContext runContext, RunStore runStore) {
         String normalizedScope = normalizeScope(scope);
+        MemoryPolicyDecision decision = policyEngine.evaluate(fact,
+                MemoryPolicyContext.manual(currentProject, normalizedScope));
+        if (decision.type() == MemoryPolicyDecision.DecisionType.DENY) {
+            recordMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_DENIED, Map.of(
+                    "source", "manual",
+                    "scope", normalizedScope,
+                    "policyId", decision.policyId(),
+                    "reason", decision.reason(),
+                    "contentLength", String.valueOf(fact == null ? 0 : fact.length())
+            ));
+            return MemoryWriteResult.denied(decision.policyId(),
+                    "保存长期记忆被策略拒绝: " + decision.policyId() + " - " + decision.reason());
+        }
         Map<String, String> metadata = "global".equals(normalizedScope)
                 ? Map.of("source", "fact", "scope", "global")
                 : Map.of("source", "fact", "scope", "project", "project", currentProject);
+        if (decision.type() == MemoryPolicyDecision.DecisionType.NEED_APPROVAL) {
+            MemoryProposal proposal = MemoryProposal.proposed(
+                    fact,
+                    fact,
+                    MemoryEntry.MemoryType.PROJECT_FACT,
+                    withPolicyMetadata(metadata, decision, "manual"));
+            List<MemoryProposal> accepted = addPendingProposals(List.of(proposal), runContext, runStore);
+            appendMemoryProposedEvent(runContext, runStore, accepted, "manual");
+            return MemoryWriteResult.proposed(proposal, decision.policyId(),
+                    "已生成待确认候选记忆(" + normalizedScope + "): " + proposal.id()
+                            + "，可用 /memory approve " + proposal.id() + " 批准");
+        }
         MemoryEntry entry = new MemoryEntry(
                 "fact-" + UUID.randomUUID().toString().substring(0, 8),
                 fact,
                 MemoryEntry.MemoryType.PROJECT_FACT,
-                metadata,
+                withPolicyMetadata(metadata, decision, "manual"),
                 MemoryEntry.estimateTokens(fact)
         );
-        longTermMemory.store(entry);
-        memoryWrittenThisRun.set(true);
+        storeMemoryEntry(entry, runContext, runStore, Map.of("source", "manual"));
+        return MemoryWriteResult.written(entry, decision.policyId(),
+                "已保存到长期记忆(" + normalizedScope + "): " + fact);
     }
 
     /**
@@ -181,7 +220,18 @@ public class MemoryManager {
     }
 
     public boolean deleteLongTerm(String id) {
-        return longTermMemory.delete(id);
+        return deleteLongTerm(id, null, null);
+    }
+
+    public boolean deleteLongTerm(String id, AgentRunContext runContext, RunStore runStore) {
+        boolean deleted = longTermMemory.delete(id);
+        if (deleted) {
+            recordMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_DELETED, Map.of(
+                    "memoryId", id == null ? "" : id,
+                    "source", "manual"
+            ));
+        }
+        return deleted;
     }
 
     /**
@@ -206,13 +256,17 @@ public class MemoryManager {
                                        AgentRunContext runContext, RunStore runStore) {
         Set<String> effectiveToolNames = activeToolNames == null ? Set.of() : activeToolNames;
         String context = retriever.buildContextForQuery(query, maxTokens, currentProject, effectiveToolNames);
-        appendMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_CONTEXT_BUILT, Map.of(
+        Map<String, String> attributes = Map.of(
                 "queryLength", String.valueOf(query == null ? 0 : query.length()),
                 "maxTokens", String.valueOf(maxTokens),
                 "activeToolCount", String.valueOf(effectiveToolNames.size()),
                 "contextChars", String.valueOf(context.length()),
                 "injected", String.valueOf(!context.isBlank())
-        ));
+        );
+        recordMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_CONTEXT_BUILT, attributes);
+        if (!context.isBlank()) {
+            recordMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_INJECTED, attributes);
+        }
         return context;
     }
 
@@ -231,7 +285,13 @@ public class MemoryManager {
      * 清空长期记忆
      */
     public void clearLongTerm() {
+        int count = longTermMemory.size();
         longTermMemory.clear();
+        recordMemoryEvent(null, null, AgentRunEventType.MEMORY_DELETED, Map.of(
+                "source", "manual",
+                "action", "clear",
+                "memoryCount", String.valueOf(count)
+        ));
     }
 
     /**
@@ -252,11 +312,16 @@ public class MemoryManager {
                 .orElse("n/a");
         return "自动提取: " + (autoExtractEnabled ? "enabled" : "disabled") + "\n" +
                 "自动提取模式: " + (autoExtractEnabled ? "proposal-only" : "disabled") + "\n" +
+                "策略引擎: " + policyEngine.getClass().getSimpleName() + "\n" +
+                "策略规则: " + policyEngine.describeRules() + "\n" +
                 "待确认候选: " + listPendingMemoryProposals().size() + "\n" +
                 "存储适配器: " + storeAdapter + "\n" +
+                "候选存储: " + proposalStore.storagePath().map(Path::toString).orElse("n/a") + "\n" +
+                "审计存储: " + auditService.auditFile() + "\n" +
                 "存储路径: " + storePath + "\n" +
                 "检索治理: 过滤 status=revoked/deleted/expired 和已过期 expiresAt\n" +
-                "审计事件: MEMORY_CONTEXT_BUILT, MEMORY_PROPOSED";
+                "审计事件: MEMORY_CONTEXT_BUILT, MEMORY_INJECTED, MEMORY_PROPOSED, MEMORY_WRITTEN, " +
+                "MEMORY_DENIED, MEMORY_APPROVED, MEMORY_REJECTED, MEMORY_DELETED, MEMORY_EXPORTED";
     }
 
     /**
@@ -270,6 +335,7 @@ public class MemoryManager {
     public LongTermMemory getLongTermMemory() { return longTermMemory; }
     public MemoryStore getMemoryStore() { return longTermMemory; }
     public MemoryRetriever getMemoryRetriever() { return retriever; }
+    public MemoryAuditService getMemoryAuditService() { return auditService; }
     public TokenBudget getTokenBudget() { return tokenBudget; }
     public ContextProfile getContextProfile() { return contextProfile; }
 
@@ -281,29 +347,144 @@ public class MemoryManager {
         }
     }
 
-    private void addPendingProposals(List<MemoryProposal> proposals) {
+    public List<MemoryProposal> listMemoryProposals() {
+        return proposalStore.list();
+    }
+
+    public Path exportAudit(Path exportDir) throws IOException {
+        return auditService.exportMarkdown(exportDir, LocalDateTime.now());
+    }
+
+    public MemoryProposal getMemoryProposal(String id) {
+        return proposalStore.findById(id).orElse(null);
+    }
+
+    public boolean approveMemoryProposal(String id) {
+        return approveMemoryProposal(id, null, null);
+    }
+
+    public boolean approveMemoryProposal(String id, AgentRunContext runContext, RunStore runStore) {
+        MemoryProposal proposal = proposalStore.findById(id).orElse(null);
+        if (proposal == null || proposal.status() != MemoryProposal.Status.PROPOSED) {
+            return false;
+        }
+        MemoryEntry entry = new MemoryEntry(
+                proposal.id().replaceFirst("^proposal-", "fact-"),
+                proposal.name(),
+                proposal.content(),
+                proposal.type(),
+                mergeProposalMetadata(proposal, "proposal"),
+                MemoryEntry.estimateTokens(proposal.content())
+        );
+        proposalStore.updateStatus(id, MemoryProposal.Status.APPROVED);
+        recordMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_APPROVED, Map.of(
+                "proposalId", id,
+                "memoryId", entry.getId(),
+                "source", "proposal"
+        ));
+        storeMemoryEntry(entry, runContext, runStore, Map.of(
+                "source", "proposal",
+                "proposalId", id
+        ));
+        reloadPendingProposals();
+        return true;
+    }
+
+    public boolean rejectMemoryProposal(String id) {
+        return rejectMemoryProposal(id, null, null);
+    }
+
+    public boolean rejectMemoryProposal(String id, AgentRunContext runContext, RunStore runStore) {
+        MemoryProposal proposal = proposalStore.findById(id).orElse(null);
+        if (proposal == null || proposal.status() != MemoryProposal.Status.PROPOSED) {
+            return false;
+        }
+        proposalStore.updateStatus(id, MemoryProposal.Status.REJECTED);
+        recordMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_REJECTED, Map.of(
+                "proposalId", id,
+                "source", "proposal"
+        ));
+        reloadPendingProposals();
+        return true;
+    }
+
+    private List<MemoryProposal> addPendingProposals(List<MemoryProposal> proposals,
+                                                     AgentRunContext runContext,
+                                                     RunStore runStore) {
         if (proposals == null || proposals.isEmpty()) {
-            return;
+            return List.of();
+        }
+        List<MemoryProposal> accepted = new ArrayList<>();
+        for (MemoryProposal proposal : proposals) {
+            MemoryPolicyDecision decision = policyEngine.evaluate(proposal.content(),
+                    MemoryPolicyContext.extracted(currentProject,
+                            proposal.metadata().getOrDefault("scope", "project")));
+            if (decision.type() == MemoryPolicyDecision.DecisionType.DENY) {
+                recordMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_DENIED, Map.of(
+                        "proposalId", proposal.id(),
+                        "source", proposal.metadata().getOrDefault("source", "extractor"),
+                        "policyId", decision.policyId(),
+                        "reason", decision.reason()
+                ));
+                continue;
+            }
+            accepted.add(proposal);
+        }
+        if (accepted.isEmpty()) {
+            return List.of();
         }
         synchronized (pendingMemoryProposals) {
-            pendingMemoryProposals.addAll(proposals);
+            pendingMemoryProposals.addAll(accepted);
         }
-        log.info("生成了 {} 条待确认长期记忆候选", proposals.size());
+        for (MemoryProposal proposal : accepted) {
+            proposalStore.save(proposal);
+        }
+        log.info("生成了 {} 条待确认长期记忆候选", accepted.size());
+        return List.copyOf(accepted);
+    }
+
+    private void storeMemoryEntry(MemoryEntry entry) {
+        storeMemoryEntry(entry, null, null, Map.of());
+    }
+
+    private void storeMemoryEntry(MemoryEntry entry, AgentRunContext runContext, RunStore runStore,
+                                  Map<String, String> extraAttributes) {
+        longTermMemory.store(entry);
+        memoryWrittenThisRun.set(true);
+        Map<String, String> attributes = new java.util.LinkedHashMap<>();
+        attributes.put("memoryId", entry.getId());
+        attributes.put("scope", LongTermMemory.scopeOf(entry));
+        attributes.put("type", entry.getType().name());
+        attributes.put("policyId", entry.getMetadata().getOrDefault("policyId", ""));
+        if (extraAttributes != null) {
+            attributes.putAll(extraAttributes);
+        }
+        recordMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_WRITTEN, attributes);
     }
 
     private void appendMemoryProposedEvent(AgentRunContext runContext, RunStore runStore,
-                                           List<MemoryProposal> proposals) {
+                                           List<MemoryProposal> proposals, String source) {
         if (proposals == null || proposals.isEmpty()) {
             return;
         }
-        appendMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_PROPOSED, Map.of(
+        recordMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_PROPOSED, Map.of(
                 "proposalCount", String.valueOf(proposals.size()),
                 "proposalIds", proposals.stream().map(MemoryProposal::id).collect(Collectors.joining(",")),
                 "proposalTypes", proposals.stream()
                         .map(proposal -> proposal.type().name())
                         .collect(Collectors.joining(",")),
-                "source", "extractor"
+                "source", source == null || source.isBlank() ? "extractor" : source
         ));
+    }
+
+    private void recordMemoryEvent(AgentRunContext runContext, RunStore runStore, AgentRunEventType type,
+                                   Map<String, String> attributes) {
+        try {
+            auditService.record(type, attributes);
+        } catch (RuntimeException e) {
+            log.warn("写入本地记忆审计失败: type={}, error={}", type, e.getMessage());
+        }
+        appendMemoryEvent(runContext, runStore, type, attributes);
     }
 
     private void appendMemoryEvent(AgentRunContext runContext, RunStore runStore, AgentRunEventType type,
@@ -342,6 +523,43 @@ public class MemoryManager {
 
     private static String defaultProjectKey() {
         return normalizeProjectKey(System.getProperty("user.dir"));
+    }
+
+    private void reloadPendingProposals() {
+        synchronized (pendingMemoryProposals) {
+            pendingMemoryProposals.clear();
+            pendingMemoryProposals.addAll(proposalStore.list().stream()
+                    .filter(proposal -> proposal.status() == MemoryProposal.Status.PROPOSED)
+                    .toList());
+        }
+    }
+
+    private static Map<String, String> mergeProposalMetadata(MemoryProposal proposal, String source) {
+        Map<String, String> metadata = new java.util.LinkedHashMap<>(proposal.metadata());
+        metadata.put("source", source);
+        metadata.put("proposalId", proposal.id());
+        metadata.putIfAbsent("scope", "project");
+        return Map.copyOf(metadata);
+    }
+
+    private static Map<String, String> withPolicyMetadata(Map<String, String> metadata,
+                                                          MemoryPolicyDecision decision,
+                                                          String source) {
+        Map<String, String> merged = new java.util.LinkedHashMap<>(metadata == null ? Map.of() : metadata);
+        merged.put("source", source);
+        merged.put("policyId", decision.policyId());
+        merged.put("policyDecision", decision.type().name());
+        return Map.copyOf(merged);
+    }
+
+    private static Path resolveProposalStorePath(LongTermMemory memoryStore) {
+        Path memoryPath = memoryStore.storagePath().orElse(Path.of(System.getProperty("user.home"), ".mindcli", "memory"));
+        return memoryPath.resolve("proposals.jsonl");
+    }
+
+    private static Path resolveAuditStorePath(LongTermMemory memoryStore) {
+        Path memoryPath = memoryStore.storagePath().orElse(Path.of(System.getProperty("user.home"), ".mindcli", "memory"));
+        return memoryPath.resolve("audit.jsonl");
     }
 
     private static String normalizeProjectKey(String path) {

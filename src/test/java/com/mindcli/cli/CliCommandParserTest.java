@@ -223,6 +223,46 @@ class CliCommandParserTest {
     }
 
     @Test
+    void parsesMemoryProposalsSlashCommand() {
+        CliCommandParser.ParsedCommand command = CliCommandParser.parse("/memory proposals");
+
+        assertEquals(CliCommandParser.CommandType.MEMORY_PROPOSALS, command.type());
+        assertNull(command.payload());
+
+        CliCommandParser.ParsedCommand alias = CliCommandParser.parse("/mem proposals");
+        assertEquals(CliCommandParser.CommandType.MEMORY_PROPOSALS, alias.type());
+        assertNull(alias.payload());
+    }
+
+    @Test
+    void parsesMemoryAuditExportSlashCommand() {
+        CliCommandParser.ParsedCommand command = CliCommandParser.parse("/memory export --audit");
+
+        assertEquals(CliCommandParser.CommandType.MEMORY_EXPORT_AUDIT, command.type());
+        assertNull(command.payload());
+
+        CliCommandParser.ParsedCommand alias = CliCommandParser.parse("/mem export --audit");
+        assertEquals(CliCommandParser.CommandType.MEMORY_EXPORT_AUDIT, alias.type());
+        assertNull(alias.payload());
+    }
+
+    @Test
+    void parsesMemoryApproveSlashCommand() {
+        CliCommandParser.ParsedCommand command = CliCommandParser.parse("/memory approve proposal-1234");
+
+        assertEquals(CliCommandParser.CommandType.MEMORY_APPROVE, command.type());
+        assertEquals("proposal-1234", command.payload());
+    }
+
+    @Test
+    void parsesMemoryRejectSlashCommand() {
+        CliCommandParser.ParsedCommand command = CliCommandParser.parse("/mem reject proposal-1234");
+
+        assertEquals(CliCommandParser.CommandType.MEMORY_REJECT, command.type());
+        assertEquals("proposal-1234", command.payload());
+    }
+
+    @Test
     void parsesMemoryClearSlashCommand() {
         CliCommandParser.ParsedCommand command = CliCommandParser.parse("/memory clear");
 

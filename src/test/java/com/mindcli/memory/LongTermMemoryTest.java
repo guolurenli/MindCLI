@@ -4,6 +4,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Map;
@@ -73,6 +74,23 @@ class LongTermMemoryTest {
         memory.store(new MemoryEntry("f1", "测试内容", MemoryEntry.MemoryType.PROJECT_FACT, null, 5));
         assertTrue(memory.delete("f1"));
         assertEquals(0, memory.size());
+    }
+
+    @Test
+    void deleteKeepsTombstoneFileOutOfReloadedActiveMemory() throws Exception {
+        memory.store(new MemoryEntry("f1", "测试内容", MemoryEntry.MemoryType.PROJECT_FACT, null, 5));
+
+        assertTrue(memory.delete("f1"));
+
+        Path tombstone = tempDir.resolve("f1.md");
+        assertTrue(Files.exists(tombstone));
+        String raw = Files.readString(tombstone);
+        assertTrue(raw.contains("status: deleted"), raw);
+        assertTrue(raw.contains("deletedAt:"), raw);
+
+        LongTermMemory reloaded = new LongTermMemory(tempDir.toFile());
+        assertEquals(0, reloaded.size());
+        assertTrue(reloaded.search("测试内容", 5).isEmpty());
     }
 
     @Test

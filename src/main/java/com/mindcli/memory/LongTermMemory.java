@@ -118,11 +118,7 @@ public class LongTermMemory implements MemoryStore {
         MemoryEntry removed = entries.remove(id);
         if (removed != null) {
             tokenCounter.addAndGet(-removed.getTokenCount());
-            // 删除 .md 文件
-            File entryFile = entryFile(removed.getId());
-            if (entryFile.exists()) {
-                entryFile.delete();
-            }
+            writeEntryFile(tombstone(removed));
             updateIndex();
             return true;
         }
@@ -245,6 +241,9 @@ public class LongTermMemory implements MemoryStore {
             try {
                 MemoryEntry entry = parseEntryFile(file);
                 if (entry != null) {
+                    if (isDeleted(entry)) {
+                        continue;
+                    }
                     entries.put(entry.getId(), entry);
                     tokenCounter.addAndGet(entry.getTokenCount());
                 }
@@ -291,7 +290,7 @@ public class LongTermMemory implements MemoryStore {
                 } catch (Exception e) {
                     // use default
                 }
-            } else if ("scope".equals(key) || "project".equals(key) || "source".equals(key)) {
+            } else {
                 metadata.put(key, value);
             }
         }
@@ -305,6 +304,25 @@ public class LongTermMemory implements MemoryStore {
 
         return new MemoryEntry(entryId, name, body, type, timestamp, metadata,
                 MemoryEntry.estimateTokens(body));
+    }
+
+    private static MemoryEntry tombstone(MemoryEntry entry) {
+        Map<String, String> metadata = new LinkedHashMap<>(entry.getMetadata());
+        metadata.put("status", "deleted");
+        metadata.put("deletedAt", Instant.now().toString());
+        return new MemoryEntry(
+                entry.getId(),
+                entry.getName(),
+                entry.getContent(),
+                entry.getType(),
+                entry.getTimestamp(),
+                Map.copyOf(metadata),
+                entry.getTokenCount());
+    }
+
+    private static boolean isDeleted(MemoryEntry entry) {
+        String status = entry.getMetadata().get("status");
+        return status != null && "deleted".equalsIgnoreCase(status.trim());
     }
 
     // ===== 旧版 JSON 迁移 =====

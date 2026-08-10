@@ -11,6 +11,7 @@ import com.mindcli.browser.BrowserGuard;
 import com.mindcli.context.ContextProfile;
 import com.mindcli.lsp.LspDiagnosticReport;
 import com.mindcli.lsp.LspManager;
+import com.mindcli.memory.MemoryWriteResult;
 import com.mindcli.mcp.protocol.McpToolDescriptor;
 import com.mindcli.rag.CodeRetriever;
 import com.mindcli.rag.SearchResultFormatter;
@@ -46,6 +47,7 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.Locale;
@@ -93,7 +95,7 @@ public class ToolRegistry {
     private ContextProfile contextProfile = ContextProfile.from(null);
     private BrowserGuard browserGuard;
     private BrowserConnector browserConnector;
-    private BiConsumer<String, String> memorySaver;
+    private BiFunction<String, String, MemoryWriteResult> memorySaver;
     private SkillRegistry skillRegistry;
     private java.util.function.BiConsumer<String, String[]> writeFileObserver = (p, ba) -> {};
     private LspManager lspManager = new LspManager(projectPath);
@@ -173,10 +175,20 @@ public class ToolRegistry {
     }
 
     public void setMemorySaver(Consumer<String> memorySaver) {
-        this.memorySaver = memorySaver == null ? null : (fact, scope) -> memorySaver.accept(fact);
+        this.memorySaver = memorySaver == null ? null : (fact, scope) -> {
+            memorySaver.accept(fact);
+            return MemoryWriteResult.legacyWritten(fact, scope);
+        };
     }
 
     public void setScopedMemorySaver(BiConsumer<String, String> memorySaver) {
+        this.memorySaver = memorySaver == null ? null : (fact, scope) -> {
+            memorySaver.accept(fact, scope);
+            return MemoryWriteResult.legacyWritten(fact, scope);
+        };
+    }
+
+    public void setScopedMemoryWriter(BiFunction<String, String, MemoryWriteResult> memorySaver) {
         this.memorySaver = memorySaver;
     }
 
@@ -708,8 +720,11 @@ public class ToolRegistry {
                     }
                     String normalized = fact.trim();
                     String scope = "global".equalsIgnoreCase(args.get("scope")) ? "global" : "project";
-                    memorySaver.accept(normalized, scope);
-                    return "💾 已保存到长期记忆(" + scope + "): " + normalized;
+                    MemoryWriteResult result = memorySaver.apply(normalized, scope);
+                    if (result == null || result.message().isBlank()) {
+                        return MemoryWriteResult.legacyWritten(normalized, scope).message();
+                    }
+                    return result.message();
                 }
         ));
     }

@@ -197,6 +197,18 @@ class MainInputNormalizationTest {
     }
 
     @Test
+    void slashCommandHintsIncludeMemoryProposalCommands() {
+        List<String> commands = Main.slashCommandHints().stream()
+                .map(Main.SlashCommandHint::display)
+                .toList();
+
+        assertTrue(commands.contains("/memory proposals"));
+        assertTrue(commands.contains("/memory approve <id>"));
+        assertTrue(commands.contains("/memory reject <id>"));
+        assertTrue(commands.contains("/memory export --audit"));
+    }
+
+    @Test
     void slashCommandChoicesAreRenderedDirectlyWithoutJLineConfirmationText() {
         String choices = Main.formatSlashCommandChoices(120);
 

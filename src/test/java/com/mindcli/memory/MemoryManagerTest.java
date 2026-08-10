@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.List;
+import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -48,12 +49,43 @@ class MemoryManagerTest {
         memoryManager.setProjectPath("/repo/current");
 
         memoryManager.storeFact("当前项目使用 Java 17");
-        memoryManager.storeFact("默认用中文回答", "global");
 
         MemoryEntry projectEntry = longTermMemory.search("Java", 5, memoryManager.getCurrentProject()).get(0);
         assertEquals("project", projectEntry.getMetadata().get("scope"));
         assertTrue(projectEntry.getMetadata().get("project").replace("\\", "/").endsWith("/repo/current"));
-        assertEquals("global", longTermMemory.search("中文", 5).get(0).getMetadata().get("scope"));
+    }
+
+    @Test
+    void shouldRouteGlobalManualSaveToProposalApproval() {
+        LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
+        MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 128000, longTermMemory);
+
+        MemoryWriteResult result = memoryManager.storeFact("默认用中文回答", "global");
+
+        assertEquals(MemoryWriteResult.Status.PROPOSED, result.status());
+        assertEquals(0, longTermMemory.size());
+        assertEquals(1, memoryManager.listPendingMemoryProposals().size());
+        MemoryProposal proposal = memoryManager.listPendingMemoryProposals().get(0);
+        assertEquals("global", proposal.metadata().get("scope"));
+        assertEquals("manual", proposal.metadata().get("source"));
+        assertTrue(result.message().contains("已生成待确认候选记忆(global)"), result.message());
+        assertTrue(result.message().contains(proposal.id()), result.message());
+        assertTrue(result.message().contains("/memory approve " + proposal.id()), result.message());
+    }
+
+    @Test
+    void shouldDenySensitiveManualSave() {
+        LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
+        MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 128000, longTermMemory);
+
+        MemoryWriteResult result = memoryManager.storeFact("API_KEY=sk-1234567890abcdefghijklmnopqrst", "project");
+
+        assertEquals(MemoryWriteResult.Status.DENIED, result.status());
+        assertEquals(0, longTermMemory.size());
+        assertEquals(0, memoryManager.listPendingMemoryProposals().size());
+        assertEquals("memory.sensitive", result.policyId());
+        assertTrue(result.message().contains("保存长期记忆被策略拒绝"), result.message());
+        assertTrue(result.message().contains("memory.sensitive"), result.message());
     }
 
     @Test
@@ -127,6 +159,109 @@ class MemoryManagerTest {
     }
 
     @Test
+    void shouldReloadPendingProposalsFromProposalStore() throws Exception {
+        String previous = System.getProperty("mindcli.memory.autoExtract.enabled");
+        System.setProperty("mindcli.memory.autoExtract.enabled", "true");
+        try {
+            LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
+            CountingMemoryClient llmClient = new CountingMemoryClient(new LlmClient.ChatResponse(
+                    "assistant",
+                    "[中文]: [USER_PREFERENCE] 用户偏好使用中文回答",
+                    null,
+                    10,
+                    5
+            ));
+            MemoryManager first = new MemoryManager(llmClient, 128000, longTermMemory);
+
+            first.extractFactsIncrementalAsync(memoryExtractionMessages());
+
+            assertTrue(llmClient.awaitChatCall(1_000));
+            waitUntilProposalCount(first, 1);
+
+            MemoryManager reloaded = new MemoryManager(new StubGLMClient(List.of()), 128000,
+                    new LongTermMemory(tempDir.toFile()));
+
+            assertEquals(1, reloaded.listPendingMemoryProposals().size());
+            assertEquals(MemoryProposal.Status.PROPOSED, reloaded.listPendingMemoryProposals().get(0).status());
+        } finally {
+            if (previous == null) {
+                System.clearProperty("mindcli.memory.autoExtract.enabled");
+            } else {
+                System.setProperty("mindcli.memory.autoExtract.enabled", previous);
+            }
+        }
+    }
+
+    @Test
+    void shouldApprovePendingProposalIntoLongTermMemory() throws Exception {
+        String previous = System.getProperty("mindcli.memory.autoExtract.enabled");
+        System.setProperty("mindcli.memory.autoExtract.enabled", "true");
+        try {
+            LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
+            CountingMemoryClient llmClient = new CountingMemoryClient(new LlmClient.ChatResponse(
+                    "assistant",
+                    "[中文]: [USER_PREFERENCE] 用户偏好使用中文回答",
+                    null,
+                    10,
+                    5
+            ));
+            MemoryManager memoryManager = new MemoryManager(llmClient, 128000, longTermMemory);
+
+            memoryManager.extractFactsIncrementalAsync(memoryExtractionMessages());
+
+            assertTrue(llmClient.awaitChatCall(1_000));
+            waitUntilProposalCount(memoryManager, 1);
+
+            MemoryProposal proposal = memoryManager.listPendingMemoryProposals().get(0);
+            assertTrue(memoryManager.approveMemoryProposal(proposal.id()));
+            assertEquals(MemoryProposal.Status.APPROVED, memoryManager.getMemoryProposal(proposal.id()).status());
+            assertEquals(1, longTermMemory.size());
+            assertEquals(0, memoryManager.listPendingMemoryProposals().stream()
+                    .filter(p -> p.status() == MemoryProposal.Status.PROPOSED)
+                    .count());
+        } finally {
+            if (previous == null) {
+                System.clearProperty("mindcli.memory.autoExtract.enabled");
+            } else {
+                System.setProperty("mindcli.memory.autoExtract.enabled", previous);
+            }
+        }
+    }
+
+    @Test
+    void shouldRejectPendingProposalWithoutWritingLongTermMemory() throws Exception {
+        String previous = System.getProperty("mindcli.memory.autoExtract.enabled");
+        System.setProperty("mindcli.memory.autoExtract.enabled", "true");
+        try {
+            LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
+            CountingMemoryClient llmClient = new CountingMemoryClient(new LlmClient.ChatResponse(
+                    "assistant",
+                    "[中文]: [USER_PREFERENCE] 用户偏好使用中文回答",
+                    null,
+                    10,
+                    5
+            ));
+            MemoryManager memoryManager = new MemoryManager(llmClient, 128000, longTermMemory);
+
+            memoryManager.extractFactsIncrementalAsync(memoryExtractionMessages());
+
+            assertTrue(llmClient.awaitChatCall(1_000));
+            waitUntilProposalCount(memoryManager, 1);
+
+            MemoryProposal proposal = memoryManager.listPendingMemoryProposals().get(0);
+            assertTrue(memoryManager.rejectMemoryProposal(proposal.id()));
+            assertEquals(MemoryProposal.Status.REJECTED, memoryManager.getMemoryProposal(proposal.id()).status());
+            assertEquals(0, longTermMemory.size());
+        } finally {
+            if (previous == null) {
+                System.clearProperty("mindcli.memory.autoExtract.enabled");
+            } else {
+                System.setProperty("mindcli.memory.autoExtract.enabled", previous);
+            }
+        }
+    }
+
+    @Test
     void shouldAppendMemoryContextBuiltEventWhenAudited() {
         LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
         MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 128000, longTermMemory);
@@ -142,6 +277,55 @@ class MemoryManagerTest {
         assertEquals(AgentRunEventType.MEMORY_CONTEXT_BUILT, event.type());
         assertEquals("true", event.attributes().get("injected"));
         assertEquals("200", event.attributes().get("maxTokens"));
+        assertTrue(runStore.events(runContext.runId()).stream()
+                .anyMatch(item -> item.type() == AgentRunEventType.MEMORY_INJECTED));
+    }
+
+    @Test
+    void shouldAuditManualWriteAndPolicyDenialWhenRunContextExists() {
+        LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
+        MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 128000, longTermMemory);
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext runContext = AgentRunContext.create(AgentMode.REACT, "记忆审计", "/repo/current");
+
+        MemoryWriteResult written = memoryManager.storeFact("当前项目使用 Java 17", "project", runContext, runStore);
+        MemoryWriteResult denied = memoryManager.storeFact(
+                "API_KEY=sk-1234567890abcdefghijklmnopqrst", "project", runContext, runStore);
+
+        List<AgentRunEventType> types = runStore.events(runContext.runId()).stream()
+                .map(AgentRunEvent::type)
+                .toList();
+        assertEquals(MemoryWriteResult.Status.WRITTEN, written.status());
+        assertEquals(MemoryWriteResult.Status.DENIED, denied.status());
+        assertTrue(types.contains(AgentRunEventType.MEMORY_WRITTEN), types.toString());
+        assertTrue(types.contains(AgentRunEventType.MEMORY_DENIED), types.toString());
+        assertTrue(memoryManager.getMemoryAuditService().list().stream()
+                .anyMatch(record -> "MEMORY_DENIED".equals(record.type())
+                        && "memory.sensitive".equals(record.attributes().get("policyId"))));
+    }
+
+    @Test
+    void shouldAuditProposalApprovalRejectionAndDeletionWhenRunContextExists() {
+        LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
+        MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 128000, longTermMemory);
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext runContext = AgentRunContext.create(AgentMode.REACT, "审批审计", "/repo/current");
+
+        MemoryWriteResult approveCandidate = memoryManager.storeFact("默认用中文回答", "global", runContext, runStore);
+        MemoryWriteResult rejectCandidate = memoryManager.storeFact("默认使用 Maven quick profile", "global", runContext, runStore);
+
+        assertTrue(memoryManager.approveMemoryProposal(approveCandidate.proposal().id(), runContext, runStore));
+        String memoryId = longTermMemory.getAll().get(0).getId();
+        assertTrue(memoryManager.rejectMemoryProposal(rejectCandidate.proposal().id(), runContext, runStore));
+        assertTrue(memoryManager.deleteLongTerm(memoryId, runContext, runStore));
+
+        List<AgentRunEventType> types = runStore.events(runContext.runId()).stream()
+                .map(AgentRunEvent::type)
+                .toList();
+        assertTrue(types.contains(AgentRunEventType.MEMORY_PROPOSED), types.toString());
+        assertTrue(types.contains(AgentRunEventType.MEMORY_APPROVED), types.toString());
+        assertTrue(types.contains(AgentRunEventType.MEMORY_REJECTED), types.toString());
+        assertTrue(types.contains(AgentRunEventType.MEMORY_DELETED), types.toString());
     }
 
     @Test

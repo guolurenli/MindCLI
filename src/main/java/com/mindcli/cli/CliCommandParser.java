@@ -17,6 +17,10 @@ final class CliCommandParser {
         SWITCH_HITL,
         MEMORY_STATUS,
         MEMORY_POLICY,
+        MEMORY_PROPOSALS,
+        MEMORY_EXPORT_AUDIT,
+        MEMORY_APPROVE,
+        MEMORY_REJECT,
         MEMORY_CLEAR,
         MEMORY_LIST,
         MEMORY_DELETE,
@@ -142,6 +146,30 @@ final class CliCommandParser {
 
         if (trimmed.equalsIgnoreCase("/memory policy") || trimmed.equalsIgnoreCase("/mem policy")) {
             return new ParsedCommand(CommandType.MEMORY_POLICY, null);
+        }
+
+        if (trimmed.equalsIgnoreCase("/memory proposals") || trimmed.equalsIgnoreCase("/mem proposals")) {
+            return new ParsedCommand(CommandType.MEMORY_PROPOSALS, null);
+        }
+
+        if (trimmed.equalsIgnoreCase("/memory export --audit") || trimmed.equalsIgnoreCase("/mem export --audit")) {
+            return new ParsedCommand(CommandType.MEMORY_EXPORT_AUDIT, null);
+        }
+
+        if (trimmed.regionMatches(true, 0, "/memory approve ", 0, 16)) {
+            return new ParsedCommand(CommandType.MEMORY_APPROVE, trimmed.substring(16).trim());
+        }
+
+        if (trimmed.regionMatches(true, 0, "/mem approve ", 0, 13)) {
+            return new ParsedCommand(CommandType.MEMORY_APPROVE, trimmed.substring(13).trim());
+        }
+
+        if (trimmed.regionMatches(true, 0, "/memory reject ", 0, 15)) {
+            return new ParsedCommand(CommandType.MEMORY_REJECT, trimmed.substring(15).trim());
+        }
+
+        if (trimmed.regionMatches(true, 0, "/mem reject ", 0, 12)) {
+            return new ParsedCommand(CommandType.MEMORY_REJECT, trimmed.substring(12).trim());
         }
 
         if (trimmed.equalsIgnoreCase("/memory clear") || trimmed.equalsIgnoreCase("/mem clear")) {

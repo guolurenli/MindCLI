@@ -19,6 +19,9 @@ import com.mindcli.llm.LlmClient;
 import com.mindcli.llm.LlmClientFactory;
 import com.mindcli.memory.LongTermMemory;
 import com.mindcli.memory.MemoryEntry;
+import com.mindcli.memory.MemoryManager;
+import com.mindcli.memory.MemoryProposal;
+import com.mindcli.memory.MemoryWriteResult;
 import com.mindcli.render.Renderer;
 import com.mindcli.render.RendererFactory;
 import com.mindcli.render.StatusInfo;
@@ -498,6 +501,10 @@ public class Main {
                         ui.println(reactAgent.getMemoryManager().getSystemStatus());
                         ui.println("   当前项目作用域: " + reactAgent.getMemoryManager().getCurrentProject());
                         ui.println("   /memory policy - 查看记忆治理策略");
+                        ui.println("   /memory proposals - 查看待确认候选记忆");
+                        ui.println("   /memory export --audit - 导出记忆审计证据");
+                        ui.println("   /memory approve <id> - 批准候选并写入长期记忆");
+                        ui.println("   /memory reject <id> - 拒绝候选");
                         ui.println("   /memory list - 查看长期记忆");
                         ui.println("   /memory search <关键词> - 搜索当前项目可见长期记忆");
                         ui.println("   /memory delete <id> - 删除单条长期记忆");
@@ -510,6 +517,38 @@ public class Main {
                         ui.println("📋 记忆治理策略：");
                         ui.println(reactAgent.getMemoryManager().getPolicyStatus());
                         ui.println();
+                        continue;
+                    }
+                    case MEMORY_PROPOSALS -> {
+                        List<MemoryProposal> proposals = reactAgent.getMemoryManager().listPendingMemoryProposals();
+                        ui.println(formatMemoryProposals("📋 待确认候选记忆", proposals));
+                        ui.println();
+                        continue;
+                    }
+                    case MEMORY_EXPORT_AUDIT -> {
+                        handleMemoryAuditExportCommand(ui, reactAgent.getMemoryManager());
+                        continue;
+                    }
+                    case MEMORY_APPROVE -> {
+                        String id = command.payload();
+                        if (id == null || id.isBlank()) {
+                            ui.println("❌ 请提供候选记忆 id，例如 /memory approve proposal-abcd1234\n");
+                        } else if (reactAgent.getMemoryManager().approveMemoryProposal(id)) {
+                            ui.println("✅ 已批准候选记忆并写入长期记忆: " + id + "\n");
+                        } else {
+                            ui.println("📭 未找到可批准的待确认候选: " + id + "\n");
+                        }
+                        continue;
+                    }
+                    case MEMORY_REJECT -> {
+                        String id = command.payload();
+                        if (id == null || id.isBlank()) {
+                            ui.println("❌ 请提供候选记忆 id，例如 /memory reject proposal-abcd1234\n");
+                        } else if (reactAgent.getMemoryManager().rejectMemoryProposal(id)) {
+                            ui.println("🚫 已拒绝候选记忆: " + id + "\n");
+                        } else {
+                            ui.println("📭 未找到可拒绝的待确认候选: " + id + "\n");
+                        }
                         continue;
                     }
                     case MEMORY_LIST -> {
@@ -551,8 +590,9 @@ public class Main {
                         if (saveRequest.fact().isEmpty()) {
                             ui.println("❌ 请提供要保存的内容，例如 /save 这个项目使用Java 17，或 /save --global 默认用中文回答\n");
                         } else {
-                            reactAgent.getMemoryManager().storeFact(saveRequest.fact(), saveRequest.scope());
-                            ui.println("💾 已保存到长期记忆(" + saveRequest.scope() + "): " + saveRequest.fact() + "\n");
+                            MemoryWriteResult result = reactAgent.getMemoryManager()
+                                    .storeFact(saveRequest.fact(), saveRequest.scope());
+                            ui.println(result.message() + "\n");
                         }
                         continue;
                     }
@@ -1602,6 +1642,10 @@ public class Main {
                 new SlashCommandHint("/context", "/context", "查看上下文和记忆状态"),
                 new SlashCommandHint("/memory", "/memory", "查看记忆状态"),
                 new SlashCommandHint("/memory policy", "/memory policy", "查看记忆治理策略"),
+                new SlashCommandHint("/memory proposals", "/memory proposals", "查看待确认候选记忆"),
+                new SlashCommandHint("/memory export --audit", "/memory export --audit", "导出记忆审计证据"),
+                new SlashCommandHint("/memory approve ", "/memory approve <id>", "批准候选并写入长期记忆"),
+                new SlashCommandHint("/memory reject ", "/memory reject <id>", "拒绝候选记忆"),
                 new SlashCommandHint("/memory list", "/memory list", "查看长期记忆列表"),
                 new SlashCommandHint("/memory search ", "/memory search <关键词>", "搜索当前项目可见长期记忆"),
                 new SlashCommandHint("/memory delete ", "/memory delete <id>", "删除单条长期记忆"),
@@ -2027,6 +2071,17 @@ public class Main {
             out.println("   共 " + countExportedMessages(history) + " 条消息\n");
         } catch (IOException e) {
             out.println("❌ 写入导出文件失败: " + e.getMessage() + "\n");
+        }
+    }
+
+    private static void handleMemoryAuditExportCommand(PrintStream out, MemoryManager memoryManager) {
+        Path exportsDir = Path.of(System.getProperty("user.home"), ".mindcli", "exports");
+        try {
+            Path exportFile = memoryManager.exportAudit(exportsDir);
+            out.println("✅ 记忆审计已导出: " + exportFile.toAbsolutePath());
+            out.println("   审计源: " + memoryManager.getMemoryAuditService().auditFile() + "\n");
+        } catch (IOException e) {
+            out.println("❌ 导出记忆审计失败: " + e.getMessage() + "\n");
         }
     }
 
@@ -2944,6 +2999,34 @@ public class Main {
                     .append("  ").append(entry.getContent()).append("\n");
         }
         return sb.toString().trim();
+    }
+
+    private static String formatMemoryProposals(String title, List<MemoryProposal> proposals) {
+        StringBuilder sb = new StringBuilder(title).append("：\n");
+        if (proposals == null || proposals.isEmpty()) {
+            return sb.append("📭 没有待确认候选记忆。").toString();
+        }
+        for (MemoryProposal proposal : proposals) {
+            sb.append("- ")
+                    .append(proposal.id())
+                    .append(" [").append(proposal.status()).append("] ")
+                    .append(proposal.type())
+                    .append(" · ").append(proposal.createdAt()).append("\n")
+                    .append("  ").append(proposal.name()).append("\n")
+                    .append("  ").append(preview(proposal.content(), 120)).append("\n");
+        }
+        return sb.toString().trim();
+    }
+
+    private static String preview(String content, int maxChars) {
+        if (content == null || content.isBlank()) {
+            return "";
+        }
+        String normalized = content.replace('\n', ' ').trim();
+        if (normalized.length() <= maxChars) {
+            return normalized;
+        }
+        return normalized.substring(0, maxChars) + "...";
     }
 
     private static String shortenPath(String path) {

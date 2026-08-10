@@ -17,7 +17,9 @@ public record MemoryProposal(
         Status status
 ) {
     public enum Status {
-        PROPOSED
+        PROPOSED,
+        APPROVED,
+        REJECTED
     }
 
     public static MemoryProposal proposed(String name, String content, MemoryEntry.MemoryType type,
@@ -31,5 +33,10 @@ public record MemoryProposal(
                 Instant.now(),
                 Status.PROPOSED
         );
+    }
+
+    public MemoryProposal withStatus(Status newStatus) {
+        return new MemoryProposal(id, name, content, type, metadata, createdAt,
+                newStatus == null ? status : newStatus);
     }
 }

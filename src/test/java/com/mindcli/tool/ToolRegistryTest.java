@@ -3,6 +3,7 @@ package com.mindcli.tool;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.browser.BrowserConnector;
+import com.mindcli.memory.MemoryWriteResult;
 import com.mindcli.mcp.protocol.McpToolDescriptor;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -357,6 +358,32 @@ class ToolRegistryTest {
 
         assertEquals(List.of("global:默认用中文回答"), saved);
         assertTrue(result.contains("长期记忆(global)"));
+    }
+
+    @Test
+    void saveMemoryToolReturnsPolicyAwareWriterResult() {
+        ToolRegistry registry = new ToolRegistry();
+        registry.setScopedMemoryWriter((fact, scope) -> MemoryWriteResult.proposed(
+                null,
+                "memory.global.approval",
+                "已生成待确认候选记忆(global): proposal-1234，可用 /memory approve proposal-1234 批准"));
+
+        String result = registry.executeTool("save_memory", "{\"fact\":\"默认用中文回答\",\"scope\":\"global\"}");
+
+        assertEquals("已生成待确认候选记忆(global): proposal-1234，可用 /memory approve proposal-1234 批准", result);
+    }
+
+    @Test
+    void saveMemoryToolReturnsPolicyDenialResult() {
+        ToolRegistry registry = new ToolRegistry();
+        registry.setScopedMemoryWriter((fact, scope) -> MemoryWriteResult.denied(
+                "memory.sensitive",
+                "保存长期记忆被策略拒绝: memory.sensitive - 检测到敏感信息，拒绝写入长期记忆"));
+
+        String result = registry.executeTool("save_memory",
+                "{\"fact\":\"API_KEY=sk-1234567890abcdefghijklmnopqrst\"}");
+
+        assertEquals("保存长期记忆被策略拒绝: memory.sensitive - 检测到敏感信息，拒绝写入长期记忆", result);
     }
 
     private static void restoreSystemProperty(String key, String previous) {

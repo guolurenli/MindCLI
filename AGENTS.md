@@ -12,7 +12,7 @@
 
 - 项目名：`MindCLI`
 - 定位：面向商业使用的 Java Agent CLI 产品，对标 Claude Code
-- 已交付 23 期 + Agent Runtime 企业级改造 Phase 6（ReAct → Plan+DAG → Memory → RAG → Multi-Agent → HITL → 并行工具 → 多模型 → 联网 → MCP 核心 → MCP 高级 → 长上下文 → Chrome DevTools → CDP 会话复用 → Skill → TUI → LSP 诊断 → Side-Git 快照 → Prompt 分层 → Runtime API → 图片输入 → 微信 iLink 通道文本 MVP；Runtime Spine / Dispatcher / Profile 化 Multi-Agent 已落地）
+- 已交付 23 期 + Agent Runtime 企业级改造 Phase 6 + 记忆治理 Phase 8（ReAct → Plan+DAG → Memory → RAG → Multi-Agent → HITL → 并行工具 → 多模型 → 联网 → MCP 核心 → MCP 高级 → 长上下文 → Chrome DevTools → CDP 会话复用 → Skill → TUI → LSP 诊断 → Side-Git 快照 → Prompt 分层 → Runtime API → 图片输入 → 微信 iLink 通道文本 MVP；Runtime Spine / Dispatcher / Profile 化 Multi-Agent、记忆候选审批、策略裁决与审计导出已落地）
 - `PAI.md` 是 MindCLI 的项目级记忆文件：启动时自动注入 system prompt，适合团队共享的长期稳定规则；个人/会变化的经验继续用 `/save` 长期记忆。
 - 下一步：OAuth / sampling / recovery 作为后续 MCP 增强
 - Banner 版本：`v16.1.0`，Maven 产物：`mindcli-1.0-SNAPSHOT.jar`（两者不一致是正常状态）
@@ -38,6 +38,7 @@ mvn test -Dtest=XxxTest -DskipTests=false   # 针对性
 mvn test -DskipTests=false                  # 全量回归
 /init                    # 生成精简项目级记忆 PAI.md；已有文件不覆盖，/init --force 可重写
 /export                  # 导出当前 ReAct 会话为 Markdown，包含完整 system prompt
+/memory export --audit   # 导出记忆审计证据 Markdown
 /run inspect <runId>     # 检查指定 Agent Runtime run 的状态、snapshot checkpoint 与恢复提示
 ```
 
@@ -77,7 +78,7 @@ src/main/java/com/mindcli/
 ├── browser/     BrowserSession, BrowserGuard, SensitivePagePolicy
 ├── llm/         GLMClient, DeepSeekClient, StepClient, KimiClient, FreeLlmApiClient
 ├── context/     ContextProfile, ContextMode, TokenUsageFormatter
-├── memory/      MemoryManager, ConversationHistoryCompactor, LongTermMemory
+├── memory/      MemoryManager, ConversationHistoryCompactor, LongTermMemory, MemoryPolicyEngine, MemoryProposalStore, MemoryAuditService
 ├── plan/        Planner, ExecutionPlan, Task
 ├── rag/         CodeIndex, CodeRetriever, VectorStore, CodeChunker
 ├── lsp/         LspManager, LspDiagnosticFormatter
@@ -124,10 +125,13 @@ src/main/java/com/mindcli/
 
 - 长期记忆只通过 `/save` 或用户明确要求保存；不要自动提取事实
 - 自动长期记忆提取默认关闭；即使显式设置 `mindcli.memory.autoExtract.enabled=true` 或 `MINDCLI_MEMORY_AUTO_EXTRACT=true`，也只能生成 `MemoryProposal` 候选，不得直接写入长期记忆。
+- 候选记忆必须经 `/memory proposals` 查看、`/memory approve <id>` 批准或 `/memory reject <id>` 拒绝；不要绕过候选层直接把自动提取结果写入长期记忆。
 - `PAI.md` 管团队共享的项目规则，长期记忆管个人或项目作用域的稳定事实；不要把一次性协作经验写进 `PAI.md`
 - 长期记忆只保存跨会话稳定事实，不保存临时指令；默认项目级作用域，跨项目通用偏好才用 global
 - 长期记忆注入 prompt 前必须过滤 `status=revoked/deleted/expired` 或 `expiresAt` 已过期的条目；缺失这些治理 metadata 的旧记忆按原兼容规则可见。
-- 长期记忆必须可审计和可删除：`/memory policy` / `/memory list` / `/memory search <关键词>` / `/memory delete <id>` / `/memory clear`
+- 长期记忆必须可审计和可删除：`/memory policy` / `/memory list` / `/memory search <关键词>` / `/memory delete <id>` / `/memory clear` / `/memory export --audit`
+- 记忆审计本地 source of truth 是长期记忆目录下的 `audit.jsonl`；有 `AgentRunContext` 的路径还会同步写 RunStore。导出文件写到 `~/.mindcli/exports/memory-audit-*.md`。
+- 删除长期记忆使用 tombstone 语义：活动集合移除，原 `.md` 文件保留 `status: deleted` / `deletedAt`，重启加载时不得重新变成活动记忆。
 - 两道压缩不要混淆：shortTermMemory 压缩 vs conversationHistory 压缩（后者是防 window 超限的关键）
 - 自动压缩阈值按 Claude Code 风格预留摘要输出和安全缓冲：大窗口使用 `window - 20k - 13k`，例如 200k 窗口约 167k 触发、1M 窗口约 967k 触发；小窗口按比例缩小预留。
 
