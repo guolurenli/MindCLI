@@ -5,15 +5,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import com.mindcli.llm.GLMClient;
-import com.mindcli.llm.LlmClient;
-import com.mindcli.memory.LongTermMemory;
-import com.mindcli.memory.MemoryManager;
-import com.mindcli.runtime.agent.AgentRunEvent;
-import com.mindcli.runtime.agent.AgentRunEventType;
-import com.mindcli.runtime.agent.JsonlRunStore;
-import com.mindcli.runtime.agent.RunStore;
-import com.mindcli.tool.ToolRegistry;
+import com.mindcli.platform.llm.GLMClient;
+import com.mindcli.platform.llm.LlmClient;
+import com.mindcli.capability.memory.LongTermMemory;
+import com.mindcli.capability.memory.MemoryManager;
+import com.mindcli.runtime.run.AgentRunEvent;
+import com.mindcli.runtime.run.AgentRunEventType;
+import com.mindcli.runtime.run.JsonlRunStore;
+import com.mindcli.runtime.run.RunStore;
+import com.mindcli.capability.tool.ToolRegistry;
 
 import java.io.File;
 import java.io.IOException;

@@ -24,6 +24,8 @@ docs/*
 !docs/mindcli-main-cli-startup-view-refactor.md
 !docs/mindcli-main-cli-memory-handler-refactor.md
 !docs/mindcli-agent-orchestrator-parallel-test-stability.md
+!docs/mindcli-package-tree-enterprise-refactor.md
+!docs/mindcli-package-tree-large-module-migration.md
 
 # Claude Code
 .claude/

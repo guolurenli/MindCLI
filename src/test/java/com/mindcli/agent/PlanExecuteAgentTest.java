@@ -1,21 +1,21 @@
 package com.mindcli.agent;
 
-import com.mindcli.llm.GLMClient;
-import com.mindcli.llm.LlmClient;
-import com.mindcli.memory.LongTermMemory;
-import com.mindcli.memory.MemoryManager;
-import com.mindcli.plan.ExecutionPlan;
-import com.mindcli.plan.Planner;
-import com.mindcli.plan.Task;
-import com.mindcli.runtime.agent.AgentMode;
-import com.mindcli.runtime.agent.AgentRunContext;
-import com.mindcli.runtime.agent.AgentRunEvent;
-import com.mindcli.runtime.agent.AgentRunEventType;
-import com.mindcli.runtime.agent.InMemoryRunStore;
-import com.mindcli.runtime.agent.ToolDispatcher;
-import com.mindcli.tool.ToolRegistry;
-import com.mindcli.tool.ToolRegistry.ToolExecutionResult;
-import com.mindcli.tool.ToolRegistry.ToolInvocation;
+import com.mindcli.platform.llm.GLMClient;
+import com.mindcli.platform.llm.LlmClient;
+import com.mindcli.capability.memory.LongTermMemory;
+import com.mindcli.capability.memory.MemoryManager;
+import com.mindcli.agent.plan.ExecutionPlan;
+import com.mindcli.agent.plan.Planner;
+import com.mindcli.agent.plan.Task;
+import com.mindcli.runtime.run.AgentMode;
+import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.runtime.run.AgentRunEvent;
+import com.mindcli.runtime.run.AgentRunEventType;
+import com.mindcli.runtime.run.InMemoryRunStore;
+import com.mindcli.runtime.run.ToolDispatcher;
+import com.mindcli.capability.tool.ToolRegistry;
+import com.mindcli.capability.tool.ToolRegistry.ToolExecutionResult;
+import com.mindcli.capability.tool.ToolRegistry.ToolInvocation;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

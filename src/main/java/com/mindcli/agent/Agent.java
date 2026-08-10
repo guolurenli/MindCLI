@@ -1,40 +1,40 @@
 package com.mindcli.agent;
 
-import com.mindcli.llm.LlmClient;
-import com.mindcli.llm.LlmTraceLogger;
-import com.mindcli.context.ContextProfile;
-import com.mindcli.context.TokenUsageFormatter;
-import com.mindcli.lsp.LspDiagnosticReport;
-import com.mindcli.memory.MemoryManager;
-import com.mindcli.prompt.PromptAssembler;
-import com.mindcli.prompt.PromptContext;
-import com.mindcli.prompt.PromptMode;
-import com.mindcli.prompt.ProjectMemoryLoader;
-import com.mindcli.render.PlainRenderer;
-import com.mindcli.render.Renderer;
-import com.mindcli.render.StatusInfo;
-import com.mindcli.runtime.agent.AgentLoopContext;
-import com.mindcli.runtime.agent.AgentLoopExecutor;
-import com.mindcli.runtime.agent.AgentLoopObserver;
-import com.mindcli.runtime.agent.AgentLoopPolicy;
-import com.mindcli.runtime.agent.AgentLoopResult;
-import com.mindcli.runtime.agent.AgentLoopStatus;
-import com.mindcli.runtime.agent.AgentMode;
-import com.mindcli.runtime.agent.AgentRuntime;
-import com.mindcli.runtime.agent.AgentRunContext;
-import com.mindcli.runtime.agent.AgentRunResult;
-import com.mindcli.runtime.agent.InMemoryRunStore;
-import com.mindcli.runtime.agent.ReActModeAdapter;
-import com.mindcli.runtime.agent.RunStoreFactory;
-import com.mindcli.runtime.agent.RunStore;
-import com.mindcli.runtime.agent.ToolDispatcher;
-import com.mindcli.runtime.agent.ToolOutcome;
-import com.mindcli.skill.SkillIndexFormatter;
-import com.mindcli.skill.SkillRegistry;
+import com.mindcli.platform.llm.LlmClient;
+import com.mindcli.platform.llm.LlmTraceLogger;
+import com.mindcli.platform.context.ContextProfile;
+import com.mindcli.platform.context.TokenUsageFormatter;
+import com.mindcli.capability.lsp.LspDiagnosticReport;
+import com.mindcli.capability.memory.MemoryManager;
+import com.mindcli.platform.prompt.PromptAssembler;
+import com.mindcli.platform.prompt.PromptContext;
+import com.mindcli.platform.prompt.PromptMode;
+import com.mindcli.platform.prompt.ProjectMemoryLoader;
+import com.mindcli.platform.render.PlainRenderer;
+import com.mindcli.platform.render.Renderer;
+import com.mindcli.platform.render.StatusInfo;
+import com.mindcli.runtime.run.AgentLoopContext;
+import com.mindcli.runtime.run.AgentLoopExecutor;
+import com.mindcli.runtime.run.AgentLoopObserver;
+import com.mindcli.runtime.run.AgentLoopPolicy;
+import com.mindcli.runtime.run.AgentLoopResult;
+import com.mindcli.runtime.run.AgentLoopStatus;
+import com.mindcli.runtime.run.AgentMode;
+import com.mindcli.runtime.run.AgentRuntime;
+import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.runtime.run.AgentRunResult;
+import com.mindcli.runtime.run.InMemoryRunStore;
+import com.mindcli.runtime.run.ReActModeAdapter;
+import com.mindcli.runtime.run.RunStoreFactory;
+import com.mindcli.runtime.run.RunStore;
+import com.mindcli.runtime.run.ToolDispatcher;
+import com.mindcli.runtime.run.ToolOutcome;
+import com.mindcli.capability.skill.SkillIndexFormatter;
+import com.mindcli.capability.skill.SkillRegistry;
 import com.mindcli.util.AnsiStyle;
-import com.mindcli.tool.ToolRegistry;
+import com.mindcli.capability.tool.ToolRegistry;
 import com.mindcli.util.TerminalMarkdownRenderer;
-import com.mindcli.image.ImageReferenceParser;
+import com.mindcli.capability.image.ImageReferenceParser;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -313,7 +313,7 @@ public class Agent {
         if (result == null) {
             return "";
         }
-        return result.isSuccess() || result.status() == com.mindcli.runtime.agent.AgentRunStatus.CANCELLED
+        return result.isSuccess() || result.status() == com.mindcli.runtime.run.AgentRunStatus.CANCELLED
                 ? result.content()
                 : result.errorMessage();
     }
@@ -604,14 +604,14 @@ public class Agent {
     }
 
     public String getContextStatus() {
-        com.mindcli.context.ContextProfile profile = memoryManager.getContextProfile();
+        com.mindcli.platform.context.ContextProfile profile = memoryManager.getContextProfile();
         int window = profile.maxContextWindow();
 
         // 分类估算 token 占用
         int systemTokens = 0, userTokens = 0, assistantTokens = 0, toolTokens = 0;
         int systemCount = 0, userCount = 0, assistantCount = 0, toolCount = 0;
         for (LlmClient.Message msg : conversationHistory) {
-            int t = com.mindcli.memory.TokenBudget.estimateMessagesTokens(java.util.List.of(msg));
+            int t = com.mindcli.capability.memory.TokenBudget.estimateMessagesTokens(java.util.List.of(msg));
             switch (msg.role()) {
                 case "system" -> { systemTokens += t; systemCount++; }
                 case "user" -> { userTokens += t; userCount++; }
@@ -654,7 +654,7 @@ public class Agent {
 
     private int estimateToolsSchemaTokens() {
         try {
-            return com.mindcli.memory.MemoryEntry.estimateTokens(
+            return com.mindcli.capability.memory.MemoryEntry.estimateTokens(
                     new ObjectMapper().writeValueAsString(toolRegistry.getToolDefinitions()));
         } catch (Exception e) {
             return 0;
@@ -662,7 +662,7 @@ public class Agent {
     }
 
     private long estimateCurrentContextTokens() {
-        long messageTokens = com.mindcli.memory.TokenBudget.estimateMessagesTokens(conversationHistory);
+        long messageTokens = com.mindcli.capability.memory.TokenBudget.estimateMessagesTokens(conversationHistory);
         return Math.max(0L, messageTokens + estimateToolsSchemaTokens());
     }
 
@@ -680,7 +680,7 @@ public class Agent {
         for (int messageIndex = 0; messageIndex < conversationHistory.size(); messageIndex++) {
             LlmClient.Message msg = conversationHistory.get(messageIndex);
             messages++;
-            int tokens = com.mindcli.memory.TokenBudget.estimateMessagesTokens(List.of(msg));
+            int tokens = com.mindcli.capability.memory.TokenBudget.estimateMessagesTokens(List.of(msg));
             imageParts += msg.imagePartCount();
             appendImageDetails(imageDetails, msg, messageIndex);
             switch (msg.role()) {
@@ -696,7 +696,7 @@ public class Agent {
         int toolCount = tools == null ? 0 : tools.size();
         if (tools != null && !tools.isEmpty()) {
             try {
-                toolsSchemaTokens = com.mindcli.memory.MemoryEntry.estimateTokens(
+                toolsSchemaTokens = com.mindcli.capability.memory.MemoryEntry.estimateTokens(
                         new ObjectMapper().writeValueAsString(tools));
             } catch (Exception e) {
                 log.debug("Failed to estimate tools schema tokens", e);

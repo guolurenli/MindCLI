@@ -1,9 +1,9 @@
 package com.mindcli.agent.profile;
 
 import com.mindcli.agent.AgentRole;
-import com.mindcli.runtime.agent.AgentMode;
-import com.mindcli.runtime.agent.AgentRunContext;
-import com.mindcli.tool.ToolRegistry;
+import com.mindcli.runtime.run.AgentMode;
+import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.capability.tool.ToolRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

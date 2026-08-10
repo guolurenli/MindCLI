@@ -7,23 +7,23 @@ import com.mindcli.agent.profile.AgentProfile;
 import com.mindcli.agent.profile.AgentProfileLoader;
 import com.mindcli.agent.profile.AgentTaskRequirements;
 import com.mindcli.agent.profile.AgentToolPolicy;
-import com.mindcli.llm.LlmClient;
-import com.mindcli.memory.MemoryManager;
-import com.mindcli.plan.PlanSchema;
-import com.mindcli.plan.PlanSchemaParser;
-import com.mindcli.plan.PlanSchemaValidator;
-import com.mindcli.plan.PlanTaskSpec;
-import com.mindcli.plan.PlanValidationResult;
+import com.mindcli.platform.llm.LlmClient;
+import com.mindcli.capability.memory.MemoryManager;
+import com.mindcli.agent.plan.PlanSchema;
+import com.mindcli.agent.plan.PlanSchemaParser;
+import com.mindcli.agent.plan.PlanSchemaValidator;
+import com.mindcli.agent.plan.PlanTaskSpec;
+import com.mindcli.agent.plan.PlanValidationResult;
 import com.mindcli.runtime.CancellationContext;
-import com.mindcli.runtime.agent.AgentMode;
-import com.mindcli.runtime.agent.AgentRunContext;
-import com.mindcli.runtime.agent.AgentRunEvent;
-import com.mindcli.runtime.agent.AgentRunEventType;
-import com.mindcli.runtime.agent.AgentRunStatus;
-import com.mindcli.runtime.agent.RunStore;
-import com.mindcli.runtime.agent.RunStoreFactory;
-import com.mindcli.skill.SkillRegistry;
-import com.mindcli.tool.ToolRegistry;
+import com.mindcli.runtime.run.AgentMode;
+import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.runtime.run.AgentRunEvent;
+import com.mindcli.runtime.run.AgentRunEventType;
+import com.mindcli.runtime.run.AgentRunStatus;
+import com.mindcli.runtime.run.RunStore;
+import com.mindcli.runtime.run.RunStoreFactory;
+import com.mindcli.capability.skill.SkillRegistry;
+import com.mindcli.capability.tool.ToolRegistry;
 import com.mindcli.util.AnsiStyle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -176,7 +176,7 @@ public class AgentOrchestrator {
     /**
      * 把 Skill 系统下发给所有 SubAgent。
      */
-    public void setSkillSystem(com.mindcli.skill.SkillRegistry skillRegistry) {
+    public void setSkillSystem(com.mindcli.capability.skill.SkillRegistry skillRegistry) {
         this.skillRegistry = skillRegistry;
         planner.setSkillRegistry(skillRegistry);
         for (SubAgent worker : workers) {

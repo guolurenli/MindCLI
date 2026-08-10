@@ -1,17 +1,17 @@
 package com.mindcli.agent;
 
 import com.mindcli.agent.profile.AgentProfile;
-import com.mindcli.llm.GLMClient;
-import com.mindcli.llm.LlmClient;
-import com.mindcli.runtime.agent.AgentMode;
-import com.mindcli.runtime.agent.AgentRunEvent;
-import com.mindcli.runtime.agent.AgentRunEventType;
-import com.mindcli.runtime.agent.AgentRunContext;
-import com.mindcli.runtime.agent.RunStore;
-import com.mindcli.runtime.agent.ToolDispatcher;
-import com.mindcli.tool.ToolRegistry;
-import com.mindcli.tool.ToolRegistry.ToolExecutionResult;
-import com.mindcli.tool.ToolRegistry.ToolInvocation;
+import com.mindcli.platform.llm.GLMClient;
+import com.mindcli.platform.llm.LlmClient;
+import com.mindcli.runtime.run.AgentMode;
+import com.mindcli.runtime.run.AgentRunEvent;
+import com.mindcli.runtime.run.AgentRunEventType;
+import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.runtime.run.RunStore;
+import com.mindcli.runtime.run.ToolDispatcher;
+import com.mindcli.capability.tool.ToolRegistry;
+import com.mindcli.capability.tool.ToolRegistry.ToolExecutionResult;
+import com.mindcli.capability.tool.ToolRegistry.ToolInvocation;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

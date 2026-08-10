@@ -3,8 +3,8 @@ package com.mindcli.agent.profile;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.agent.AgentRole;
-import com.mindcli.runtime.agent.AgentRunContext;
-import com.mindcli.tool.ToolRegistry;
+import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.capability.tool.ToolRegistry;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;

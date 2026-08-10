@@ -4,30 +4,30 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.agent.profile.AgentProfile;
 import com.mindcli.agent.profile.AgentToolPolicy;
-import com.mindcli.llm.LlmClient;
-import com.mindcli.llm.LlmTraceLogger;
-import com.mindcli.lsp.LspDiagnosticReport;
-import com.mindcli.memory.MemoryManager;
-import com.mindcli.memory.TokenBudget;
-import com.mindcli.prompt.PromptAssembler;
-import com.mindcli.prompt.PromptContext;
-import com.mindcli.prompt.PromptMode;
-import com.mindcli.prompt.ProjectMemoryLoader;
-import com.mindcli.runtime.agent.AgentMode;
-import com.mindcli.runtime.agent.AgentRunContext;
-import com.mindcli.runtime.agent.RunStore;
-import com.mindcli.runtime.agent.ToolDispatcher;
-import com.mindcli.runtime.agent.ToolOutcome;
-import com.mindcli.runtime.agent.ToolOutcomeEventFactory;
-import com.mindcli.runtime.agent.ToolOutcomeStatus;
-import com.mindcli.skill.SkillIndexFormatter;
-import com.mindcli.skill.SkillRegistry;
-import com.mindcli.tool.ToolRegistry;
-import com.mindcli.tool.ToolRegistry.ToolExecutionResult;
-import com.mindcli.tool.ToolRegistry.ToolInvocation;
+import com.mindcli.platform.llm.LlmClient;
+import com.mindcli.platform.llm.LlmTraceLogger;
+import com.mindcli.capability.lsp.LspDiagnosticReport;
+import com.mindcli.capability.memory.MemoryManager;
+import com.mindcli.capability.memory.TokenBudget;
+import com.mindcli.platform.prompt.PromptAssembler;
+import com.mindcli.platform.prompt.PromptContext;
+import com.mindcli.platform.prompt.PromptMode;
+import com.mindcli.platform.prompt.ProjectMemoryLoader;
+import com.mindcli.runtime.run.AgentMode;
+import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.runtime.run.RunStore;
+import com.mindcli.runtime.run.ToolDispatcher;
+import com.mindcli.runtime.run.ToolOutcome;
+import com.mindcli.runtime.run.ToolOutcomeEventFactory;
+import com.mindcli.runtime.run.ToolOutcomeStatus;
+import com.mindcli.capability.skill.SkillIndexFormatter;
+import com.mindcli.capability.skill.SkillRegistry;
+import com.mindcli.capability.tool.ToolRegistry;
+import com.mindcli.capability.tool.ToolRegistry.ToolExecutionResult;
+import com.mindcli.capability.tool.ToolRegistry.ToolInvocation;
 import com.mindcli.util.AnsiStyle;
 import com.mindcli.util.TerminalMarkdownRenderer;
-import com.mindcli.image.ImageReferenceParser;
+import com.mindcli.capability.image.ImageReferenceParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -287,7 +287,7 @@ public class SubAgent {
             trimConversationHistory();
 
             try {
-                LlmClient.ChatResponse response = com.mindcli.llm.LlmRetryPolicy.withRetry(() ->
+                LlmClient.ChatResponse response = com.mindcli.platform.llm.LlmRetryPolicy.withRetry(() ->
                         llmClient.chat(
                                 conversationHistory,
                                 toolDefinitionsForProfile(),
