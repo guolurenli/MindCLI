@@ -11,6 +11,7 @@ import com.mindcli.browser.SensitivePagePolicy;
 import com.mindcli.cli.command.BrowserCommandHandler;
 import com.mindcli.cli.command.ConfigCommandHandler;
 import com.mindcli.cli.command.ExportCommandHandler;
+import com.mindcli.cli.command.MemoryCommandHandler;
 import com.mindcli.cli.command.RunCommandHandler;
 import com.mindcli.cli.command.SlashCommandCatalog;
 import com.mindcli.cli.command.SnapshotCommandHandler;
@@ -24,18 +25,12 @@ import com.mindcli.hitl.RendererHitlHandler;
 import com.mindcli.hitl.TerminalHitlHandler;
 import com.mindcli.llm.LlmClient;
 import com.mindcli.llm.LlmClientFactory;
-import com.mindcli.memory.LongTermMemory;
-import com.mindcli.memory.MemoryEntry;
-import com.mindcli.memory.MemoryManager;
-import com.mindcli.memory.MemoryProposal;
-import com.mindcli.memory.MemoryWriteResult;
 import com.mindcli.render.Renderer;
 import com.mindcli.render.RendererFactory;
 import com.mindcli.render.StatusInfo;
 import com.mindcli.render.inline.InlineRenderer;
 import com.mindcli.image.ClipboardImage;
 import com.mindcli.mcp.McpServerManager;
-import com.mindcli.mcp.McpServerStatus;
 import com.mindcli.mcp.mention.AtMentionExpander;
 import com.mindcli.plan.ExecutionPlan;
 import com.mindcli.rag.CodeIndex;
@@ -52,9 +47,7 @@ import com.mindcli.runtime.api.RuntimeThreadStore;
 import com.mindcli.runtime.task.DurableTaskManager;
 import com.mindcli.runtime.task.TaskCommandFormatter;
 import com.mindcli.snapshot.SnapshotService;
-import com.mindcli.skill.Skill;
 import com.mindcli.skill.SkillRegistry;
-import java.util.stream.Collectors;
 import com.mindcli.tool.ToolRegistry;
 import com.mindcli.util.AnsiStyle;
 import com.mindcli.wechat.WechatCommandMain;
@@ -73,9 +66,7 @@ import org.jline.widget.AutopairWidgets;
 import org.jline.console.CmdDesc;
 import org.jline.keymap.KeyMap;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileReader;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.Files;
@@ -83,7 +74,6 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -110,25 +100,9 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public class Main {
     private static final String VERSION = "16.1.0";
-    private static final String ENV_FILE = ".env";
-    private static final String LOG_DIR_PROPERTY = "mindcli.log.dir";
-    private static final String LOG_LEVEL_PROPERTY = "mindcli.log.level";
-    private static final String LOG_MAX_HISTORY_PROPERTY = "mindcli.log.maxHistory";
-    private static final String LOG_MAX_FILE_SIZE_PROPERTY = "mindcli.log.maxFileSize";
-    private static final String LOG_TOTAL_SIZE_CAP_PROPERTY = "mindcli.log.totalSizeCap";
     private static final String BRACKETED_PASTE_BEGIN = "[200~";
     private static final String BRACKETED_PASTE_END = "\u001b[201~";
     private static final int CTRL_O = 15;
-    private static final String DEFAULT_CHROME_DEVTOOLS_MCP_JSON = """
-            {
-              "mcpServers": {
-                "chrome-devtools": {
-                  "command": "npx",
-                  "args": ["-y", "chrome-devtools-mcp@latest", "--isolated=true"]
-                }
-              }
-            }
-            """;
 
     enum EscapeSequenceType {
         STANDALONE_ESC,
@@ -173,19 +147,6 @@ public class Main {
         static KeyReadResult unavailable() {
             return new KeyReadResult(null, false);
         }
-    }
-
-    private record StartupScreenInfo(
-            String model,
-            String provider,
-            long mcpReady,
-            int mcpTotal,
-            int mcpTools,
-            int skillsEnabled,
-            int skillsTotal,
-            String skillsSummary,
-            String note
-    ) {
     }
 
     public static void main(String[] args) {
@@ -313,7 +274,8 @@ public class Main {
                     new WechatCliCommandHandler.WechatRuntimeController(renderer);
             Runtime.getRuntime().addShutdownHook(new Thread(wechatRuntime::stop, "mindcli-wechat-shutdown"));
             renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
-            StartupScreenInfo startupScreenInfo = startupScreenInfo(llmClient, mcpServerManager, skillRegistry, startupNote);
+            CliStartupView.StartupScreenInfo startupScreenInfo =
+                    startupScreenInfo(llmClient, mcpServerManager, skillRegistry, startupNote);
             if (renderer instanceof InlineRenderer inline) {
                 inline.installStartupScreen(startupScreenLines(startupScreenInfo));
             } else {
@@ -479,103 +441,47 @@ public class Main {
                         continue;
                     }
                     case MEMORY_STATUS -> {
-                        ui.println("📋 记忆系统状态：");
-                        ui.println(reactAgent.getMemoryManager().getSystemStatus());
-                        ui.println("   当前项目作用域: " + reactAgent.getMemoryManager().getCurrentProject());
-                        ui.println("   /memory policy - 查看记忆治理策略");
-                        ui.println("   /memory proposals - 查看待确认候选记忆");
-                        ui.println("   /memory export --audit - 导出记忆审计证据");
-                        ui.println("   /memory approve <id> - 批准候选并写入长期记忆");
-                        ui.println("   /memory reject <id> - 拒绝候选");
-                        ui.println("   /memory list - 查看长期记忆");
-                        ui.println("   /memory search <关键词> - 搜索当前项目可见长期记忆");
-                        ui.println("   /memory delete <id> - 删除单条长期记忆");
-                        ui.println("   /memory clear - 清空长期记忆");
-                        ui.println("   /save <事实> - 保存项目级长期记忆；/save --global <事实> 保存全局记忆");
-                        ui.println();
+                        MemoryCommandHandler.printStatus(ui, reactAgent.getMemoryManager());
                         continue;
                     }
                     case MEMORY_POLICY -> {
-                        ui.println("📋 记忆治理策略：");
-                        ui.println(reactAgent.getMemoryManager().getPolicyStatus());
-                        ui.println();
+                        MemoryCommandHandler.printPolicy(ui, reactAgent.getMemoryManager());
                         continue;
                     }
                     case MEMORY_PROPOSALS -> {
-                        List<MemoryProposal> proposals = reactAgent.getMemoryManager().listPendingMemoryProposals();
-                        ui.println(formatMemoryProposals("📋 待确认候选记忆", proposals));
-                        ui.println();
+                        MemoryCommandHandler.printProposals(ui, reactAgent.getMemoryManager());
                         continue;
                     }
                     case MEMORY_EXPORT_AUDIT -> {
-                        handleMemoryAuditExportCommand(ui, reactAgent.getMemoryManager());
+                        MemoryCommandHandler.printAuditExport(ui, reactAgent.getMemoryManager());
                         continue;
                     }
                     case MEMORY_APPROVE -> {
-                        String id = command.payload();
-                        if (id == null || id.isBlank()) {
-                            ui.println("❌ 请提供候选记忆 id，例如 /memory approve proposal-abcd1234\n");
-                        } else if (reactAgent.getMemoryManager().approveMemoryProposal(id)) {
-                            ui.println("✅ 已批准候选记忆并写入长期记忆: " + id + "\n");
-                        } else {
-                            ui.println("📭 未找到可批准的待确认候选: " + id + "\n");
-                        }
+                        MemoryCommandHandler.printApprove(ui, reactAgent.getMemoryManager(), command.payload());
                         continue;
                     }
                     case MEMORY_REJECT -> {
-                        String id = command.payload();
-                        if (id == null || id.isBlank()) {
-                            ui.println("❌ 请提供候选记忆 id，例如 /memory reject proposal-abcd1234\n");
-                        } else if (reactAgent.getMemoryManager().rejectMemoryProposal(id)) {
-                            ui.println("🚫 已拒绝候选记忆: " + id + "\n");
-                        } else {
-                            ui.println("📭 未找到可拒绝的待确认候选: " + id + "\n");
-                        }
+                        MemoryCommandHandler.printReject(ui, reactAgent.getMemoryManager(), command.payload());
                         continue;
                     }
                     case MEMORY_LIST -> {
-                        List<MemoryEntry> entries = reactAgent.getMemoryManager().listLongTerm();
-                        ui.println(formatMemoryEntries("📋 长期记忆列表", entries));
-                        ui.println();
+                        MemoryCommandHandler.printList(ui, reactAgent.getMemoryManager());
                         continue;
                     }
                     case MEMORY_SEARCH -> {
-                        String query = command.payload();
-                        if (query == null || query.isBlank()) {
-                            ui.println("❌ 请提供搜索关键词，例如 /memory search Chrome 登录态\n");
-                        } else {
-                            List<MemoryEntry> entries = reactAgent.getMemoryManager().searchLongTerm(query, 20);
-                            ui.println(formatMemoryEntries("🔎 长期记忆搜索: " + query, entries));
-                            ui.println();
-                        }
+                        MemoryCommandHandler.printSearch(ui, reactAgent.getMemoryManager(), command.payload());
                         continue;
                     }
                     case MEMORY_DELETE -> {
-                        String id = command.payload();
-                        if (id == null || id.isBlank()) {
-                            ui.println("❌ 请提供要删除的记忆 id，例如 /memory delete fact-abcd1234\n");
-                        } else if (reactAgent.getMemoryManager().deleteLongTerm(id)) {
-                            ui.println("🗑️ 已删除长期记忆: " + id + "\n");
-                        } else {
-                            ui.println("📭 未找到长期记忆: " + id + "\n");
-                        }
+                        MemoryCommandHandler.printDelete(ui, reactAgent.getMemoryManager(), command.payload());
                         continue;
                     }
                     case MEMORY_CLEAR -> {
-                        reactAgent.getMemoryManager().clearLongTerm();
-                        ui.println("🧹 长期记忆已清空\n");
-                        ui.println();
+                        MemoryCommandHandler.printClear(ui, reactAgent.getMemoryManager());
                         continue;
                     }
                     case MEMORY_SAVE -> {
-                        MemorySaveRequest saveRequest = parseMemorySave(command.payload());
-                        if (saveRequest.fact().isEmpty()) {
-                            ui.println("❌ 请提供要保存的内容，例如 /save 这个项目使用Java 17，或 /save --global 默认用中文回答\n");
-                        } else {
-                            MemoryWriteResult result = reactAgent.getMemoryManager()
-                                    .storeFact(saveRequest.fact(), saveRequest.scope());
-                            ui.println(result.message() + "\n");
-                        }
+                        MemoryCommandHandler.printSave(ui, reactAgent.getMemoryManager(), command.payload());
                         continue;
                     }
                     case SWITCH_PLAN -> {
@@ -1196,14 +1102,11 @@ public class Main {
     }
 
     static void configureAwtForCli() {
-        if (!isMacOs()) {
-            return;
-        }
-        System.setProperty("java.awt.headless", "true");
+        CliBootstrap.configureAwtForCli();
     }
 
     static boolean isMacOs() {
-        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac");
+        return CliBootstrap.isMacOs();
     }
 
     private static PlanExecuteAgent.PlanReviewHandler createPlanReviewHandler(Terminal terminal,
@@ -1564,17 +1467,6 @@ public class Main {
         ExportCommandHandler.printExportCommand(out, reactAgent);
     }
 
-    private static void handleMemoryAuditExportCommand(PrintStream out, MemoryManager memoryManager) {
-        Path exportsDir = Path.of(System.getProperty("user.home"), ".mindcli", "exports");
-        try {
-            Path exportFile = memoryManager.exportAudit(exportsDir);
-            out.println("✅ 记忆审计已导出: " + exportFile.toAbsolutePath());
-            out.println("   审计源: " + memoryManager.getMemoryAuditService().auditFile() + "\n");
-        } catch (IOException e) {
-            out.println("❌ 导出记忆审计失败: " + e.getMessage() + "\n");
-        }
-    }
-
     static boolean hasExportableMessages(List<LlmClient.Message> history) {
         return ExportCommandHandler.hasExportableMessages(history);
     }
@@ -1674,40 +1566,14 @@ public class Main {
     }
 
     private static void printStartupHints(PrintStream out) {
-        out.println("💡 提示:");
-        for (String hint : startupHints()) {
-            out.println("   - " + hint);
-        }
-        out.println();
+        CliStartupView.printStartupHints(out, startupHints());
     }
 
-    private static StartupScreenInfo startupScreenInfo(LlmClient llmClient,
-                                                       McpServerManager mcpServerManager,
-                                                       SkillRegistry skillRegistry,
-                                                       String note) {
-        long ready = mcpServerManager.servers().stream()
-                .filter(server -> server.status() == McpServerStatus.READY)
-                .count();
-        int total = mcpServerManager.servers().size();
-        int tools = mcpServerManager.servers().stream()
-                .mapToInt(server -> server.tools().size())
-                .sum();
-        int skillTotal = skillRegistry.allSkills().size();
-        int skillEnabled = skillRegistry.enabledSkills().size();
-        String skillsSummary = skillEnabled <= 2
-                ? skillRegistry.enabledSkills().stream().map(Skill::name).collect(Collectors.joining(","))
-                : "";
-        return new StartupScreenInfo(
-                llmClient.getModelName(),
-                llmClient.getProviderName(),
-                ready,
-                total,
-                tools,
-                skillEnabled,
-                skillTotal,
-                skillsSummary,
-                note == null ? "" : note.trim()
-        );
+    private static CliStartupView.StartupScreenInfo startupScreenInfo(LlmClient llmClient,
+                                                                      McpServerManager mcpServerManager,
+                                                                      SkillRegistry skillRegistry,
+                                                                      String note) {
+        return CliStartupView.startupScreenInfo(llmClient, mcpServerManager, skillRegistry, note);
     }
 
     private static StatusInfo statusInfo(LlmClient llmClient,
@@ -1715,63 +1581,30 @@ public class Main {
                                          String phase,
                                          McpServerManager mcpServerManager,
                                          SkillRegistry skillRegistry) {
-        String normalizedPhase = phase == null || phase.isBlank() ? "idle" : phase;
-        StatusInfo base = "idle".equals(normalizedPhase)
-                ? StatusInfo.idle(llmClient.getModelName(), llmClient.maxContextWindow(), hitlHandler.isEnabled())
-                : StatusInfo.active(llmClient.getModelName(), llmClient.maxContextWindow(),
-                hitlHandler.isEnabled(), normalizedPhase);
-        return base.withEnvironment(mcpStatusSummary(mcpServerManager), skillStatusSummary(skillRegistry));
+        return CliStartupView.statusInfo(llmClient, hitlHandler, phase, mcpServerManager, skillRegistry);
     }
 
     private static StatusInfo statusInfo(Agent reactAgent,
                                          McpServerManager mcpServerManager,
                                          SkillRegistry skillRegistry,
                                          String phase) {
-        StatusInfo base = reactAgent.currentStatus(phase);
-        return base.withEnvironment(mcpStatusSummary(mcpServerManager), skillStatusSummary(skillRegistry));
+        return CliStartupView.statusInfo(reactAgent, mcpServerManager, skillRegistry, phase);
     }
 
     private static String mcpStatusSummary(McpServerManager mcpServerManager) {
-        if (mcpServerManager == null || mcpServerManager.servers().isEmpty()) {
-            return "MCP 0";
-        }
-        long ready = mcpServerManager.servers().stream()
-                .filter(server -> server.status() == McpServerStatus.READY)
-                .count();
-        return "MCP " + ready + "/" + mcpServerManager.servers().size();
+        return CliStartupView.mcpStatusSummary(mcpServerManager);
     }
 
     private static String skillStatusSummary(SkillRegistry skillRegistry) {
-        if (skillRegistry == null || skillRegistry.allSkills().isEmpty()) {
-            return "Skill 0";
-        }
-        return "Skill " + skillRegistry.enabledSkills().size() + "/" + skillRegistry.allSkills().size();
+        return CliStartupView.skillStatusSummary(skillRegistry);
     }
 
     private static String appendStartupNote(String current, String next) {
-        if (next == null || next.isBlank()) {
-            return current == null ? "" : current;
-        }
-        if (current == null || current.isBlank()) {
-            return next;
-        }
-        return current + "\n" + next;
+        return CliBootstrap.appendStartupNote(current, next);
     }
 
     static Duration mcpStartupWait() {
-        String configured = System.getProperty("mindcli.mcp.startup.wait.seconds");
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv("MINDCLI_MCP_STARTUP_WAIT_SECONDS");
-        }
-        if (configured == null || configured.isBlank()) {
-            return Duration.ofSeconds(8);
-        }
-        try {
-            long seconds = Long.parseLong(configured.trim());
-            return seconds > 0 ? Duration.ofSeconds(seconds) : Duration.ofSeconds(8);
-        } catch (NumberFormatException ignored) {
-            return Duration.ofSeconds(8);
-        }
+        return CliBootstrap.mcpStartupWait();
     }
 
     static String normalizeLineEndings(String rawInput) {
@@ -1827,96 +1660,11 @@ public class Main {
      * 从 .env 文件加载 API Key
      */
     private static String loadApiKey() {
-        return loadConfigValue("GLM_API_KEY", null);
+        return CliBootstrap.loadConfigValue("GLM_API_KEY", null);
     }
 
     private static void configureLogging() {
-        configureLogProperty(LOG_DIR_PROPERTY, "MINDCLI_LOG_DIR",
-                Path.of(System.getProperty("user.home"), ".mindcli", "logs").toString());
-        configureLogProperty(LOG_LEVEL_PROPERTY, "MINDCLI_LOG_LEVEL", "INFO");
-        configureLogProperty(LOG_MAX_HISTORY_PROPERTY, "MINDCLI_LOG_MAX_HISTORY", "7");
-        configureLogProperty(LOG_MAX_FILE_SIZE_PROPERTY, "MINDCLI_LOG_MAX_FILE_SIZE", "10MB");
-        configureLogProperty(LOG_TOTAL_SIZE_CAP_PROPERTY, "MINDCLI_LOG_TOTAL_SIZE_CAP", "100MB");
-
-        try {
-            Files.createDirectories(Path.of(System.getProperty(LOG_DIR_PROPERTY)));
-        } catch (IOException e) {
-            System.err.println("⚠️ 创建日志目录失败: " + e.getMessage());
-        }
-    }
-
-    private static void configureLogProperty(String propertyName, String envKey, String defaultValue) {
-        String configuredValue = System.getProperty(propertyName);
-        if (configuredValue == null || configuredValue.isBlank()) {
-            configuredValue = loadConfigValue(envKey, defaultValue);
-        }
-        if (configuredValue != null && !configuredValue.isBlank()) {
-            if (LOG_DIR_PROPERTY.equals(propertyName)) {
-                configuredValue = expandHome(configuredValue.trim());
-            }
-            System.setProperty(propertyName, configuredValue.trim());
-        }
-    }
-
-    private static String expandHome(String value) {
-        if (value == null || value.isBlank()) {
-            return value;
-        }
-        if (value.equals("~")) {
-            return System.getProperty("user.home");
-        }
-        if (value.startsWith("~/")) {
-            return Path.of(System.getProperty("user.home"), value.substring(2)).toString();
-        }
-        return value;
-    }
-
-    private static String loadConfigValue(String key, String defaultValue) {
-        String sysValue = System.getProperty(key);
-        if (sysValue != null && !sysValue.isBlank()) {
-            return sysValue.trim();
-        }
-
-        String envValue = System.getenv(key);
-        if (envValue != null && !envValue.isBlank()) {
-            return envValue.trim();
-        }
-
-        File currentEnv = new File(ENV_FILE);
-        if (currentEnv.exists()) {
-            String value = readValueFromFile(currentEnv, key);
-            if (value != null && !value.isBlank()) {
-                return value.trim();
-            }
-        }
-
-        File homeEnv = new File(System.getProperty("user.home"), ENV_FILE);
-        if (homeEnv.exists()) {
-            String value = readValueFromFile(homeEnv, key);
-            if (value != null && !value.isBlank()) {
-                return value.trim();
-            }
-        }
-
-        return defaultValue;
-    }
-
-    private static String readValueFromFile(File file, String key) {
-        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                line = line.trim();
-                if (line.isEmpty() || line.startsWith("#")) {
-                    continue;
-                }
-                if (line.startsWith(key + "=")) {
-                    return line.substring((key + "=").length()).trim();
-                }
-            }
-        } catch (IOException e) {
-            System.err.println("读取 .env 文件失败: " + e.getMessage());
-        }
-        return null;
+        CliBootstrap.configureLogging();
     }
 
     static ModelSelection resolveModelSelection(String raw) {
@@ -1956,157 +1704,24 @@ public class Main {
         return config.getProviders().computeIfAbsent(provider, ignored -> new MindCliConfig.ProviderConfig());
     }
 
-    private static void printStartupScreen(PrintStream out, StartupScreenInfo info) {
-        for (String line : startupScreenLines(info)) {
-            out.println(line);
-        }
+    private static void printStartupScreen(PrintStream out, CliStartupView.StartupScreenInfo info) {
+        CliStartupView.printStartupScreen(out, VERSION, info);
     }
 
-    static List<String> startupScreenLines(StartupScreenInfo info) {
-        List<String> lines = new ArrayList<>(startupBannerLines(info));
-        lines.add("");
-        return lines;
+    static List<String> startupScreenLines(CliStartupView.StartupScreenInfo info) {
+        return CliStartupView.startupScreenLines(VERSION, info);
     }
 
     static List<String> startupBannerLines() {
-        return startupBannerLines(new StartupScreenInfo(
-                "auto",
-                "model",
-                0,
-                0,
-                0,
-                0,
-                0,
-                "",
-                ""));
+        return CliStartupView.startupBannerLines(VERSION);
     }
 
-    static List<String> startupBannerLines(StartupScreenInfo info) {
-        String model = info.model() == null || info.model().isBlank() ? "auto" : info.model();
-        String provider = info.provider() == null || info.provider().isBlank() ? "model" : info.provider();
-        String mcp = info.mcpTotal() <= 0
-                ? "MCP not configured"
-                : "MCP " + info.mcpReady() + "/" + info.mcpTotal() + " · " + info.mcpTools() + " tools";
-        String skills = info.skillsTotal() <= 0
-                ? "0 skills"
-                : info.skillsEnabled() + "/" + info.skillsTotal() + " skills"
-                  + (info.skillsSummary().isEmpty() ? "" : "/" + info.skillsSummary());
-        String ready = "Model " + model + " (" + provider + ")";
-        String state = mcp + " · " + skills + " · ReAct";
-        List<String> lines = new ArrayList<>(List.of(
-                "",
-                "   " + AnsiStyle.emphasis("MindCLI") + "  " + AnsiStyle.subtle("v" + VERSION),
-                "   " + AnsiStyle.subtle(ready),
-                "   " + AnsiStyle.subtle(state),
-                "",
-                "Tips for getting started:",
-                "1. Type " + AnsiStyle.emphasis("/") + " for commands and Tab completion",
-                "2. Ask coding questions, edit code or run commands",
-                "3. Attach context with " + AnsiStyle.emphasis("@path") + " or " + AnsiStyle.emphasis("@image:")
-        ));
-        if (info.note() != null && !info.note().isBlank()) {
-            lines.add("");
-            lines.add(AnsiStyle.subtle(info.note().replace('\n', ' ')));
-        }
-        return lines;
+    static List<String> startupBannerLines(CliStartupView.StartupScreenInfo info) {
+        return CliStartupView.startupBannerLines(VERSION, info);
     }
 
     static McpConfigBootstrapResult ensureDefaultMcpConfig(Path userHome) throws IOException {
-        Path configFile = userHome.resolve(".mindcli").resolve("mcp.json");
-        if (Files.notExists(configFile)) {
-            Files.createDirectories(configFile.getParent());
-            Files.writeString(configFile, DEFAULT_CHROME_DEVTOOLS_MCP_JSON);
-            return new McpConfigBootstrapResult(true,
-                    "✅ 已创建默认 MCP 配置: " + configFile
-                            + "\n   默认启用 chrome-devtools（isolated 模式）。");
-        }
-        String content = Files.readString(configFile);
-        if (!content.contains("\"chrome-devtools\"")) {
-            return new McpConfigBootstrapResult(false,
-                    "ℹ️ 检测到 ~/.mindcli/mcp.json 未配置 chrome-devtools，建议参考 README 添加浏览器 MCP server。");
-        }
-        return new McpConfigBootstrapResult(false, "");
-    }
-
-    private static MemorySaveRequest parseMemorySave(String raw) {
-        String value = raw == null ? "" : raw.trim();
-        if (value.regionMatches(true, 0, "--global ", 0, 9)) {
-            return new MemorySaveRequest(value.substring(9).trim(), "global");
-        }
-        if (value.equalsIgnoreCase("--global")) {
-            return new MemorySaveRequest("", "global");
-        }
-        if (value.regionMatches(true, 0, "--project ", 0, 10)) {
-            return new MemorySaveRequest(value.substring(10).trim(), "project");
-        }
-        if (value.equalsIgnoreCase("--project")) {
-            return new MemorySaveRequest("", "project");
-        }
-        return new MemorySaveRequest(value, "project");
-    }
-
-    private static String formatMemoryEntries(String title, List<MemoryEntry> entries) {
-        StringBuilder sb = new StringBuilder(title).append("：\n");
-        if (entries == null || entries.isEmpty()) {
-            return sb.append("📭 没有匹配的长期记忆。").toString();
-        }
-        for (MemoryEntry entry : entries) {
-            String scope = LongTermMemory.scopeOf(entry);
-            String project = entry.getMetadata().get("project");
-            sb.append("- ")
-                    .append(entry.getId())
-                    .append(" [").append(scope).append("]");
-            if ("project".equals(scope) && project != null && !project.isBlank()) {
-                sb.append(" ").append(shortenPath(project));
-            }
-            sb.append(" · ").append(entry.getTimestamp()).append("\n")
-                    .append("  ").append(entry.getContent()).append("\n");
-        }
-        return sb.toString().trim();
-    }
-
-    private static String formatMemoryProposals(String title, List<MemoryProposal> proposals) {
-        StringBuilder sb = new StringBuilder(title).append("：\n");
-        if (proposals == null || proposals.isEmpty()) {
-            return sb.append("📭 没有待确认候选记忆。").toString();
-        }
-        for (MemoryProposal proposal : proposals) {
-            sb.append("- ")
-                    .append(proposal.id())
-                    .append(" [").append(proposal.status()).append("] ")
-                    .append(proposal.type())
-                    .append(" · ").append(proposal.createdAt()).append("\n")
-                    .append("  ").append(proposal.name()).append("\n")
-                    .append("  ").append(preview(proposal.content(), 120)).append("\n");
-        }
-        return sb.toString().trim();
-    }
-
-    private static String preview(String content, int maxChars) {
-        if (content == null || content.isBlank()) {
-            return "";
-        }
-        String normalized = content.replace('\n', ' ').trim();
-        if (normalized.length() <= maxChars) {
-            return normalized;
-        }
-        return normalized.substring(0, maxChars) + "...";
-    }
-
-    private static String shortenPath(String path) {
-        if (path == null || path.isBlank()) {
-            return "";
-        }
-        try {
-            Path p = Path.of(path);
-            int count = p.getNameCount();
-            if (count <= 3) {
-                return path;
-            }
-            return "..." + File.separator + p.subpath(count - 3, count);
-        } catch (Exception e) {
-            return path;
-        }
+        return CliBootstrap.ensureDefaultMcpConfig(userHome);
     }
 
     record McpConfigBootstrapResult(boolean created, String message) {
@@ -2120,8 +1735,5 @@ public class Main {
         public static ProviderConfigUpdate error(String error) {
             return new ProviderConfigUpdate(null, null, null, null, null, false, error);
         }
-    }
-
-    private record MemorySaveRequest(String fact, String scope) {
     }
 }

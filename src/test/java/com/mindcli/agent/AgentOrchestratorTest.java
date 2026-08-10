@@ -366,6 +366,11 @@ class AgentOrchestratorTest {
                         }
                         """);
             }
+            if (body.contains("原始任务")) {
+                return response("""
+                        {"approved": true, "summary": "通过", "issues": []}
+                        """);
+            }
             if (body.contains("任务A")) {
                 return awaitBarrierThenReturn(workersInFlight, currentConcurrency, peakConcurrency,
                         response("任务A 的结果"));
@@ -373,11 +378,6 @@ class AgentOrchestratorTest {
             if (body.contains("任务B")) {
                 return awaitBarrierThenReturn(workersInFlight, currentConcurrency, peakConcurrency,
                         response("任务B 的结果"));
-            }
-            if (body.contains("原始任务")) {
-                return response("""
-                        {"approved": true, "summary": "通过", "issues": []}
-                        """);
             }
             return response("fallback");
         };

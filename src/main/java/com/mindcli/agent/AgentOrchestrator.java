@@ -55,7 +55,7 @@ import java.util.function.Supplier;
  * - 每个并行步骤使用独立的 PrintStream 缓冲流式输出，批次结束后按 step_id 顺序 flush 到 stdout，
  *   避免多线程写同一个终端流造成交错，同时仍让用户看到结构化的执行过程
  * - 单步批次仍走直连流式路径，保持"实时打字"的观感
- * - Worker 通过 {@link java.util.concurrent.BlockingQueue} 池化分配，确保同一 Worker 不会被两个步骤并发占用
+ * - Worker 通过 AgentPool profile lease 池化分配，确保同一 Worker profile 不会被两个步骤并发占用
  * - Reviewer 在并行路径中按步骤即时创建独立实例，避免对话历史竞争
  */
 public class AgentOrchestrator {
@@ -737,7 +737,7 @@ public class AgentOrchestrator {
     /**
      * 并行执行一批相互独立的步骤。
      *
-     * 每个步骤获取一个 Worker（池化，避免同一 Worker 被两个步骤并发占用），同时创建独立的 Reviewer 实例，
+     * 每个步骤获取一个 Worker profile lease（池化，避免同一 profile 被两个步骤并发占用），同时创建独立的 Reviewer 实例，
      * 流式输出写入步骤本地的 ByteArrayOutputStream；所有任务完成后按 step_id 顺序将缓冲区 flush 到 stdout。
      */
     private void runBatchParallel(AgentRunContext runContext, List<ExecutionStep> batch, List<ExecutionStep> steps,

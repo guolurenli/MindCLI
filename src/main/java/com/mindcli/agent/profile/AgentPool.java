@@ -46,10 +46,12 @@ public final class AgentPool {
             throw new IllegalStateException(
                     "No " + role + " profile satisfies required tools: " + req.requiredTools());
         }
-        AgentProfile selected = candidates.stream()
-                .filter(this::hasAvailableLease)
-                .findFirst()
-                .orElse(candidates.get(0));
+        for (AgentProfile candidate : candidates) {
+            if (tryAcquire(candidate)) {
+                return new AgentLease(candidate, "requiredTools matched", this);
+            }
+        }
+        AgentProfile selected = candidates.get(0);
         acquireBlocking(selected);
         return new AgentLease(selected, "requiredTools matched", this);
     }
@@ -70,11 +72,6 @@ public final class AgentPool {
         return true;
     }
 
-    private boolean hasAvailableLease(AgentProfile profile) {
-        Semaphore semaphore = leases.get(profile.name());
-        return semaphore != null && semaphore.availablePermits() > 0;
-    }
-
     private void acquireBlocking(AgentProfile profile) {
         Semaphore semaphore = leases.get(profile.name());
         if (semaphore == null) {
@@ -86,6 +83,14 @@ public final class AgentPool {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Interrupted while waiting for profile lease: " + profile.name(), e);
         }
+    }
+
+    private boolean tryAcquire(AgentProfile profile) {
+        Semaphore semaphore = leases.get(profile.name());
+        if (semaphore == null) {
+            throw new IllegalStateException("No lease configured for profile: " + profile.name());
+        }
+        return semaphore.tryAcquire();
     }
 
     private void release(AgentProfile profile) {

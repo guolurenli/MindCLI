@@ -52,7 +52,7 @@ mvn test -DskipTests=false                  # 全量回归
 | Plan-and-Execute | `PlanExecuteAgent.java` | `/plan` |
 | Multi-Agent | `AgentOrchestrator.java` + `agent/profile/*` | `/team` |
 
-ReAct 的 LLM/tool 循环已委托给 `runtime/agent/AgentLoopExecutor.java`；`Agent.java` 继续负责 prompt / memory / renderer / 状态栏等 ReAct 周边体验。三条路径的工具调用都会先经 `runtime/agent/ToolDispatcher.java` 进入内部 Hook、资源分类和资源锁，再映射为结构化 `ToolOutcome`；Plan 和 Multi-Agent 暂时仍保留各自 loop，但 `PlanExecuteAgent` / `SubAgent` 的实际工具执行也会写 `TOOL_OUTCOME` 事件，并由 `PlanModeAdapter` / `TeamModeAdapter` 传递 runtime 提供的 `AgentRunContext` 与共享 `RunStore`，避免分裂 runId / store。`/team` 已接入 `AgentProfile` / `AgentPool`：默认使用兼容 profile，项目可通过 `.mindcli/agents.json` 配置 planner / worker / reviewer 的工具 allowlist、命令 allowlist、并发和权限模式；child run 与 `TOOL_OUTCOME` 会记录 `profileName`、`permissionMode`、`selectedReason` 和 profile policy 决策。
+ReAct 的 LLM/tool 循环已委托给 `runtime/agent/AgentLoopExecutor.java`；`Agent.java` 继续负责 prompt / memory / renderer / 状态栏等 ReAct 周边体验。三条路径的工具调用都会先经 `runtime/agent/ToolDispatcher.java` 进入内部 Hook、资源分类和资源锁，再映射为结构化 `ToolOutcome`；Plan 和 Multi-Agent 暂时仍保留各自 loop，但 `PlanExecuteAgent` / `SubAgent` 的实际工具执行也会写 `TOOL_OUTCOME` 事件，并由 `PlanModeAdapter` / `TeamModeAdapter` 传递 runtime 提供的 `AgentRunContext` 与共享 `RunStore`，避免分裂 runId / store。`/team` 已接入 `AgentProfile` / `AgentPool`：默认使用兼容 profile，项目可通过 `.mindcli/agents.json` 配置 planner / worker / reviewer 的工具 allowlist、命令 allowlist、并发和权限模式；`AgentPool` 按 profile semaphore 原子 `tryAcquire` 分配 lease，避免并行步骤争抢同一个 worker profile 后串行化；child run 与 `TOOL_OUTCOME` 会记录 `profileName`、`permissionMode`、`selectedReason` 和 profile policy 决策。
 
 Agent Runtime 账本默认通过 `RunStoreFactory` 写到 `~/.mindcli/runs`（可用 `mindcli.runs.dir` / `MINDCLI_RUNS_DIR` 改写），`InMemoryRunStore` 仅保留给测试和降级。JSONL ledger 是 source of truth：每个事件包含 run 内递增 `seq` 和唯一 `eventId`，`run.meta.json` / `run.state.json` 由事件投影生成；读取会忽略尾部坏行，继续 append 前会先截断坏尾，`runId` 只能使用安全路径字符。AgentRuntime 可写 `SNAPSHOT_CREATED`，把 `PRE_RUN` / `POST_RUN` Side-Git checkpoint 与 runId 关联；`/run inspect <runId>` 通过 `RunRecoveryService` 展示状态、checkpoint 和恢复提示。Multi-Agent 的 planner / worker / reviewer 会写入 child run：目录布局为 `parentRun/children/childRun/`，事件 attributes 带 `parentRunId`、`rootRunId`、`role`、`stepId`、`attempt`；parent `run.state.json` 会 materialize child run 摘要。Reviewer 调用失败、输出不可解析、重试后仍拒绝时必须 fail closed，不能把 worker 候选结果标记为完成；reviewer child 摘要要保留 `approved` / `businessStatus`，供恢复和审计判断。
 
@@ -76,7 +76,7 @@ DeepSeek SSE 调用默认强制 HTTP/1.1，避免部分网络/网关下 HTTP/2 �
 ```
 src/main/java/com/mindcli/
 ├── agent/       Agent.java, PlanExecuteAgent.java, SubAgent.java, AgentOrchestrator.java
-├── cli/         Main.java facade, CliCommandParser.java, command/*, interaction/*
+├── cli/         Main.java facade, CliBootstrap.java, CliStartupView.java, CliCommandParser.java, command/*, interaction/*
 ├── browser/     BrowserSession, BrowserGuard, SensitivePagePolicy
 ├── llm/         GLMClient, DeepSeekClient, StepClient, KimiClient, FreeLlmApiClient
 ├── context/     ContextProfile, ContextMode, TokenUsageFormatter
@@ -119,7 +119,7 @@ src/main/java/com/mindcli/
 - 启动期会加载 `~/.mindcli/PAI.md`、项目根 `PAI.md`、项目根 `.mindcli/PAI.md`、`PAI.local.md`、`.mindcli/PAI.local.md`，按此顺序注入 Project Context；`@relative/path.md` 可导入项目根内文件，总注入内容有字符预算，避免项目记忆变成 token 噪音。
 - `/init` 会根据当前项目生成短 `PAI.md`，只放 commands / project positioning / architecture / pitfalls / don'ts；默认不覆盖已有文件。
 - `/export` 导出当前 ReAct `conversationHistory` 为 Markdown 到 `~/.mindcli/exports/session-*.md`；只支持无参数命令，包含完整 system prompt，便于检查 LLM 实际接收前的指令。
-- `Main.java` 是 CLI 入口 facade；低风险 slash command 的格式化和编排优先沉到 `cli/command/*`，当前 `/browser`、`/config`、`/export`、`/snapshot`、`/restore`、`/run inspect`、`/wechat` 已由专门 handler 承接。
+- `Main.java` 是 CLI 入口 facade；启动前置配置 helper 由 `CliBootstrap` 承接，启动首屏和状态摘要由 `CliStartupView` 承接；低风险 slash command 的格式化和编排优先沉到 `cli/command/*`，当前 `/browser`、`/config`、`/export`、`/memory`、`/save`、`/snapshot`、`/restore`、`/run inspect`、`/wechat` 已由专门 handler 承接。
 - JLine 交互升级计划记录在 `docs/phase-22-jline-interaction-upgrade.md`。
 
 ## 关键行为约束（Agent 必读）
@@ -217,7 +217,7 @@ src/main/java/com/mindcli/
 | 场景 | 命令 |
 |------|------|
 | 代码搜索工具 | `mvn test -Dtest=ToolRegistryTest,CodeSearchGoldenSetTest,ApprovalPolicyTest` |
-| 命令解析 | `mvn test -Dtest=CliCommandParserTest,PlanReviewInputParserTest,MainInputNormalizationTest,MainCommandHandlerRefactorTest,MainConfigCommandHandlerRefactorTest,MainWechatCommandHandlerRefactorTest` |
+| 命令解析 | `mvn test -Dtest=CliCommandParserTest,PlanReviewInputParserTest,MainInputNormalizationTest,MainCliBootstrapRefactorTest,MainCliStartupViewRefactorTest,MainMemoryCommandHandlerRefactorTest,MainCommandHandlerRefactorTest,MainConfigCommandHandlerRefactorTest,MainWechatCommandHandlerRefactorTest` |
 | DAG/Plan | `mvn test -Dtest=ExecutionPlanTest` |
 | Multi-Agent | `mvn test -Dtest=AgentRoleTest,AgentMessageTest,AgentOrchestratorTest` |
 | TUI/终端 | `mvn test -Pphase16-smoke` |
@@ -230,7 +230,7 @@ src/main/java/com/mindcli/
 
 | 任务类型 | 先看 |
 |----------|------|
-| CLI 命令 | Main.java + CliCommandParser.java + cli/command/* + cli/interaction/* |
+| CLI 命令 / 启动 | Main.java + CliBootstrap.java + CliStartupView.java + CliCommandParser.java + cli/command/* + cli/interaction/* |
 | 规划/DAG | PlanExecuteAgent.java + Planner.java + ExecutionPlan.java |
 | 工具调用 | ToolRegistry.java + tool/builtin/* + tool/mcp/McpToolNamespace.java + runtime/agent/ToolDispatcher.java + runtime/agent/ToolOutcome.java |
 | ReAct loop | Agent.java + runtime/agent/AgentLoopExecutor.java |

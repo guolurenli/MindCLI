@@ -20,6 +20,10 @@ docs/*
 !docs/mindcli-main-cli-command-handler-refactor.md
 !docs/mindcli-main-cli-config-handler-refactor.md
 !docs/mindcli-main-cli-wechat-handler-refactor.md
+!docs/mindcli-main-cli-bootstrap-refactor.md
+!docs/mindcli-main-cli-startup-view-refactor.md
+!docs/mindcli-main-cli-memory-handler-refactor.md
+!docs/mindcli-agent-orchestrator-parallel-test-stability.md
 
 # Claude Code
 .claude/
