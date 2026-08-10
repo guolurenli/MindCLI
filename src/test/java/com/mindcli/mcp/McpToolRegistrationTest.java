@@ -5,22 +5,39 @@ import com.mindcli.llm.LlmClient;
 import com.mindcli.tool.ToolOutput;
 import com.mindcli.mcp.protocol.McpToolDescriptor;
 import com.mindcli.tool.ToolRegistry;
+import com.mindcli.tool.mcp.McpToolNamespace;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * 验证 ToolRegistry 的 MCP 工具注册 / 反注册 / 调用路由。
  *
- * MCP 工具在 ToolRegistry 内部由 {@code mcpTools} 子表持有，executeTool 检测到 mcp__ 前缀后
+ * MCP 工具在 ToolRegistry 内部由 {@link McpToolNamespace} 持有，executeTool 检测到 mcp__ 前缀后
  * 会路由到注册时提供的 invoker 函数，绕过 Map<String,String> 这个旧入口。
  */
 class McpToolRegistrationTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    @Test
+    void namespaceRegistersMcpToolIntoBothDynamicAndVisibleToolViews() throws Exception {
+        Map<String, ToolRegistry.Tool> tools = new ConcurrentHashMap<>();
+        McpToolNamespace namespace = new McpToolNamespace(tools);
+
+        namespace.registerToolOutput(sampleDescriptor(), args -> ToolOutput.text("ok:" + args));
+
+        assertTrue(namespace.contains("mcp__demo__echo"));
+        assertTrue(tools.containsKey("mcp__demo__echo"));
+        assertEquals("Echo input (MCP server: demo, tool: echo)", tools.get("mcp__demo__echo").description());
+        assertEquals("MCP 工具不应通过 Map<String,String> 入口执行",
+                tools.get("mcp__demo__echo").executor().execute(Map.of()));
+    }
 
     @Test
     void registersAndRoutesMcpToolToInvoker(@TempDir Path tempDir) throws Exception {

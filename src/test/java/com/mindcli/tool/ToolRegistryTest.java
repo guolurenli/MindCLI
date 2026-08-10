@@ -5,23 +5,154 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.browser.BrowserConnector;
 import com.mindcli.memory.MemoryWriteResult;
 import com.mindcli.mcp.protocol.McpToolDescriptor;
+import com.mindcli.tool.builtin.BrowserToolRegistrar;
+import com.mindcli.tool.builtin.CodeToolRegistrar;
+import com.mindcli.tool.builtin.FileToolRegistrar;
+import com.mindcli.tool.builtin.MemoryToolRegistrar;
+import com.mindcli.tool.builtin.RagToolRegistrar;
+import com.mindcli.tool.builtin.ShellToolRegistrar;
+import com.mindcli.tool.builtin.SkillToolRegistrar;
+import com.mindcli.tool.builtin.SnapshotToolRegistrar;
+import com.mindcli.tool.builtin.WebToolRegistrar;
+import com.mindcli.tool.registry.ToolRegistrar;
+import com.mindcli.tool.registry.ToolRegistrationContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.lang.reflect.Modifier;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ToolRegistryTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    @Test
+    void shouldRegisterToolThroughRegistrar() {
+        ToolRegistry registry = new ToolRegistry();
+
+        registry.registerTools(context -> context.register(new ToolRegistry.Tool(
+                "test_echo",
+                "test tool",
+                context.parameters(new ToolRegistrationContext.Parameter("value", "string", "value", true)),
+                args -> "echo:" + args.get("value")
+        )));
+
+        assertTrue(registry.hasTool("test_echo"));
+        assertEquals("echo:hello", registry.executeTool("test_echo", "{\"value\":\"hello\"}"));
+    }
+
+    @Test
+    void registrarEntryPointIsPackagePrivate() throws Exception {
+        int modifiers = ToolRegistry.class.getDeclaredMethod("registerTools", ToolRegistrar.class).getModifiers();
+
+        assertFalse(Modifier.isPublic(modifiers));
+    }
+
+    @Test
+    void registrarCannotOverwriteExistingTool() {
+        ToolRegistry registry = new ToolRegistry();
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> registry.registerTools(context -> context.register(new ToolRegistry.Tool(
+                        "read_file",
+                        "override",
+                        context.parameters(),
+                        args -> "override"
+                ))));
+
+        assertTrue(error.getMessage().contains("工具已注册"));
+    }
+
+    @Test
+    void registrarCannotRegisterReservedMcpToolName() {
+        ToolRegistry registry = new ToolRegistry();
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> registry.registerTools(context -> context.register(new ToolRegistry.Tool(
+                        "mcp__demo__echo",
+                        "fake mcp",
+                        context.parameters(),
+                        args -> "fake"
+                ))));
+
+        assertTrue(error.getMessage().contains("mcp__"));
+    }
+
+    @Test
+    void directToolExecutorsArePackagePrivate() throws Exception {
+        for (String method : List.of(
+                "readFileTool",
+                "writeFileTool",
+                "listDirTool",
+                "globFilesTool",
+                "grepCodeTool",
+                "executeCommandTool",
+                "createProjectTool",
+                "searchCodeTool",
+                "webSearchTool",
+                "webFetchTool",
+                "browserConnectTool",
+                "browserDisconnectTool",
+                "browserStatusTool",
+                "loadSkillTool",
+                "saveMemoryTool",
+                "revertTurnTool")) {
+            int modifiers = ToolRegistry.class.getDeclaredMethod(method, Map.class).getModifiers();
+
+            assertFalse(Modifier.isPublic(modifiers), method);
+        }
+    }
+
+    @Test
+    void shouldKeepLowRiskToolsInDedicatedRegistrars() {
+        assertInstanceOf(ToolRegistrar.class, new FileToolRegistrar());
+        assertInstanceOf(ToolRegistrar.class, new ShellToolRegistrar());
+        assertInstanceOf(ToolRegistrar.class, new CodeToolRegistrar());
+
+        ToolRegistry registry = new ToolRegistry();
+
+        assertTrue(registry.hasTool("read_file"));
+        assertTrue(registry.hasTool("write_file"));
+        assertTrue(registry.hasTool("list_dir"));
+        assertTrue(registry.hasTool("glob_files"));
+        assertTrue(registry.hasTool("grep_code"));
+        assertTrue(registry.hasTool("execute_command"));
+        assertTrue(registry.hasTool("create_project"));
+    }
+
+    @Test
+    void shouldKeepRemainingBuiltinToolsInDedicatedRegistrars() {
+        assertInstanceOf(ToolRegistrar.class, new RagToolRegistrar());
+        assertInstanceOf(ToolRegistrar.class, new WebToolRegistrar());
+        assertInstanceOf(ToolRegistrar.class, new BrowserToolRegistrar());
+        assertInstanceOf(ToolRegistrar.class, new SkillToolRegistrar());
+        assertInstanceOf(ToolRegistrar.class, new MemoryToolRegistrar());
+        assertInstanceOf(ToolRegistrar.class, new SnapshotToolRegistrar());
+
+        ToolRegistry registry = new ToolRegistry();
+
+        assertTrue(registry.hasTool("search_code"));
+        assertTrue(registry.hasTool("web_search"));
+        assertTrue(registry.hasTool("web_fetch"));
+        assertTrue(registry.hasTool("browser_connect"));
+        assertTrue(registry.hasTool("browser_disconnect"));
+        assertTrue(registry.hasTool("browser_status"));
+        assertTrue(registry.hasTool("load_skill"));
+        assertTrue(registry.hasTool("save_memory"));
+        assertTrue(registry.hasTool("revert_turn"));
+    }
 
     @Test
     void shouldRunCommandInProjectDirectory(@TempDir Path tempDir) {

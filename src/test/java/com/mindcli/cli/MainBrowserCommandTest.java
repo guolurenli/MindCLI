@@ -3,6 +3,7 @@ package com.mindcli.cli;
 import com.mindcli.browser.BrowserConnectivityCheck;
 import com.mindcli.browser.BrowserMode;
 import com.mindcli.browser.BrowserSession;
+import com.mindcli.cli.command.BrowserCommandHandler;
 import com.mindcli.hitl.HitlToolRegistry;
 import com.mindcli.hitl.TerminalHitlHandler;
 import com.mindcli.mcp.McpServer;
@@ -20,6 +21,16 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 class MainBrowserCommandTest {
+
+    @Test
+    void extractedBrowserCommandHandlerMatchesMainFacade(@TempDir Path tempDir) throws IOException {
+        Harness h = new Harness(tempDir);
+
+        String direct = BrowserCommandHandler.handle("status", h.session, h.connectivity, h.manager, h.registry, h.handler);
+        String facade = Main.handleBrowserCommand("status", h.session, h.connectivity, h.manager, h.registry, h.handler);
+
+        assertEquals(facade, direct);
+    }
 
     @Test
     void browserStatusShowsCurrentMode(@TempDir Path tempDir) throws IOException {

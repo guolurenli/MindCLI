@@ -35,8 +35,8 @@
     "id": "grep-code-tool-registration",
     "question": "grep_code 工具在哪里注册，参数 schema 在哪里维护？",
     "pattern": "grep_code",
-    "glob": "**/ToolRegistry.java",
-    "expectedPath": "src/main/java/com/mindcli/tool/ToolRegistry.java",
-    "expectedText": "tools.put(\"grep_code\""
+    "glob": "**/FileToolRegistrar.java",
+    "expectedPath": "src/main/java/com/mindcli/tool/builtin/FileToolRegistrar.java",
+    "expectedText": "\"grep_code\""
   }
 ]

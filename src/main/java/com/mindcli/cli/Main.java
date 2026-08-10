@@ -6,9 +6,11 @@ import com.mindcli.agent.PlanExecuteAgent;
 import com.mindcli.browser.BrowserAuditMetadata;
 import com.mindcli.browser.BrowserConnectivityCheck;
 import com.mindcli.browser.BrowserGuard;
-import com.mindcli.browser.BrowserMode;
 import com.mindcli.browser.BrowserSession;
 import com.mindcli.browser.SensitivePagePolicy;
+import com.mindcli.cli.command.BrowserCommandHandler;
+import com.mindcli.cli.command.SlashCommandCatalog;
+import com.mindcli.cli.interaction.CliInputSupport;
 import com.mindcli.config.MindCliConfig;
 import com.mindcli.hitl.HitlHandler;
 import com.mindcli.hitl.HitlToolRegistry;
@@ -27,7 +29,6 @@ import com.mindcli.render.RendererFactory;
 import com.mindcli.render.StatusInfo;
 import com.mindcli.render.inline.InlineRenderer;
 import com.mindcli.image.ClipboardImage;
-import com.mindcli.mcp.McpServer;
 import com.mindcli.mcp.McpServerManager;
 import com.mindcli.mcp.McpServerStatus;
 import com.mindcli.mcp.mention.AtMentionExpander;
@@ -69,11 +70,9 @@ import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
 import org.jline.reader.MaskingCallback;
 import org.jline.reader.EndOfFileException;
-import org.jline.reader.History;
 import org.jline.reader.UserInterruptException;
 import org.jline.reader.Reference;
 import org.jline.utils.NonBlockingReader;
-import org.jline.utils.AttributedString;
 import org.jline.widget.AutosuggestionWidgets;
 import org.jline.widget.AutopairWidgets;
 import org.jline.console.CmdDesc;
@@ -102,7 +101,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.regex.Pattern;
 
 /**
  * MindCLI v16.1.0 - Terminal-First Agent IDE
@@ -123,20 +121,8 @@ public class Main {
     private static final String LOG_MAX_HISTORY_PROPERTY = "mindcli.log.maxHistory";
     private static final String LOG_MAX_FILE_SIZE_PROPERTY = "mindcli.log.maxFileSize";
     private static final String LOG_TOTAL_SIZE_CAP_PROPERTY = "mindcli.log.totalSizeCap";
-    private static final String HISTORY_FILE_PROPERTY = "mindcli.history.file";
-    private static final String HISTORY_SIZE_PROPERTY = "mindcli.history.size";
-    private static final String HISTORY_FILE_SIZE_PROPERTY = "mindcli.history.fileSize";
-    private static final String DEFAULT_HISTORY_FILE_NAME = "input.history";
     private static final String BRACKETED_PASTE_BEGIN = "[200~";
     private static final String BRACKETED_PASTE_END = "\u001b[201~";
-    private static final String ARROW_UP = "[A";
-    private static final String ARROW_DOWN = "[B";
-    private static final String APP_ARROW_UP = "OA";
-    private static final String APP_ARROW_DOWN = "OB";
-    private static final Pattern SENSITIVE_FLAG_VALUE = Pattern.compile(
-            "(?i)(--?(?:api[_-]?key|authorization|password|passwd|secret|token)\\s+)(\\S+)");
-    private static final Pattern SENSITIVE_ASSIGNMENT = Pattern.compile(
-            "(?i)((?:api[_-]?key|authorization|password|passwd|secret|token)\\s*[=:]\\s*)(\\S+)");
     private static final int CTRL_O = 15;
     private static final String DEFAULT_CHROME_DEVTOOLS_MCP_JSON = """
             {
@@ -1331,11 +1317,7 @@ public class Main {
     }
 
     static String redactSensitiveInput(String input) {
-        if (input == null || input.isBlank()) {
-            return input;
-        }
-        String redacted = SENSITIVE_FLAG_VALUE.matcher(input).replaceAll("$1***");
-        return SENSITIVE_ASSIGNMENT.matcher(redacted).replaceAll("$1***");
+        return CliInputSupport.redactSensitiveInput(input);
     }
 
     private static int terminalColumns() {
@@ -1562,105 +1544,20 @@ public class Main {
     }
 
     static String prepareSeedBuffer(String rawInput) {
-        if (rawInput == null || rawInput.isEmpty()) {
-            return "";
-        }
-        return normalizeLineEndings(rawInput);
+        return CliInputSupport.prepareSeedBuffer(rawInput);
     }
 
     static List<String> startupHints() {
-        return List.of(
-                "输入你的问题或任务",
-                "输入 '/' 后按 Tab 补全命令",
-                "输入 '@server:protocol://path' 可显式引用 MCP resource",
-                "任务运行中按 ESC 取消当前任务",
-                "默认模式是 ReAct"
-        );
+        return SlashCommandCatalog.startupHints();
     }
 
     record SlashCommandHint(String insertText, String display, String description) {
     }
 
     static List<SlashCommandHint> slashCommandHints() {
-        return List.of(
-                new SlashCommandHint("/model", "/model", "查看当前模型"),
-                new SlashCommandHint("/model glm-5.1", "/model glm-5.1", "切换到 GLM-5.1"),
-                new SlashCommandHint("/model glm-5v-turbo", "/model glm-5v-turbo", "切换到 GLM-5V-Turbo 多模态"),
-                new SlashCommandHint("/model deepseek", "/model deepseek", "切换到 DeepSeek（读取配置模型）"),
-                new SlashCommandHint("/model step", "/model step", "切换到 StepFun（读取配置模型）"),
-                new SlashCommandHint("/model kimi", "/model kimi", "切换到 Kimi（读取配置模型）"),
-                new SlashCommandHint("/model freellmapi", "/model freellmapi", "切换到本地 FreeLLMAPI（读取配置模型）"),
-                new SlashCommandHint("/model xfyun", "/model xfyun", "切换到讯飞星辰 MaaS（读取配置模型）"),
-                new SlashCommandHint("/config provider freellmapi ", "/config provider freellmapi <选项>", "配置本地 FreeLLMAPI provider"),
-                new SlashCommandHint("/config provider xfyun ", "/config provider xfyun <选项>", "配置讯飞星辰 MaaS provider"),
-                new SlashCommandHint("/plan", "/plan", "下一条任务使用 Plan-and-Execute 模式"),
-                new SlashCommandHint("/plan ", "/plan <任务内容>", "直接用计划模式执行这条任务"),
-                new SlashCommandHint("/team", "/team", "下一条任务使用 Multi-Agent 协作模式"),
-                new SlashCommandHint("/team ", "/team <任务内容>", "直接用多 Agent 协作执行这条任务"),
-                new SlashCommandHint("/hitl", "/hitl", "查看 HITL 状态"),
-                new SlashCommandHint("/hitl on", "/hitl on", "启用危险操作人工审批"),
-                new SlashCommandHint("/hitl off", "/hitl off", "关闭 HITL 审批"),
-                new SlashCommandHint("/browser", "/browser", "查看浏览器会话状态"),
-                new SlashCommandHint("/browser connect", "/browser connect", "复用已允许远程调试的登录态 Chrome"),
-                new SlashCommandHint("/browser connect ", "/browser connect <port>", "旧式 CDP 端口连接"),
-                new SlashCommandHint("/browser status", "/browser status", "查看浏览器会话状态"),
-                new SlashCommandHint("/browser tabs", "/browser tabs", "查看 shared 模式真实 Chrome tab"),
-                new SlashCommandHint("/browser disconnect", "/browser disconnect", "切回 isolated 浏览器模式"),
-                new SlashCommandHint("/wechat", "/wechat", "扫码绑定并启动微信 iLink 通道"),
-                new SlashCommandHint("/wechat setup", "/wechat setup", "重新扫码绑定并启动微信通道"),
-                new SlashCommandHint("/wechat status", "/wechat status", "查看微信通道状态"),
-                new SlashCommandHint("/wechat stop", "/wechat stop", "停止当前进程内微信通道"),
-                new SlashCommandHint("/task", "/task", "查看后台任务列表"),
-                new SlashCommandHint("/task add ", "/task add <任务内容>", "提交后台任务"),
-                new SlashCommandHint("/task cancel ", "/task cancel <task_id>", "取消后台任务"),
-                new SlashCommandHint("/task log ", "/task log <task_id>", "查看后台任务结果"),
-                new SlashCommandHint("/mcp", "/mcp", "查看 MCP server 状态"),
-                new SlashCommandHint("/mcp restart ", "/mcp restart <name>", "重启 MCP server"),
-                new SlashCommandHint("/mcp logs ", "/mcp logs <name>", "查看 MCP server 日志"),
-                new SlashCommandHint("/mcp disable ", "/mcp disable <name>", "禁用 MCP server"),
-                new SlashCommandHint("/mcp enable ", "/mcp enable <name>", "启用 MCP server"),
-                new SlashCommandHint("/mcp resources ", "/mcp resources <name>", "查看 MCP resources"),
-                new SlashCommandHint("/mcp prompts ", "/mcp prompts <name>", "查看 MCP prompts"),
-                new SlashCommandHint("/policy", "/policy", "查看安全策略状态"),
-                new SlashCommandHint("/config", "/config", "打开配置 palette（只读视图 + 切换提示）"),
-                new SlashCommandHint("/audit", "/audit", "查看今日最近 10 条危险工具审计"),
-                new SlashCommandHint("/audit ", "/audit [N]", "查看今日最近 N 条危险工具审计"),
-                new SlashCommandHint("/run inspect ", "/run inspect <runId>", "检查 run ledger 与 snapshot checkpoint"),
-                new SlashCommandHint("/snapshot", "/snapshot", "查看最近 Side-Git 快照"),
-                new SlashCommandHint("/snapshot status", "/snapshot status", "查看 Side-Git 快照状态"),
-                new SlashCommandHint("/snapshot clean", "/snapshot clean", "清理当前项目 Side-Git 快照"),
-                new SlashCommandHint("/restore ", "/restore <N>", "恢复到最近第 N 个 pre-turn 快照"),
-                new SlashCommandHint("/index", "/index", "索引当前代码库"),
-                new SlashCommandHint("/index ", "/index [路径]", "索引指定路径代码库"),
-                new SlashCommandHint("/search ", "/search <查询>", "语义检索代码（RAG 辅助）"),
-                new SlashCommandHint("/graph ", "/graph <类名>", "查看代码关系图谱"),
-                new SlashCommandHint("/clear", "/clear", "清空当前对话历史"),
-                new SlashCommandHint("/compact", "/compact", "手动压缩当前对话历史"),
-                new SlashCommandHint("/init", "/init", "生成项目级记忆 PAI.md"),
-                new SlashCommandHint("/init --force", "/init --force", "重写项目级记忆 PAI.md"),
-                new SlashCommandHint("/history clear", "/history clear", "清空本机输入历史"),
-                new SlashCommandHint("/context", "/context", "查看上下文和记忆状态"),
-                new SlashCommandHint("/memory", "/memory", "查看记忆状态"),
-                new SlashCommandHint("/memory policy", "/memory policy", "查看记忆治理策略"),
-                new SlashCommandHint("/memory proposals", "/memory proposals", "查看待确认候选记忆"),
-                new SlashCommandHint("/memory export --audit", "/memory export --audit", "导出记忆审计证据"),
-                new SlashCommandHint("/memory approve ", "/memory approve <id>", "批准候选并写入长期记忆"),
-                new SlashCommandHint("/memory reject ", "/memory reject <id>", "拒绝候选记忆"),
-                new SlashCommandHint("/memory list", "/memory list", "查看长期记忆列表"),
-                new SlashCommandHint("/memory search ", "/memory search <关键词>", "搜索当前项目可见长期记忆"),
-                new SlashCommandHint("/memory delete ", "/memory delete <id>", "删除单条长期记忆"),
-                new SlashCommandHint("/memory clear", "/memory clear", "清空长期记忆"),
-                new SlashCommandHint("/save ", "/save [--global] <事实内容>", "手动保存项目级或全局长期记忆"),
-                new SlashCommandHint("/skill", "/skill", "查看 skill 列表"),
-                new SlashCommandHint("/skill list", "/skill list", "查看 skill 列表"),
-                new SlashCommandHint("/skill show ", "/skill show <name>", "查看 SKILL.md 全文"),
-                new SlashCommandHint("/skill on ", "/skill on <name>", "启用 skill"),
-                new SlashCommandHint("/skill off ", "/skill off <name>", "禁用 skill"),
-                new SlashCommandHint("/skill reload", "/skill reload", "重新扫描 skill 目录"),
-                new SlashCommandHint("/export", "/export", "导出当前会话对话记录为 Markdown"),
-                new SlashCommandHint("/exit", "/exit", "退出 MindCLI"),
-                new SlashCommandHint("/quit", "/quit", "退出 MindCLI")
-        );
+        return SlashCommandCatalog.slashCommandHints().stream()
+                .map(hint -> new SlashCommandHint(hint.insertText(), hint.display(), hint.description()))
+                .toList();
     }
 
     private static void printSlashCommandHelp() {
@@ -1701,14 +1598,7 @@ public class Main {
     }
 
     static LinkedHashMap<String, CmdDesc> slashCommandTailTips() {
-        LinkedHashMap<String, CmdDesc> tips = new LinkedHashMap<>();
-        for (SlashCommandHint hint : slashCommandHints()) {
-            tips.computeIfAbsent(hint.insertText(), key ->
-                    new CmdDesc().mainDesc(List.of(new AttributedString(hint.description()))));
-            tips.computeIfAbsent(hint.display(), key ->
-                    new CmdDesc().mainDesc(List.of(new AttributedString(hint.description()))));
-        }
-        return tips;
+        return SlashCommandCatalog.slashCommandTailTips();
     }
 
     private static void bindSlashWidget(LineReader lineReader, String keyMapName, Reference slashHint) {
@@ -1719,32 +1609,7 @@ public class Main {
     }
 
     static String formatSlashCommandChoices(int terminalWidth) {
-        List<String> commands = slashCommandHints().stream()
-                .map(SlashCommandHint::display)
-                .distinct()
-                .toList();
-        int maxLen = commands.stream().mapToInt(String::length).max().orElse(12);
-        int colWidth = Math.min(Math.max(maxLen + 4, 18), Math.max(18, terminalWidth));
-        int columns = Math.max(1, Math.min(4, terminalWidth / colWidth));
-        int rows = (int) Math.ceil(commands.size() / (double) columns);
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("可用命令（Tab 补全，Enter 执行）：\n");
-        for (int row = 0; row < rows; row++) {
-            for (int col = 0; col < columns; col++) {
-                int index = col * rows + row;
-                if (index >= commands.size()) {
-                    continue;
-                }
-                String command = commands.get(index);
-                sb.append(command);
-                if (col < columns - 1) {
-                    sb.append(" ".repeat(Math.max(2, colWidth - command.length())));
-                }
-            }
-            sb.append('\n');
-        }
-        return sb.toString();
+        return SlashCommandCatalog.formatSlashCommandChoices(terminalWidth);
     }
 
     /**
@@ -2223,147 +2088,13 @@ public class Main {
                                        McpServerManager mcpServerManager,
                                        HitlToolRegistry registry,
                                        HitlHandler hitlHandler) {
-        String normalized = payload == null || payload.isBlank() ? "status" : payload.trim();
-        String[] parts = normalized.split("\\s+");
-        String subCommand = parts[0].toLowerCase();
-        return switch (subCommand) {
-            case "status" -> browserStatus(browserSession, connectivityCheck, mcpServerManager);
-            case "connect" -> {
-                if (parts.length >= 2) {
-                    int port = parseBrowserPort(parts[1]);
-                    yield browserConnectByPort(port, browserSession, connectivityCheck, mcpServerManager, hitlHandler);
-                }
-                yield browserAutoConnect(browserSession, mcpServerManager, hitlHandler);
-            }
-            case "disconnect" -> browserDisconnect(browserSession, mcpServerManager, hitlHandler);
-            case "tabs" -> browserTabs(browserSession, registry);
-            default -> """
-                    ❌ 未知 /browser 子命令: %s
-                    可用命令：
-                      /browser status
-                      /browser connect [port]
-                      /browser disconnect
-                      /browser tabs
-                    """.formatted(normalized).trim();
-        };
-    }
-
-    private static String browserStatus(BrowserSession browserSession,
-                                        BrowserConnectivityCheck connectivityCheck,
-                                        McpServerManager mcpServerManager) {
-        BrowserConnectivityCheck.ProbeResult probe = connectivityCheck.probe(9222);
-        McpServer server = mcpServerManager.server("chrome-devtools");
-        String serverStatus = server == null
-                ? "未配置"
-                : server.status() == McpServerStatus.READY
-                ? "● ready (" + server.tools().size() + " tools)"
-                : server.status().name().toLowerCase() + (server.errorMessage() == null ? "" : " - " + server.errorMessage());
-        String mode = browserSession.mode() == BrowserMode.SHARED
-                ? "shared（复用 " + browserSession.browserUrl() + "）"
-                : "isolated（临时 user-data-dir，无登录态）";
-        return """
-                🌐 浏览器会话
-                  当前模式: %s
-                  chrome-devtools server: %s
-                  旧式 /json/version 探活: %s
-                  自动连接: Chrome 144+ 可在 chrome://inspect/#remote-debugging 勾选 Allow remote debugging 后使用 /browser connect
-                """.formatted(mode, serverStatus, probe.ok() ? "✅ " + probe.browserUrl() : "⚠️ " + probe.message()).trim();
-    }
-
-    private static String browserAutoConnect(BrowserSession browserSession,
-                                             McpServerManager mcpServerManager,
-                                             HitlHandler hitlHandler) {
-        McpServer server = mcpServerManager.server("chrome-devtools");
-        if (server == null) {
-            return "❌ 未配置 chrome-devtools MCP server，请先检查 ~/.mindcli/mcp.json";
-        }
-        List<String> oldArgs = List.copyOf(server.config().getArgs());
-        List<String> autoConnectArgs = List.of("-y", "chrome-devtools-mcp@latest", "--autoConnect");
-        String result = mcpServerManager.restartWithArgs("chrome-devtools", autoConnectArgs);
-        McpServer restarted = mcpServerManager.server("chrome-devtools");
-        if (restarted != null && restarted.status() == McpServerStatus.READY) {
-            browserSession.switchToShared("autoConnect");
-            hitlHandler.clearApprovedAllForServer("chrome-devtools");
-            return "🔄 已用 --autoConnect 连接 Chrome（需已在 chrome://inspect/#remote-debugging 允许远程调试）\n" + result;
-        }
-        mcpServerManager.restartWithArgs("chrome-devtools", oldArgs);
-        return "❌ autoConnect 连接失败，已回滚 chrome-devtools 启动参数：\n" + result
-                + "\n\n请确认 Chrome 144+ 已打开 chrome://inspect/#remote-debugging，并勾选 Allow remote debugging for this browser instance。";
-    }
-
-    private static String browserConnectByPort(int port,
-                                               BrowserSession browserSession,
-                                               BrowserConnectivityCheck connectivityCheck,
-                                               McpServerManager mcpServerManager,
-                                               HitlHandler hitlHandler) {
-        if (port < 1024 || port > 65535) {
-            return "❌ /browser connect 端口必须在 1024-65535 之间。默认 /browser connect 使用 --autoConnect；旧式 CDP 端口连接可用 /browser connect 9222。";
-        }
-        BrowserConnectivityCheck.ProbeResult probe = connectivityCheck.probe(port);
-        if (!probe.ok()) {
-            return "❌ 未检测到 Chrome 调试端口 127.0.0.1:" + port + "：" + probe.message() + "\n\n"
-                    + chromeLaunchHelp(port);
-        }
-
-        McpServer server = mcpServerManager.server("chrome-devtools");
-        if (server == null) {
-            return "❌ 未配置 chrome-devtools MCP server，请先检查 ~/.mindcli/mcp.json";
-        }
-        List<String> oldArgs = List.copyOf(server.config().getArgs());
-        List<String> sharedArgs = List.of("-y", "chrome-devtools-mcp@latest", "--browser-url=" + probe.browserUrl());
-        String result = mcpServerManager.restartWithArgs("chrome-devtools", sharedArgs);
-        McpServer restarted = mcpServerManager.server("chrome-devtools");
-        if (restarted != null && restarted.status() == McpServerStatus.READY) {
-            browserSession.switchToShared(probe.browserUrl());
-            hitlHandler.clearApprovedAllForServer("chrome-devtools");
-            return "🔄 切换 chrome-devtools server 到 shared 模式 (" + probe.browserUrl() + ")\n" + result;
-        }
-        mcpServerManager.restartWithArgs("chrome-devtools", oldArgs);
-        return "❌ shared 模式切换失败，已回滚 chrome-devtools 启动参数：\n" + result;
-    }
-
-    private static String browserDisconnect(BrowserSession browserSession,
-                                            McpServerManager mcpServerManager,
-                                            HitlHandler hitlHandler) {
-        McpServer server = mcpServerManager.server("chrome-devtools");
-        if (server == null) {
-            browserSession.switchToIsolated();
-            return "❌ 未配置 chrome-devtools MCP server，已清理本地浏览器会话状态";
-        }
-        String result = mcpServerManager.restartWithArgs(
-                "chrome-devtools",
-                List.of("-y", "chrome-devtools-mcp@latest", "--isolated=true"));
-        browserSession.switchToIsolated();
-        hitlHandler.clearApprovedAllForServer("chrome-devtools");
-        return "🔄 已切回 isolated 浏览器模式\n" + result;
-    }
-
-    private static String browserTabs(BrowserSession browserSession, HitlToolRegistry registry) {
-        if (browserSession.mode() != BrowserMode.SHARED) {
-            return "当前为 isolated 模式，没有真实 Chrome tab 可复用。可用 /browser connect 切到 shared 模式。";
-        }
-        return registry.executeTool("mcp__chrome-devtools__list_pages", "{}");
-    }
-
-    private static int parseBrowserPort(String value) {
-        if (value == null || value.isBlank()) {
-            return 9222;
-        }
-        try {
-            return Integer.parseInt(value.trim());
-        } catch (NumberFormatException e) {
-            return -1;
-        }
-    }
-
-    private static String chromeLaunchHelp(int port) {
-        return """
-                请先用调试端口启动 Chrome：
-                  macOS: open -na "Google Chrome" --args --remote-debugging-port=%d --user-data-dir=/tmp/mindcli-chrome-profile
-                  Windows: start chrome.exe --remote-debugging-port=%d --user-data-dir=%%TEMP%%\\mindcli-chrome-profile
-                  Linux: google-chrome --remote-debugging-port=%d --user-data-dir=/tmp/mindcli-chrome-profile
-                然后重新执行 /browser connect %d
-                """.formatted(port, port, port, port).trim();
+        return BrowserCommandHandler.handle(
+                payload,
+                browserSession,
+                connectivityCheck,
+                mcpServerManager,
+                registry,
+                hitlHandler);
     }
 
     private static void printMcpCommandResult(PrintStream out, String result) {
@@ -2603,17 +2334,11 @@ public class Main {
     }
 
     static String normalizeLineEndings(String rawInput) {
-        return rawInput
-                .replace("\r\n", "\n")
-                .replace('\r', '\n');
+        return CliInputSupport.normalizeLineEndings(rawInput);
     }
 
     private static String stripBracketedPasteEndMarker(String rawInput) {
-        int endMarkerIndex = rawInput.indexOf(BRACKETED_PASTE_END);
-        if (endMarkerIndex >= 0) {
-            return rawInput.substring(0, endMarkerIndex);
-        }
-        return rawInput;
+        return CliInputSupport.stripBracketedPasteEndMarker(rawInput);
     }
 
     private static boolean isSubmitKey(int key) {
@@ -2621,134 +2346,32 @@ public class Main {
     }
 
     static EscapeSequenceType classifyEscapeSequence(String sequence) {
-        if (sequence == null || sequence.isEmpty()) {
-            return EscapeSequenceType.STANDALONE_ESC;
-        }
-        if (sequence.startsWith(BRACKETED_PASTE_BEGIN)) {
-            return EscapeSequenceType.BRACKETED_PASTE;
-        }
-        if (sequence.startsWith("[") || sequence.startsWith("O")) {
-            return EscapeSequenceType.CONTROL_SEQUENCE;
-        }
-        return EscapeSequenceType.OTHER;
+        return switch (CliInputSupport.classifyEscapeSequence(sequence)) {
+            case STANDALONE_ESC -> EscapeSequenceType.STANDALONE_ESC;
+            case BRACKETED_PASTE -> EscapeSequenceType.BRACKETED_PASTE;
+            case CONTROL_SEQUENCE -> EscapeSequenceType.CONTROL_SEQUENCE;
+            case OTHER -> EscapeSequenceType.OTHER;
+        };
     }
 
     static String seedBufferForHistoryNavigation(LineReader lineReader, String sequence) {
-        if (lineReader == null || sequence == null || sequence.isEmpty()) {
-            return "";
-        }
-
-        if (isUpArrowSequence(sequence)) {
-            return latestHistoryEntry(lineReader.getHistory());
-        }
-
-        if (isDownArrowSequence(sequence)) {
-            return "";
-        }
-
-        return "";
-    }
-
-    private static boolean isUpArrowSequence(String sequence) {
-        return ARROW_UP.equals(sequence) || APP_ARROW_UP.equals(sequence);
-    }
-
-    private static boolean isDownArrowSequence(String sequence) {
-        return ARROW_DOWN.equals(sequence) || APP_ARROW_DOWN.equals(sequence);
-    }
-
-    private static String latestHistoryEntry(History history) {
-        if (history == null || history.isEmpty()) {
-            return "";
-        }
-
-        int lastIndex = history.last();
-        if (lastIndex < 0) {
-            return "";
-        }
-
-        String entry = history.get(lastIndex);
-        return entry == null ? "" : entry;
+        return CliInputSupport.seedBufferForHistoryNavigation(lineReader, sequence);
     }
 
     static void configureHistory(LineReader lineReader, Path homeDir) {
-        if (lineReader == null) {
-            return;
-        }
-        Path historyFile = resolveHistoryFile(homeDir);
-        try {
-            Files.createDirectories(historyFile.getParent());
-            lineReader.setVariable(LineReader.HISTORY_FILE, historyFile);
-            lineReader.setVariable(LineReader.HISTORY_SIZE, historySize());
-            lineReader.setVariable(LineReader.HISTORY_FILE_SIZE, historyFileSize());
-            lineReader.setOpt(LineReader.Option.HISTORY_IGNORE_SPACE);
-            lineReader.setOpt(LineReader.Option.HISTORY_IGNORE_DUPS);
-            lineReader.setOpt(LineReader.Option.HISTORY_REDUCE_BLANKS);
-            lineReader.setOpt(LineReader.Option.DISABLE_EVENT_EXPANSION);
-            lineReader.getHistory().load();
-        } catch (IOException ignored) {
-            // History is a convenience feature; failed persistence must not block the CLI.
-        }
+        CliInputSupport.configureHistory(lineReader, homeDir);
     }
 
     static Path resolveHistoryFile(Path homeDir) {
-        String configured = firstNonBlank(System.getProperty(HISTORY_FILE_PROPERTY), System.getenv("MINDCLI_HISTORY_FILE"));
-        if (configured != null) {
-            return normalizeHistoryFile(Path.of(configured));
-        }
-        Path base = homeDir == null ? Path.of(System.getProperty("user.home")) : homeDir;
-        return base.resolve(".mindcli").resolve("history").resolve(DEFAULT_HISTORY_FILE_NAME)
-                .toAbsolutePath().normalize();
+        return CliInputSupport.resolveHistoryFile(homeDir);
     }
 
     static Path normalizeHistoryFile(Path configured) {
-        Path path = configured.toAbsolutePath().normalize();
-        if (Files.isDirectory(path)) {
-            return path.resolve(DEFAULT_HISTORY_FILE_NAME).toAbsolutePath().normalize();
-        }
-        return path;
+        return CliInputSupport.normalizeHistoryFile(configured);
     }
 
     static void clearLineReaderHistory(LineReader lineReader) {
-        if (lineReader == null || lineReader.getHistory() == null) {
-            return;
-        }
-        try {
-            lineReader.getHistory().purge();
-        } catch (IOException ignored) {
-            // Keep command behavior simple: in-memory history may still be reset by JLine.
-        }
-    }
-
-    private static int historySize() {
-        return configuredPositiveInt(HISTORY_SIZE_PROPERTY, "MINDCLI_HISTORY_SIZE", 2_000);
-    }
-
-    private static int historyFileSize() {
-        return configuredPositiveInt(HISTORY_FILE_SIZE_PROPERTY, "MINDCLI_HISTORY_FILE_SIZE", 10_000);
-    }
-
-    private static int configuredPositiveInt(String property, String env, int fallback) {
-        String raw = firstNonBlank(System.getProperty(property), System.getenv(env));
-        if (raw == null) {
-            return fallback;
-        }
-        try {
-            int value = Integer.parseInt(raw.trim());
-            return value > 0 ? value : fallback;
-        } catch (NumberFormatException e) {
-            return fallback;
-        }
-    }
-
-    private static String firstNonBlank(String first, String second) {
-        if (first != null && !first.isBlank()) {
-            return first;
-        }
-        if (second != null && !second.isBlank()) {
-            return second;
-        }
-        return null;
+        CliInputSupport.clearLineReaderHistory(lineReader);
     }
 
     private static PlanExecuteAgent.PlanReviewDecision mapReviewDecision(PlanReviewInputParser.Decision decision) {

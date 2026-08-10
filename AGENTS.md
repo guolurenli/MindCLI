@@ -58,6 +58,8 @@ Agent Runtime 账本默认通过 `RunStoreFactory` 写到 `~/.mindcli/runs`（�
 
 核心内置工具 11 个：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `create_project` / `search_code` / `web_search` / `web_fetch` / `revert_turn`
 
+`ToolRegistry` 是工具对外 facade；内置工具的名称、描述、参数 schema 由 `tool/builtin/*ToolRegistrar.java` 维护，通过 `tool/registry/ToolRegistrar` / `ToolRegistrationContext` 注册。MCP 动态工具状态由 `tool/mcp/McpToolNamespace.java` 管理，`ToolRegistry` 继续保留原有 `registerMcpTool*` / `replaceMcpTool*` 兼容入口。
+
 代码库理解默认走 Claude Code 式实时探索：`glob_files` 找候选文件、`grep_code` 精确定位符号或字符串、`read_file` 按需读取具体行段。`grep_code` 优先使用本机 `ripgrep`，不可用时回退到 Java 扫描；结果受 `max_results` / `head_limit` / `max_chars` 预算约束，返回 `partial: true` 或 `suggested_reads` 时应继续缩小搜索范围或按建议读取行段。`search_code` 是 RAG 语义辅助，适合模糊自然语言、关键词不明确、常规搜索无果、巨型/跨知识检索场景，不作为精确代码定位的首选。
 
 MCP 动态工具：`mcp__{server}__{tool}`（+ resources 虚拟工具）
@@ -74,7 +76,7 @@ DeepSeek SSE 调用默认强制 HTTP/1.1，避免部分网络/网关下 HTTP/2 �
 ```
 src/main/java/com/mindcli/
 ├── agent/       Agent.java, PlanExecuteAgent.java, SubAgent.java, AgentOrchestrator.java
-├── cli/         Main.java, CliCommandParser.java, PlanReviewInputParser.java
+├── cli/         Main.java facade, CliCommandParser.java, command/*, interaction/*
 ├── browser/     BrowserSession, BrowserGuard, SensitivePagePolicy
 ├── llm/         GLMClient, DeepSeekClient, StepClient, KimiClient, FreeLlmApiClient
 ├── context/     ContextProfile, ContextMode, TokenUsageFormatter
@@ -86,7 +88,7 @@ src/main/java/com/mindcli/
 ├── image/       ImageReferenceParser
 ├── runtime/     api/ (RuntimeApiServer) + task/ (DurableTaskManager)
 ├── snapshot/    SideGitManager, SnapshotService
-├── tool/        ToolRegistry
+├── tool/        ToolRegistry facade, builtin/ registrars, registry/ seam, mcp/ namespace
 ├── wechat/      iLink client, account store, message loop, non-interactive policy
 ├── mcp/         McpClient, McpServerManager, transport/, resources/, mention/
 ├── hitl/        HitlToolRegistry, ApprovalPolicy, TerminalHitlHandler
@@ -227,11 +229,11 @@ src/main/java/com/mindcli/
 
 | 任务类型 | 先看 |
 |----------|------|
-| CLI 命令 | Main.java + CliCommandParser.java |
+| CLI 命令 | Main.java + CliCommandParser.java + cli/command/* + cli/interaction/* |
 | 规划/DAG | PlanExecuteAgent.java + Planner.java + ExecutionPlan.java |
-| 工具调用 | ToolRegistry.java + runtime/agent/ToolDispatcher.java + runtime/agent/ToolOutcome.java |
+| 工具调用 | ToolRegistry.java + tool/builtin/* + tool/mcp/McpToolNamespace.java + runtime/agent/ToolDispatcher.java + runtime/agent/ToolOutcome.java |
 | ReAct loop | Agent.java + runtime/agent/AgentLoopExecutor.java |
-| 代码搜索 | ToolRegistry.java (`glob_files` / `grep_code` / `read_file`) |
+| 代码搜索 | tool/builtin/FileToolRegistrar.java + ToolRegistry.java (`glob_files` / `grep_code` / `read_file`) |
 | 模型/API | llm/*Client.java + LlmClientFactory.java |
 | RAG 语义辅助 | CodeRetriever.java + CodeIndex.java + VectorStore.java |
 | Multi-Agent | AgentOrchestrator.java + SubAgent.java |

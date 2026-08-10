@@ -1,5 +1,7 @@
 package com.mindcli.cli;
 
+import com.mindcli.cli.command.SlashCommandCatalog;
+import com.mindcli.cli.interaction.CliInputSupport;
 import com.mindcli.llm.LlmClient;
 import org.jline.reader.History;
 import org.jline.reader.LineReader;
@@ -22,6 +24,16 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MainInputNormalizationTest {
+
+    @Test
+    void extractedCliSupportClassesMatchMainFacade() {
+        assertEquals(Main.startupHints(), SlashCommandCatalog.startupHints());
+        assertEquals(Main.slashCommandHints().size(), SlashCommandCatalog.slashCommandHints().size());
+        assertEquals(Main.formatSlashCommandChoices(120), SlashCommandCatalog.formatSlashCommandChoices(120));
+        assertEquals(Main.prepareSeedBuffer("a\r\nb"), CliInputSupport.prepareSeedBuffer("a\r\nb"));
+        assertEquals(Main.redactSensitiveInput("--api-key sk-test"),
+                CliInputSupport.redactSensitiveInput("--api-key sk-test"));
+    }
 
     @Test
     void keepsMultilinePasteStructure() {
