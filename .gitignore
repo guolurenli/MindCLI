@@ -17,6 +17,9 @@ docs/*
 !docs/mindcli-tool-registry-batch2-remaining-builtin-tools.md
 !docs/mindcli-tool-registry-batch3-mcp-namespace.md
 !docs/mindcli-main-cli-structure-refactor.md
+!docs/mindcli-main-cli-command-handler-refactor.md
+!docs/mindcli-main-cli-config-handler-refactor.md
+!docs/mindcli-main-cli-wechat-handler-refactor.md
 
 # Claude Code
 .claude/

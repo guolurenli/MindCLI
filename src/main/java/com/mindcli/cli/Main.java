@@ -9,7 +9,12 @@ import com.mindcli.browser.BrowserGuard;
 import com.mindcli.browser.BrowserSession;
 import com.mindcli.browser.SensitivePagePolicy;
 import com.mindcli.cli.command.BrowserCommandHandler;
+import com.mindcli.cli.command.ConfigCommandHandler;
+import com.mindcli.cli.command.ExportCommandHandler;
+import com.mindcli.cli.command.RunCommandHandler;
 import com.mindcli.cli.command.SlashCommandCatalog;
+import com.mindcli.cli.command.SnapshotCommandHandler;
+import com.mindcli.cli.command.WechatCliCommandHandler;
 import com.mindcli.cli.interaction.CliInputSupport;
 import com.mindcli.config.MindCliConfig;
 import com.mindcli.hitl.HitlHandler;
@@ -41,28 +46,18 @@ import com.mindcli.rag.CodeRelation;
 import com.mindcli.rag.SearchResultFormatter;
 import com.mindcli.runtime.CancellationContext;
 import com.mindcli.runtime.CancellationToken;
-import com.mindcli.runtime.agent.RunRecoveryPlan;
-import com.mindcli.runtime.agent.RunRecoveryService;
 import com.mindcli.runtime.agent.RunStore;
 import com.mindcli.runtime.api.RuntimeApiServer;
 import com.mindcli.runtime.api.RuntimeThreadStore;
 import com.mindcli.runtime.task.DurableTaskManager;
 import com.mindcli.runtime.task.TaskCommandFormatter;
-import com.mindcli.snapshot.RestoreResult;
 import com.mindcli.snapshot.SnapshotService;
-import com.mindcli.snapshot.TurnSnapshot;
 import com.mindcli.skill.Skill;
 import com.mindcli.skill.SkillRegistry;
 import java.util.stream.Collectors;
 import com.mindcli.tool.ToolRegistry;
 import com.mindcli.util.AnsiStyle;
-import com.mindcli.wechat.IlinkClient;
-import com.mindcli.wechat.WechatAccount;
-import com.mindcli.wechat.WechatAccountStore;
 import com.mindcli.wechat.WechatCommandMain;
-import com.mindcli.wechat.WechatLoginResult;
-import com.mindcli.wechat.WechatMessageLoop;
-import com.mindcli.wechat.WechatQrLogin;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 import org.jline.terminal.Attributes;
@@ -314,7 +309,8 @@ public class Main {
             DurableTaskManager taskManager = openTaskManager(llmClientRef);
             taskManager.start();
             Runtime.getRuntime().addShutdownHook(new Thread(taskManager::close, "mindcli-task-shutdown"));
-            WechatRuntimeController wechatRuntime = new WechatRuntimeController(renderer);
+            WechatCliCommandHandler.WechatRuntimeController wechatRuntime =
+                    new WechatCliCommandHandler.WechatRuntimeController(renderer);
             Runtime.getRuntime().addShutdownHook(new Thread(wechatRuntime::stop, "mindcli-wechat-shutdown"));
             renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
             StartupScreenInfo startupScreenInfo = startupScreenInfo(llmClient, mcpServerManager, skillRegistry, startupNote);
@@ -966,158 +962,12 @@ public class Main {
         }
     }
 
-    private static String handleWechatCommand(String payload,
-                                              LineReader lineReader,
-                                              Renderer renderer,
-                                              PrintStream out,
-                                              WechatRuntimeController runtime) {
-        String action = payload == null || payload.isBlank() ? "start" : payload.trim().toLowerCase(Locale.ROOT);
-        try {
-            return switch (action) {
-                case "start", "on" -> {
-                    WechatAccount account = WechatAccountStore.createDefault()
-                            .loadLatest()
-                            .orElseGet(() -> setupWechatAccount(lineReader, renderer, out));
-                    yield runtime.start(account);
-                }
-                case "setup", "bind" -> {
-                    WechatAccount account = setupWechatAccount(lineReader, renderer, out);
-                    yield runtime.start(account);
-                }
-                case "status" -> runtime.status();
-                case "stop", "off" -> {
-                    runtime.stop();
-                    yield "微信通道已停止。";
-                }
-                case "restart" -> {
-                    runtime.stop();
-                    WechatAccount account = WechatAccountStore.createDefault()
-                            .loadLatest()
-                            .orElseGet(() -> setupWechatAccount(lineReader, renderer, out));
-                    yield runtime.start(account);
-                }
-                default -> """
-                        未知 /wechat 子命令: %s
-                        用法:
-                          /wechat          绑定并启动；已绑定时直接启动
-                          /wechat setup    重新扫码绑定并启动
-                          /wechat status   查看当前进程内微信通道状态
-                          /wechat stop     停止当前进程内微信通道
-                        """.formatted(action).trim();
-            };
-        } catch (UserInterruptException e) {
-            return "已取消微信通道操作。";
-        } catch (Exception e) {
-            return "微信通道操作失败: " + e.getMessage();
-        }
-    }
-
-    private static WechatAccount setupWechatAccount(LineReader lineReader, Renderer renderer, PrintStream out) {
-        try {
-            IlinkClient client = new IlinkClient();
-            WechatAccountStore store = WechatAccountStore.createDefault();
-            Path defaultWorkspace = Path.of(".").toAbsolutePath().normalize();
-            String workspace;
-            renderer.beforeInput();
-            try {
-                workspace = lineReader.readLine("请输入微信通道工作区 [" + defaultWorkspace + "]: ");
-            } finally {
-                renderer.afterInput();
-            }
-            if (workspace == null || workspace.isBlank()) {
-                workspace = defaultWorkspace.toString();
-            }
-
-            WechatQrLogin qr = client.startQrLogin("3");
-            out.println("请用目标微信扫描二维码：");
-            com.mindcli.wechat.TerminalQrRenderer.print(out, qr.qrcodeUrl());
-            out.println("扫码失败时可打开链接：" + qr.qrcodeUrl());
-            out.println("等待扫码确认...");
-
-            WechatLoginResult login = waitWechatLogin(client, qr.qrcodeId(), Duration.ofMinutes(5));
-            if (!login.connected()) {
-                throw new IllegalStateException("扫码绑定未完成: " + login.message());
-            }
-            WechatAccount account = store.createAccount(
-                    login.token(),
-                    login.accountId(),
-                    login.baseUrl(),
-                    login.userId(),
-                    workspace);
-            store.save(account);
-            out.println("微信通道绑定完成");
-            out.println("账号: " + login.accountId());
-            out.println("工作区: " + workspace);
-            return account;
-        } catch (UserInterruptException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IllegalStateException(e.getMessage(), e);
-        }
-    }
-
-    private static WechatLoginResult waitWechatLogin(IlinkClient client, String qrcodeId, Duration timeout) throws Exception {
-        long deadline = System.nanoTime() + timeout.toNanos();
-        while (System.nanoTime() < deadline) {
-            WechatLoginResult result = client.pollQrStatus(qrcodeId);
-            if (result.connected() || result.expired()) {
-                return result;
-            }
-            Thread.sleep(3_000);
-        }
-        throw new IllegalStateException("等待扫码超时");
-    }
-
-    private static final class WechatRuntimeController {
-        private final Renderer renderer;
-        private WechatMessageLoop loop;
-        private Thread thread;
-        private WechatAccount account;
-
-        private WechatRuntimeController(Renderer renderer) {
-            this.renderer = renderer;
-        }
-
-        synchronized String start(WechatAccount account) {
-            if (isRunning()) {
-                return "微信通道已在运行，账号: " + this.account.accountId();
-            }
-            this.account = account;
-            this.loop = new WechatMessageLoop(new IlinkClient(), WechatAccountStore.createDefault(), account, renderer);
-            this.thread = new Thread(() -> {
-                try {
-                    loop.run();
-                } catch (Exception e) {
-                    System.err.println("微信通道已退出: " + e.getMessage());
-                }
-            }, "mindcli-wechat-channel");
-            this.thread.setDaemon(true);
-            this.thread.start();
-            return "微信通道已启动，账号: " + account.accountId();
-        }
-
-        synchronized void stop() {
-            if (loop != null) {
-                loop.stop();
-            }
-            if (thread != null) {
-                thread.interrupt();
-            }
-            loop = null;
-            thread = null;
-        }
-
-        synchronized String status() {
-            if (isRunning()) {
-                return "微信通道运行中，账号: " + account.accountId()
-                        + "\n工作区: " + account.workspace();
-            }
-            return "微信通道未运行。输入 /wechat 启动。";
-        }
-
-        private boolean isRunning() {
-            return thread != null && thread.isAlive();
-        }
+    static String handleWechatCommand(String payload,
+                                      LineReader lineReader,
+                                      Renderer renderer,
+                                      PrintStream out,
+                                      WechatCliCommandHandler.WechatRuntimeController runtime) {
+        return WechatCliCommandHandler.handleWechatCommand(payload, lineReader, renderer, out, runtime);
     }
 
     static PlanExecuteAgent createPlanAgent(LlmClient llmClient, Agent reactAgent,
@@ -1621,215 +1471,15 @@ public class Main {
                                             LlmClient llmClient,
                                             SwitchableHitlHandler hitlHandler,
                                             com.mindcli.skill.SkillRegistry skillRegistry) {
-        var items = java.util.List.of(
-                "模型: " + (llmClient == null ? "(none)" : llmClient.getModelName() + " / " + llmClient.getProviderName()),
-                "默认 Provider: " + (config == null ? "(none)" : config.getDefaultProvider()),
-                "HITL: " + (hitlHandler.isEnabled() ? "ON" : "OFF"),
-                "Skill 启用数: " + (skillRegistry == null ? 0 : skillRegistry.enabledSkills().size()),
-                "渲染器: " + renderer.getClass().getSimpleName(),
-                "配置文件: ~/.mindcli/config.json (只读视图，编辑请用编辑器)"
-        );
-        int selected = renderer.openPalette("配置 / config", items);
-        if (selected < 0) {
-            renderer.stream().println("(已关闭)");
-            return;
-        }
-        String hint = switch (selected) {
-            case 0, 1 -> "💡 GLM: /model glm-5.1 / /model glm-5v-turbo；其它: /model deepseek|step|kimi|freellmapi|xfyun 读取配置模型";
-            case 2 -> "💡 切换 HITL: /hitl on / /hitl off";
-            case 3 -> "💡 管理 Skill: /skill list / /skill on <name> / /skill off <name>";
-            case 4 -> "💡 切换渲染器（重启后生效）: MINDCLI_RENDERER=inline|lanterna|plain";
-            case 5 -> "💡 当前不在 TUI 内编辑 config.json，建议在编辑器里改完重启";
-            default -> "(unknown)";
-        };
-        renderer.stream().println(hint);
+        ConfigCommandHandler.handleConfigPalette(renderer, config, llmClient, hitlHandler, skillRegistry);
     }
 
     static String handleConfigCommand(MindCliConfig config, String payload) {
-        ProviderConfigUpdate update = parseProviderConfigUpdate(payload);
-        if (update.error() != null) {
-            return "❌ " + update.error() + "\n" + providerConfigUsage();
-        }
-
-        MindCliConfig.ProviderConfig providerConfig = ensureProviderConfig(config, update.provider());
-        if (update.apiKey() != null) {
-            providerConfig.setApiKey(update.apiKey());
-        }
-        if (update.baseUrl() != null) {
-            providerConfig.setBaseUrl(update.baseUrl());
-        }
-        if (update.model() != null) {
-            providerConfig.setModel(update.model());
-        }
-        if (update.loraId() != null) {
-            providerConfig.setLoraId(update.loraId());
-        }
-        if (update.setDefault()) {
-            config.setDefaultProvider(update.provider());
-        }
-        config.save();
-
-        StringBuilder out = new StringBuilder();
-        out.append("✅ 已保存 provider 配置: ").append(update.provider()).append('\n');
-        out.append("   model: ").append(providerConfig.getModel() == null || providerConfig.getModel().isBlank()
-                ? "(默认)" : providerConfig.getModel()).append('\n');
-        out.append("   baseUrl: ").append(providerConfig.getBaseUrl() == null || providerConfig.getBaseUrl().isBlank()
-                ? "(默认)" : providerConfig.getBaseUrl()).append('\n');
-        out.append("   apiKey: ").append(maskSecret(providerConfig.getApiKey())).append('\n');
-        if ("xfyun".equals(update.provider())) {
-            out.append("   loraId: ").append(providerConfig.getLoraId() == null || providerConfig.getLoraId().isBlank()
-                    ? "(未配置)" : providerConfig.getLoraId()).append('\n');
-        }
-        if (update.setDefault()) {
-            out.append("   默认 provider 已设为 ").append(update.provider()).append('\n');
-        }
-        out.append("   立即切换: /model ").append(update.provider());
-        return out.toString();
+        return ConfigCommandHandler.handleConfigCommand(config, payload);
     }
 
     static ProviderConfigUpdate parseProviderConfigUpdate(String payload) {
-        List<String> args = splitArgs(payload);
-        if (args.size() < 2 || !"provider".equalsIgnoreCase(args.get(0))) {
-            return ProviderConfigUpdate.error("用法不正确");
-        }
-
-        String provider = normalizeProviderName(args.get(1));
-        if (!isSupportedProvider(provider)) {
-            return ProviderConfigUpdate.error("暂不支持 provider: " + args.get(1));
-        }
-
-        String apiKey = null;
-        String baseUrl = null;
-        String model = null;
-        String loraId = null;
-        boolean setDefault = false;
-        for (int i = 2; i < args.size(); i++) {
-            String token = args.get(i);
-            if ("--default".equalsIgnoreCase(token) || "--set-default".equalsIgnoreCase(token)) {
-                setDefault = true;
-                continue;
-            }
-
-            String key;
-            String value;
-            int equals = token.indexOf('=');
-            if (equals > 0) {
-                key = token.substring(0, equals);
-                value = token.substring(equals + 1);
-            } else {
-                key = token;
-                if (i + 1 >= args.size()) {
-                    return ProviderConfigUpdate.error("缺少 " + key + " 的值");
-                }
-                value = args.get(++i);
-            }
-
-            switch (normalizeConfigKey(key)) {
-                case "api-key" -> apiKey = value;
-                case "base-url" -> baseUrl = value;
-                case "model" -> model = value;
-                case "lora-id" -> loraId = value;
-                default -> {
-                    return ProviderConfigUpdate.error("未知配置项: " + key);
-                }
-            }
-        }
-
-        if (loraId != null && !"xfyun".equals(provider)) {
-            return ProviderConfigUpdate.error("--lora-id 仅支持 xfyun provider");
-        }
-
-        if (apiKey == null && baseUrl == null && model == null && loraId == null && !setDefault) {
-            return ProviderConfigUpdate.error("至少提供一个配置项");
-        }
-        return new ProviderConfigUpdate(provider, apiKey, baseUrl, model, loraId, setDefault, null);
-    }
-
-    private static String providerConfigUsage() {
-        return """
-                用法:
-                  /config provider freellmapi --base-url http://localhost:5173/v1 --api-key <key> --model auto
-                  /config provider freellmapi --model qwen/qwen3-coder:free --default
-                  /config provider xfyun --base-url https://maas-api.cn-huabei-1.xf-yun.com/v2 --api-key <key> --model Qwen3.6-35B-A3B --default
-                  /config provider xfyun --lora-id <resourceId>
-                  /model freellmapi
-                  /model xfyun
-                """.stripTrailing();
-    }
-
-    private static List<String> splitArgs(String value) {
-        if (value == null || value.isBlank()) {
-            return List.of();
-        }
-        List<String> args = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        char quote = 0;
-        for (int i = 0; i < value.length(); i++) {
-            char ch = value.charAt(i);
-            if (quote != 0) {
-                if (ch == quote) {
-                    quote = 0;
-                } else {
-                    current.append(ch);
-                }
-                continue;
-            }
-            if (ch == '\'' || ch == '"') {
-                quote = ch;
-                continue;
-            }
-            if (Character.isWhitespace(ch)) {
-                if (!current.isEmpty()) {
-                    args.add(current.toString());
-                    current.setLength(0);
-                }
-                continue;
-            }
-            current.append(ch);
-        }
-        if (!current.isEmpty()) {
-            args.add(current.toString());
-        }
-        return args;
-    }
-
-    private static String normalizeConfigKey(String raw) {
-        String key = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
-        while (key.startsWith("-")) {
-            key = key.substring(1);
-        }
-        return switch (key) {
-            case "apikey", "api_key", "key" -> "api-key";
-            case "baseurl", "base_url", "url" -> "base-url";
-            case "loraid", "lora_id", "resourceid", "resource_id" -> "lora-id";
-            default -> key;
-        };
-    }
-
-    private static String normalizeProviderName(String raw) {
-        String provider = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
-        return switch (provider) {
-            case "stepfun", "step-fun" -> "step";
-            case "moonshot", "moonshotai", "moonshot-ai" -> "kimi";
-            case "free-llm-api", "free_llm_api", "freellm", "free-llm" -> "freellmapi";
-            case "xfyun-maas", "xfyun_maas", "iflytek", "iflytek-maas", "iflytek_maas", "maas" -> "xfyun";
-            default -> provider;
-        };
-    }
-
-    private static boolean isSupportedProvider(String provider) {
-        return List.of("glm", "deepseek", "step", "kimi", "freellmapi", "xfyun").contains(provider);
-    }
-
-    private static String maskSecret(String value) {
-        if (value == null || value.isBlank()) {
-            return "(未配置)";
-        }
-        String trimmed = value.trim();
-        if (trimmed.length() <= 8) {
-            return "****";
-        }
-        return trimmed.substring(0, 4) + "..." + trimmed.substring(trimmed.length() - 4);
+        return ConfigCommandHandler.parseProviderConfigUpdate(payload);
     }
 
     static void bindCtrlOToFoldableBlocks(LineReader lineReader, InlineRenderer inline) {
@@ -1911,32 +1561,7 @@ public class Main {
     }
 
     private static void handleExportCommand(PrintStream out, Agent reactAgent) {
-        List<LlmClient.Message> history = reactAgent.getConversationHistory();
-        if (!hasExportableMessages(history)) {
-            out.println("📭 当前没有对话记录可导出\n");
-            return;
-        }
-
-        Path exportsDir = Path.of(System.getProperty("user.home"), ".mindcli", "exports");
-        try {
-            Files.createDirectories(exportsDir);
-        } catch (IOException e) {
-            out.println("❌ 创建导出目录失败: " + e.getMessage() + "\n");
-            return;
-        }
-
-        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss"));
-        Path exportFile = exportsDir.resolve("session-" + timestamp + ".md");
-
-        String markdown = renderConversationExport(history, LocalDateTime.now());
-
-        try {
-            Files.writeString(exportFile, markdown);
-            out.println("✅ 对话记录已导出: " + exportFile.toAbsolutePath());
-            out.println("   共 " + countExportedMessages(history) + " 条消息\n");
-        } catch (IOException e) {
-            out.println("❌ 写入导出文件失败: " + e.getMessage() + "\n");
-        }
+        ExportCommandHandler.printExportCommand(out, reactAgent);
     }
 
     private static void handleMemoryAuditExportCommand(PrintStream out, MemoryManager memoryManager) {
@@ -1951,123 +1576,19 @@ public class Main {
     }
 
     static boolean hasExportableMessages(List<LlmClient.Message> history) {
-        return history != null && history.stream()
-                .anyMatch(msg -> msg != null);
+        return ExportCommandHandler.hasExportableMessages(history);
     }
 
     static long countExportedMessages(List<LlmClient.Message> history) {
-        if (history == null) {
-            return 0;
-        }
-        return history.stream()
-                .filter(msg -> msg != null)
-                .count();
+        return ExportCommandHandler.countExportedMessages(history);
     }
 
     static String renderConversationExport(List<LlmClient.Message> history, LocalDateTime exportedAt) {
-        StringBuilder md = new StringBuilder();
-        md.append("# MindCLI 会话导出\n\n");
-        md.append("**导出时间**: ").append(exportedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))).append("\n\n");
-        md.append("---\n\n");
-
-        for (int i = 0; i < history.size(); i++) {
-            LlmClient.Message msg = history.get(i);
-            if (msg == null) {
-                continue;
-            }
-            String role = msg.role();
-
-            md.append("## ").append(capitalizeRole(role)).append("\n\n");
-
-            // reasoning content
-            if (msg.reasoningContent() != null && !msg.reasoningContent().isBlank()) {
-                md.append("> **思考过程**:\n> \n");
-                for (String line : msg.reasoningContent().replace("\r\n", "\n").split("\n")) {
-                    md.append("> ").append(line).append("\n");
-                }
-                md.append("\n");
-            }
-
-            // tool calls
-            if (msg.toolCalls() != null && !msg.toolCalls().isEmpty()) {
-                md.append("**工具调用**:\n\n");
-                for (LlmClient.ToolCall tc : msg.toolCalls()) {
-                    String toolName = tc.function() != null ? tc.function().name() : "unknown";
-                    String toolArgs = tc.function() != null ? tc.function().arguments() : "{}";
-                    md.append("- **").append(toolName).append("**:\n");
-                    appendFencedBlock(md, formatJsonArg(toolArgs), "json", "  ");
-                    md.append("\n");
-                }
-            }
-
-            // content
-            if (msg.content() != null && !msg.content().isBlank()) {
-                if ("tool".equals(role)) {
-                    String content = msg.content();
-                    if (content.length() > 8000) {
-                        content = content.substring(0, 8000) + "\n... (已截断，原始长度 " + msg.content().length() + " 字符)";
-                    }
-                    appendFencedBlock(md, content, "", "");
-                    md.append("\n");
-                } else {
-                    md.append(msg.content()).append("\n\n");
-                }
-            }
-        }
-        return md.toString();
-    }
-
-    private static void appendFencedBlock(StringBuilder md, String content, String info, String indent) {
-        String fence = markdownFenceFor(content);
-        md.append(indent).append(fence);
-        if (info != null && !info.isBlank()) {
-            md.append(info);
-        }
-        md.append('\n');
-        String normalized = content == null ? "" : content.replace("\r\n", "\n").replace('\r', '\n');
-        for (String line : normalized.split("\n", -1)) {
-            md.append(indent).append(line).append('\n');
-        }
-        md.append(indent).append(fence).append("\n");
+        return ExportCommandHandler.renderConversationExport(history, exportedAt);
     }
 
     static String markdownFenceFor(String content) {
-        int longest = 0;
-        int current = 0;
-        String text = content == null ? "" : content;
-        for (int i = 0; i < text.length(); i++) {
-            if (text.charAt(i) == '`') {
-                current++;
-                longest = Math.max(longest, current);
-            } else {
-                current = 0;
-            }
-        }
-        return "`".repeat(Math.max(3, longest + 1));
-    }
-
-    private static String capitalizeRole(String role) {
-        return switch (role) {
-            case "user" -> "User";
-            case "assistant" -> "Assistant";
-            case "tool" -> "Tool Result";
-            case "system" -> "System";
-            default -> role.substring(0, 1).toUpperCase() + role.substring(1);
-        };
-    }
-
-    private static String formatJsonArg(String json) {
-        if (json == null || json.isBlank()) {
-            return "{}";
-        }
-        try {
-            return new com.fasterxml.jackson.databind.ObjectMapper()
-                    .writerWithDefaultPrettyPrinter()
-                    .writeValueAsString(
-                            new com.fasterxml.jackson.databind.ObjectMapper().readTree(json));
-        } catch (Exception e) {
-            return json;
-        }
+        return ExportCommandHandler.markdownFenceFor(content);
     }
 
     private static void printPolicyStatus(PrintStream out, Agent reactAgent) {
@@ -2131,95 +1652,15 @@ public class Main {
     }
 
     private static void printSnapshotCommand(PrintStream out, SnapshotService snapshotService, String payload) {
-        String normalized = payload == null || payload.isBlank() ? "list" : payload.trim().toLowerCase();
-        if ("status".equals(normalized)) {
-            out.println(snapshotService.status());
-            out.println();
-            return;
-        }
-        if ("clean".equals(normalized)) {
-            out.println(snapshotService.clean());
-            out.println();
-            return;
-        }
-        if (!"list".equals(normalized)) {
-            out.println("""
-                    ❌ 未知 /snapshot 子命令: %s
-                    可用命令：
-                      /snapshot
-                      /snapshot status
-                      /snapshot clean
-                      /restore <N>
-                    """.formatted(payload).trim());
-            out.println();
-            return;
-        }
-        try {
-            List<TurnSnapshot> snapshots = snapshotService.listSnapshots(20);
-            if (snapshots.isEmpty()) {
-                out.println("📭 暂无 Side-Git 快照\n");
-                return;
-            }
-            out.println("📸 最近 " + snapshots.size() + " 条 Side-Git 快照：");
-            int preTurnIndex = 0;
-            for (TurnSnapshot snapshot : snapshots) {
-                String restoreHint = "";
-                if ("pre-turn".equals(snapshot.phase().label())) {
-                    preTurnIndex++;
-                    restoreHint = "  /restore " + preTurnIndex;
-                }
-                out.printf("   %s %-11s %-18s %s%s%n",
-                        snapshot.shortCommitId(),
-                        snapshot.phase().label(),
-                        snapshot.turnId(),
-                        snapshot.createdAt(),
-                        restoreHint);
-            }
-            out.println();
-        } catch (Exception e) {
-            out.println("❌ 读取快照失败: " + e.getMessage() + "\n");
-        }
+        SnapshotCommandHandler.printSnapshotCommand(out, snapshotService, payload);
     }
 
     private static void printRunInspect(PrintStream out, RunStore runStore, String payload) {
-        String normalized = payload == null ? "" : payload.trim();
-        if (!normalized.regionMatches(true, 0, "inspect ", 0, 8)) {
-            out.println("""
-                    ❌ 用法: /run inspect <runId>
-                    """.trim());
-            out.println();
-            return;
-        }
-        String runId = normalized.substring(8).trim();
-        if (runId.isBlank()) {
-            out.println("❌ 用法: /run inspect <runId>\n");
-            return;
-        }
-        RunRecoveryPlan plan = new RunRecoveryService(runStore).inspect(runId);
-        out.println("🧾 Run Inspect");
-        out.println("   Run: " + plan.runId());
-        out.println("   Status: " + plan.stateStatus());
-        out.println("   Last event: " + (plan.lastEventType() == null ? "" : plan.lastEventType().name()));
-        out.println("   Last completed: " + (plan.lastCompletedEventType() == null ? "" : plan.lastCompletedEventType().name()));
-        out.println("   Pre-run snapshot: " + blankToNone(plan.preRunSnapshotCommitId()));
-        out.println("   Post-run snapshot: " + blankToNone(plan.postRunSnapshotCommitId()));
-        out.println("   Hint: " + plan.restoreHint());
-        out.println();
+        RunCommandHandler.printRunInspect(out, runStore, payload);
     }
 
     private static void printRestoreCommand(PrintStream out, SnapshotService snapshotService, String payload) {
-        int offset = parseAuditCount(payload, 1);
-        try {
-            RestoreResult result = snapshotService.restorePreTurn(offset);
-            out.println(result.formatForCli());
-            out.println();
-        } catch (Exception e) {
-            out.println("❌ 恢复快照失败: " + e.getMessage() + "\n");
-        }
-    }
-
-    private static String blankToNone(String value) {
-        return value == null || value.isBlank() ? "none" : value;
+        SnapshotCommandHandler.printRestoreCommand(out, snapshotService, payload);
     }
 
     private static int parseAuditCount(String payload, int defaultN) {
@@ -2674,9 +2115,9 @@ public class Main {
     record ModelSelection(String provider, String model, boolean explicitModel) {
     }
 
-    record ProviderConfigUpdate(String provider, String apiKey, String baseUrl, String model, String loraId,
-                                boolean setDefault, String error) {
-        static ProviderConfigUpdate error(String error) {
+    public record ProviderConfigUpdate(String provider, String apiKey, String baseUrl, String model, String loraId,
+                                       boolean setDefault, String error) {
+        public static ProviderConfigUpdate error(String error) {
             return new ProviderConfigUpdate(null, null, null, null, null, false, error);
         }
     }

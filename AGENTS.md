@@ -119,6 +119,7 @@ src/main/java/com/mindcli/
 - 启动期会加载 `~/.mindcli/PAI.md`、项目根 `PAI.md`、项目根 `.mindcli/PAI.md`、`PAI.local.md`、`.mindcli/PAI.local.md`，按此顺序注入 Project Context；`@relative/path.md` 可导入项目根内文件，总注入内容有字符预算，避免项目记忆变成 token 噪音。
 - `/init` 会根据当前项目生成短 `PAI.md`，只放 commands / project positioning / architecture / pitfalls / don'ts；默认不覆盖已有文件。
 - `/export` 导出当前 ReAct `conversationHistory` 为 Markdown 到 `~/.mindcli/exports/session-*.md`；只支持无参数命令，包含完整 system prompt，便于检查 LLM 实际接收前的指令。
+- `Main.java` 是 CLI 入口 facade；低风险 slash command 的格式化和编排优先沉到 `cli/command/*`，当前 `/browser`、`/config`、`/export`、`/snapshot`、`/restore`、`/run inspect`、`/wechat` 已由专门 handler 承接。
 - JLine 交互升级计划记录在 `docs/phase-22-jline-interaction-upgrade.md`。
 
 ## 关键行为约束（Agent 必读）
@@ -216,7 +217,7 @@ src/main/java/com/mindcli/
 | 场景 | 命令 |
 |------|------|
 | 代码搜索工具 | `mvn test -Dtest=ToolRegistryTest,CodeSearchGoldenSetTest,ApprovalPolicyTest` |
-| 命令解析 | `mvn test -Dtest=CliCommandParserTest,PlanReviewInputParserTest,MainInputNormalizationTest` |
+| 命令解析 | `mvn test -Dtest=CliCommandParserTest,PlanReviewInputParserTest,MainInputNormalizationTest,MainCommandHandlerRefactorTest,MainConfigCommandHandlerRefactorTest,MainWechatCommandHandlerRefactorTest` |
 | DAG/Plan | `mvn test -Dtest=ExecutionPlanTest` |
 | Multi-Agent | `mvn test -Dtest=AgentRoleTest,AgentMessageTest,AgentOrchestratorTest` |
 | TUI/终端 | `mvn test -Pphase16-smoke` |
