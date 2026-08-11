@@ -2,23 +2,32 @@ package com.mindcli.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.mindcli.llm.LlmClient;
-import com.mindcli.llm.LlmTraceLogger;
-import com.mindcli.lsp.LspDiagnosticReport;
-import com.mindcli.memory.MemoryManager;
-import com.mindcli.memory.TokenBudget;
-import com.mindcli.prompt.PromptAssembler;
-import com.mindcli.prompt.PromptContext;
-import com.mindcli.prompt.PromptMode;
-import com.mindcli.prompt.ProjectMemoryLoader;
-import com.mindcli.skill.SkillIndexFormatter;
-import com.mindcli.skill.SkillRegistry;
-import com.mindcli.tool.ToolRegistry;
-import com.mindcli.tool.ToolRegistry.ToolExecutionResult;
-import com.mindcli.tool.ToolRegistry.ToolInvocation;
-import com.mindcli.util.AnsiStyle;
-import com.mindcli.util.TerminalMarkdownRenderer;
-import com.mindcli.image.ImageReferenceParser;
+import com.mindcli.agent.profile.AgentProfile;
+import com.mindcli.agent.profile.AgentToolPolicy;
+import com.mindcli.platform.llm.LlmClient;
+import com.mindcli.platform.llm.LlmTraceLogger;
+import com.mindcli.capability.lsp.LspDiagnosticReport;
+import com.mindcli.capability.memory.MemoryManager;
+import com.mindcli.capability.memory.TokenBudget;
+import com.mindcli.platform.prompt.PromptAssembler;
+import com.mindcli.platform.prompt.PromptContext;
+import com.mindcli.platform.prompt.PromptMode;
+import com.mindcli.platform.prompt.ProjectMemoryLoader;
+import com.mindcli.runtime.run.AgentMode;
+import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.runtime.run.RunStore;
+import com.mindcli.runtime.run.ToolDispatcher;
+import com.mindcli.runtime.run.ToolOutcome;
+import com.mindcli.runtime.run.ToolOutcomeEventFactory;
+import com.mindcli.runtime.run.ToolOutcomeStatus;
+import com.mindcli.capability.skill.SkillIndexFormatter;
+import com.mindcli.capability.skill.SkillRegistry;
+import com.mindcli.capability.tool.ToolRegistry;
+import com.mindcli.capability.tool.ToolRegistry.ToolExecutionResult;
+import com.mindcli.capability.tool.ToolRegistry.ToolInvocation;
+import com.mindcli.platform.render.terminal.AnsiStyle;
+import com.mindcli.platform.render.terminal.TerminalMarkdownRenderer;
+import com.mindcli.capability.image.ImageReferenceParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,21 +50,31 @@ public class SubAgent {
     private static final Logger log = LoggerFactory.getLogger(SubAgent.class);
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
 
+    private final AgentProfile profile;
     private final String name;
     private final AgentRole role;
     private final LlmClient llmClient;
     private final ToolRegistry toolRegistry;
+    private final ToolDispatcher toolDispatcher;
     private final List<LlmClient.Message> conversationHistory;
+    private final ThreadLocal<AgentRunContext> activeRunContext = new ThreadLocal<>();
+    private final ThreadLocal<RunStore> activeRunStore = new ThreadLocal<>();
     private Supplier<String> externalContextSupplier = () -> "";
     private SkillRegistry skillRegistry;
     private MemoryManager memoryManager;
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
 
     public SubAgent(String name, AgentRole role, LlmClient llmClient, ToolRegistry toolRegistry) {
-        this.name = name;
-        this.role = role;
+        this(AgentProfile.legacy(name, role), llmClient, toolRegistry);
+    }
+
+    public SubAgent(AgentProfile profile, LlmClient llmClient, ToolRegistry toolRegistry) {
+        this.profile = profile;
+        this.name = profile.name();
+        this.role = profile.role();
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
+        this.toolDispatcher = new ToolDispatcher(toolRegistry);
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
         this.conversationHistory = new ArrayList<>();
         this.conversationHistory.add(LlmClient.Message.system(getSystemPrompt()));
@@ -81,7 +100,7 @@ public class SubAgent {
     private String getSystemPrompt() {
         return promptAssembler.assemble(promptMode(), PromptContext.builder()
                 .projectMemoryContext(buildProjectMemoryContext())
-                .externalContext(buildExternalContext())
+                .externalContext(buildProfileAndExternalContext())
                 .skillIndex(buildSkillIndex())
                 .toolsEnabled(llmClient == null || llmClient.supportsTools())
                 .build());
@@ -165,6 +184,42 @@ public class SubAgent {
         }
     }
 
+    private String buildProfileAndExternalContext() {
+        String profileContext = buildProfileContext();
+        String externalContext = buildExternalContext();
+        if (profileContext.isBlank()) {
+            return externalContext;
+        }
+        if (externalContext.isBlank()) {
+            return profileContext;
+        }
+        return profileContext + "\n\n" + externalContext;
+    }
+
+    private String buildProfileContext() {
+        return """
+                当前 Agent Profile:
+                - name: %s
+                - role: %s
+                - permissionMode: %s
+                - allowedTools: %s
+                - deniedTools: %s
+                - commandAllowlist: %s
+                - memoryScope: %s
+                - model: %s
+
+                只能调用 allowedTools 声明的工具；如果当前任务需要越权能力，请说明缺少的能力，不要反复调用被拒绝的工具。
+                """.formatted(
+                profile.name(),
+                profile.role().name(),
+                profile.permissionMode(),
+                AgentToolPolicy.formatTools(profile.tools()),
+                AgentToolPolicy.formatTools(profile.deniedTools()),
+                AgentToolPolicy.formatTools(profile.commandAllowlist()),
+                profile.memoryScope(),
+                profile.model()).trim();
+    }
+
     private String buildProjectMemoryContext() {
         try {
             return ProjectMemoryLoader.createDefault(Path.of(toolRegistry.getProjectPath())).loadForPrompt();
@@ -196,7 +251,9 @@ public class SubAgent {
             memoryManager.resetSurfaced();
             String memoryContext = memoryManager.buildContextForQuery(
                     taskContent,
-                    memoryManager.getContextProfile().memoryContextTokens());
+                    memoryManager.getContextProfile().memoryContextTokens(),
+                    activeRunContext.get(),
+                    activeRunStore.get());
             if (!memoryContext.isEmpty()) {
                 taskContent = "## 相关长期记忆\n\n" + memoryContext + "\n\n## 当前任务\n\n" + taskContent;
             }
@@ -230,10 +287,13 @@ public class SubAgent {
             trimConversationHistory();
 
             try {
-                LlmClient.ChatResponse response = llmClient.chat(
-                        conversationHistory,
-                        shouldUseTools() && llmClient.supportsTools() ? toolRegistry.getToolDefinitions() : null,
-                        streamRenderer
+                LlmClient.ChatResponse response = com.mindcli.platform.llm.LlmRetryPolicy.withRetry(() ->
+                        llmClient.chat(
+                                conversationHistory,
+                                toolDefinitionsForProfile(),
+                                streamRenderer
+                        ),
+                        "sub-agent-" + name + "-" + role
                 );
                 LlmTraceLogger.logReasoning(log,
                         "sub-agent name=" + name + " role=" + role + " iteration=" + budget.iteration(),
@@ -270,17 +330,29 @@ public class SubAgent {
 
                 // 增量提取长期记忆，子任务中的关键发现不丢失
                 if (memoryManager != null) {
-                    memoryManager.extractFactsIncrementalAsync(conversationHistory);
+                    memoryManager.extractFactsIncrementalAsync(
+                            conversationHistory,
+                            activeRunContext.get(),
+                            activeRunStore.get());
                 }
 
                 return AgentMessage.result(name, role, response.content());
 
-            } catch (IOException e) {
+            } catch (Exception e) {
                 log.error("[{}] LLM call failed", name, e);
                 streamRenderer.finish();
                 return AgentMessage.error(name, role, "LLM 调用失败: " + e.getMessage());
             }
         }
+    }
+
+    AgentMessage executeWithRunContext(AgentMessage task, PrintStream out, AgentRunContext runContext) {
+        return executeWithRunContext(task, out, runContext, null);
+    }
+
+    AgentMessage executeWithRunContext(AgentMessage task, PrintStream out, AgentRunContext runContext,
+                                       RunStore runStore) {
+        return withRuntimeContext(runContext, runStore, () -> execute(task, out));
     }
 
     /**
@@ -291,13 +363,23 @@ public class SubAgent {
     }
 
     public AgentMessage executeWithContext(AgentMessage task, String context, PrintStream out) {
+        return executeWithContext(task, context, out, null);
+    }
+
+    AgentMessage executeWithContext(AgentMessage task, String context, PrintStream out,
+                                    AgentRunContext runContext) {
+        return executeWithContext(task, context, out, runContext, null);
+    }
+
+    AgentMessage executeWithContext(AgentMessage task, String context, PrintStream out,
+                                    AgentRunContext runContext, RunStore runStore) {
         String enrichedContent = task.content();
         if (context != null && !context.isEmpty()) {
             enrichedContent = context + "\n\n当前任务：" + task.content();
         }
         AgentMessage enrichedTask = new AgentMessage(task.fromAgent(), task.fromRole(),
                 enrichedContent, task.type());
-        return execute(enrichedTask, out);
+        return executeWithRunContext(enrichedTask, out, runContext, runStore);
     }
 
     /**
@@ -308,9 +390,52 @@ public class SubAgent {
     }
 
     public AgentMessage review(String originalTask, String executionResult, PrintStream out) {
+        return review(originalTask, executionResult, out, null);
+    }
+
+    AgentMessage review(String originalTask, String executionResult, PrintStream out,
+                        AgentRunContext runContext) {
+        return review(originalTask, executionResult, out, runContext, null);
+    }
+
+    AgentMessage review(String originalTask, String executionResult, PrintStream out,
+                        AgentRunContext runContext, RunStore runStore) {
         String reviewInput = "原始任务：" + originalTask + "\n\n执行结果：\n" + executionResult;
         AgentMessage reviewTask = AgentMessage.task("orchestrator", reviewInput);
-        return execute(reviewTask, out);
+        return executeWithRunContext(reviewTask, out, runContext, runStore);
+    }
+
+    private AgentMessage withRuntimeContext(AgentRunContext runContext, RunStore runStore,
+                                            Supplier<AgentMessage> action) {
+        if (runContext == null && runStore == null) {
+            return action.get();
+        }
+        AgentRunContext previousContext = activeRunContext.get();
+        RunStore previousStore = activeRunStore.get();
+        if (runContext == null) {
+            activeRunContext.remove();
+        } else {
+            activeRunContext.set(runContext);
+        }
+        if (runStore == null) {
+            activeRunStore.remove();
+        } else {
+            activeRunStore.set(runStore);
+        }
+        try {
+            return action.get();
+        } finally {
+            if (previousContext == null) {
+                activeRunContext.remove();
+            } else {
+                activeRunContext.set(previousContext);
+            }
+            if (previousStore == null) {
+                activeRunStore.remove();
+            } else {
+                activeRunStore.set(previousStore);
+            }
+        }
     }
 
     /**
@@ -342,10 +467,23 @@ public class SubAgent {
     }
 
     /**
-     * 只有执行者需要工具；规划者和检查者都只输出分析结果。
+     * profile 声明了工具能力的子代理才向模型暴露工具。
      */
     private boolean shouldUseTools() {
-        return role == AgentRole.WORKER;
+        return profile != null && !profile.tools().isEmpty();
+    }
+
+    private List<LlmClient.Tool> toolDefinitionsForProfile() {
+        if (!shouldUseTools() || llmClient == null || !llmClient.supportsTools()) {
+            return null;
+        }
+        List<LlmClient.Tool> definitions = toolRegistry.getToolDefinitions();
+        if (profile.tools().contains("*")) {
+            return definitions;
+        }
+        return definitions.stream()
+                .filter(tool -> AgentToolPolicy.toolAllowed(profile, tool.name()))
+                .toList();
     }
 
     private void injectPendingLspDiagnostics(PrintStream out) {
@@ -371,7 +509,59 @@ public class SubAgent {
         if (invocations.size() > 1) {
             log.info("[{}] executing {} tool calls in parallel", name, invocations.size());
         }
-        return toolRegistry.executeTools(invocations);
+        AgentRunContext dispatchContext = toolDispatchContext();
+        List<ToolOutcome> outcomes = toolDispatcher.dispatchInvocations(invocations, dispatchContext);
+        appendToolOutcomeEvents(dispatchContext, outcomes);
+        return outcomes.stream()
+                .map(SubAgent::toLegacyResult)
+                .toList();
+    }
+
+    private AgentRunContext toolDispatchContext() {
+        AgentRunContext base = activeRunContext.get();
+        if (base == null) {
+            base = AgentRunContext.create(AgentMode.TEAM, "", toolRegistry.getProjectPath());
+        }
+        Map<String, String> metadata = new LinkedHashMap<>(base.metadata());
+        metadata.put("agentName", name);
+        metadata.put("role", role.name());
+        metadata.put("profileName", profile.name());
+        metadata.put("profileRole", profile.role().name());
+        metadata.put("permissionMode", profile.permissionMode());
+        metadata.put("allowedTools", AgentToolPolicy.formatTools(profile.tools()));
+        metadata.put("deniedTools", AgentToolPolicy.formatTools(profile.deniedTools()));
+        metadata.put("commandAllowlist", AgentToolPolicy.formatTools(profile.commandAllowlist()));
+        metadata.put("memoryScope", profile.memoryScope());
+        metadata.put("model", profile.model());
+        metadata.put("contextMode", profile.contextMode());
+        return new AgentRunContext(
+                base.runId(),
+                base.mode(),
+                base.input(),
+                base.workspace(),
+                base.startedAt(),
+                metadata);
+    }
+
+    private void appendToolOutcomeEvents(AgentRunContext context, List<ToolOutcome> outcomes) {
+        RunStore runStore = activeRunStore.get();
+        if (runStore == null || outcomes == null || outcomes.isEmpty()) {
+            return;
+        }
+        for (ToolOutcome outcome : outcomes) {
+            runStore.append(ToolOutcomeEventFactory.create(context, outcome, Map.of()));
+        }
+    }
+
+    private static ToolExecutionResult toLegacyResult(ToolOutcome outcome) {
+        return new ToolExecutionResult(
+                outcome.id(),
+                outcome.name(),
+                outcome.argumentsJson(),
+                outcome.text(),
+                outcome.elapsedMillis(),
+                outcome.status() == ToolOutcomeStatus.TIMED_OUT,
+                outcome.imageParts());
     }
 
     private void appendImageToolMessages(List<ToolExecutionResult> toolResults) {
@@ -463,6 +653,10 @@ public class SubAgent {
 
     public AgentRole getRole() {
         return role;
+    }
+
+    public AgentProfile getProfile() {
+        return profile;
     }
 
     /**

@@ -14,13 +14,18 @@
 
 ```json
 {
+  "schemaVersion": 2,
   "summary": "任务摘要",
   "tasks": [
     {
       "id": "task_1",
       "description": "任务描述",
       "type": "FILE_READ",
-      "dependencies": []
+      "dependencies": [],
+      "critical": true,
+      "maxRetries": 3,
+      "degradation": "REPLAN",
+      "expectedEvidence": []
     }
   ]
 }
@@ -36,5 +41,6 @@
 6. 复杂任务拆分为 5-10 个子任务。
 7. 不要为了“保存中间结果”额外创建 `FILE_WRITE` / `FILE_READ`，除非用户明确要求落盘。
 8. 如果一个任务一步就能完成，就保持最短计划。
+9. `degradation` 默认填 `REPLAN`，`expectedEvidence` 默认空数组。
 
 只输出 JSON，不要有其他内容。

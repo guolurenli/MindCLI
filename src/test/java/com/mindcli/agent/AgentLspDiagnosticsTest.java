@@ -1,7 +1,7 @@
 package com.mindcli.agent;
 
-import com.mindcli.llm.LlmClient;
-import com.mindcli.tool.ToolRegistry;
+import com.mindcli.platform.llm.LlmClient;
+import com.mindcli.capability.tool.ToolRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

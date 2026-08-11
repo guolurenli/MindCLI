@@ -1,10 +1,10 @@
 package com.mindcli.agent;
 
-import com.mindcli.llm.LlmClient;
-import com.mindcli.hitl.ApprovalRequest;
-import com.mindcli.hitl.ApprovalResult;
-import com.mindcli.render.Renderer;
-import com.mindcli.render.StatusInfo;
+import com.mindcli.platform.llm.LlmClient;
+import com.mindcli.platform.hitl.ApprovalRequest;
+import com.mindcli.platform.hitl.ApprovalResult;
+import com.mindcli.platform.render.Renderer;
+import com.mindcli.platform.render.StatusInfo;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;

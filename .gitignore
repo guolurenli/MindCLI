@@ -9,8 +9,23 @@ PAI.local.md
 target/
 *.class
 
-# 文档（非项目源代码）
-docs/
+# 文档（非项目源代码，结构重构方案需随代码保留）
+docs/*
+!docs/
+!docs/mindcli-tool-registry-structure-refactor.md
+!docs/mindcli-tool-registry-step2-low-risk-tools.md
+!docs/mindcli-tool-registry-batch2-remaining-builtin-tools.md
+!docs/mindcli-tool-registry-batch3-mcp-namespace.md
+!docs/mindcli-main-cli-structure-refactor.md
+!docs/mindcli-main-cli-command-handler-refactor.md
+!docs/mindcli-main-cli-config-handler-refactor.md
+!docs/mindcli-main-cli-wechat-handler-refactor.md
+!docs/mindcli-main-cli-bootstrap-refactor.md
+!docs/mindcli-main-cli-startup-view-refactor.md
+!docs/mindcli-main-cli-memory-handler-refactor.md
+!docs/mindcli-agent-orchestrator-parallel-test-stability.md
+!docs/mindcli-package-tree-enterprise-refactor.md
+!docs/mindcli-package-tree-large-module-migration.md
 
 # Claude Code
 .claude/

@@ -2,25 +2,35 @@ package com.mindcli.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.mindcli.llm.LlmClient;
-import com.mindcli.llm.LlmTraceLogger;
-import com.mindcli.lsp.LspDiagnosticReport;
-import com.mindcli.memory.MemoryManager;
-import com.mindcli.memory.TokenBudget;
-import com.mindcli.plan.*;
-import com.mindcli.prompt.PromptAssembler;
-import com.mindcli.prompt.PromptContext;
-import com.mindcli.prompt.PromptMode;
-import com.mindcli.prompt.ProjectMemoryLoader;
+import com.mindcli.platform.llm.LlmClient;
+import com.mindcli.platform.llm.LlmTraceLogger;
+import com.mindcli.capability.lsp.LspDiagnosticReport;
+import com.mindcli.capability.memory.MemoryManager;
+import com.mindcli.capability.memory.TokenBudget;
+import com.mindcli.agent.plan.*;
+import com.mindcli.platform.prompt.PromptAssembler;
+import com.mindcli.platform.prompt.PromptContext;
+import com.mindcli.platform.prompt.PromptMode;
+import com.mindcli.platform.prompt.ProjectMemoryLoader;
 import com.mindcli.runtime.CancellationContext;
-import com.mindcli.skill.SkillIndexFormatter;
-import com.mindcli.skill.SkillRegistry;
-import com.mindcli.util.AnsiStyle;
-import com.mindcli.tool.ToolRegistry;
-import com.mindcli.tool.ToolRegistry.ToolExecutionResult;
-import com.mindcli.tool.ToolRegistry.ToolInvocation;
-import com.mindcli.util.TerminalMarkdownRenderer;
-import com.mindcli.image.ImageReferenceParser;
+import com.mindcli.runtime.run.AgentMode;
+import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.runtime.run.AgentRunEventType;
+import com.mindcli.runtime.run.AgentRunStatus;
+import com.mindcli.runtime.run.RunStore;
+import com.mindcli.runtime.run.RunStoreFactory;
+import com.mindcli.runtime.run.ToolDispatcher;
+import com.mindcli.runtime.run.ToolOutcome;
+import com.mindcli.runtime.run.ToolOutcomeEventFactory;
+import com.mindcli.runtime.run.ToolOutcomeStatus;
+import com.mindcli.capability.skill.SkillIndexFormatter;
+import com.mindcli.capability.skill.SkillRegistry;
+import com.mindcli.platform.render.terminal.AnsiStyle;
+import com.mindcli.capability.tool.ToolRegistry;
+import com.mindcli.capability.tool.ToolRegistry.ToolExecutionResult;
+import com.mindcli.capability.tool.ToolRegistry.ToolInvocation;
+import com.mindcli.platform.render.terminal.TerminalMarkdownRenderer;
+import com.mindcli.capability.image.ImageReferenceParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -105,6 +115,11 @@ public class PlanExecuteAgent {
     private final PlanReviewHandler reviewHandler;
     private final MemoryManager memoryManager;
     private final PrintStream out;
+    private final RunStore runStore;
+    private final ToolDispatcher toolDispatcher;
+    private volatile RunStore activeRunStore;
+    private volatile AgentRunContext activeRunContext;
+    private volatile String runtimeOwnedLifecycleRunId;
     private Supplier<String> externalContextSupplier = () -> "";
     private SkillRegistry skillRegistry;
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
@@ -119,32 +134,53 @@ public class PlanExecuteAgent {
 
     public PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry,
                             MemoryManager memoryManager, PlanReviewHandler reviewHandler) {
-        this(llmClient, toolRegistry, null, memoryManager, reviewHandler);
+        this(llmClient, toolRegistry, null, memoryManager, reviewHandler, null, null);
+    }
+
+    public PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry,
+                            MemoryManager memoryManager, PlanReviewHandler reviewHandler,
+                            RunStore runStore) {
+        this(llmClient, toolRegistry, null, memoryManager, reviewHandler, null, runStore);
     }
 
     public PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry,
                             MemoryManager memoryManager, PlanReviewHandler reviewHandler,
                             PrintStream out) {
-        this(llmClient, toolRegistry, null, memoryManager, reviewHandler, out);
+        this(llmClient, toolRegistry, null, memoryManager, reviewHandler, out, null);
+    }
+
+    public PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry,
+                            MemoryManager memoryManager, PlanReviewHandler reviewHandler,
+                            PrintStream out, RunStore runStore) {
+        this(llmClient, toolRegistry, null, memoryManager, reviewHandler, out, runStore);
     }
 
     PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry, Planner planner,
                      MemoryManager memoryManager, PlanReviewHandler reviewHandler) {
-        this(llmClient, toolRegistry, planner, memoryManager, reviewHandler, null);
+        this(llmClient, toolRegistry, planner, memoryManager, reviewHandler, null, null);
     }
 
     PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry, Planner planner,
                      MemoryManager memoryManager, PlanReviewHandler reviewHandler, PrintStream out) {
+        this(llmClient, toolRegistry, planner, memoryManager, reviewHandler, out, null);
+    }
+
+    PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry, Planner planner,
+                     MemoryManager memoryManager, PlanReviewHandler reviewHandler, PrintStream out,
+                     RunStore runStore) {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry != null ? toolRegistry : new ToolRegistry();
         this.out = out == null ? deferredSystemOut() : out;
         this.planner = planner != null ? planner : new Planner(llmClient, this.out);
         this.reviewHandler = reviewHandler == null ? (goal, plan) -> PlanReviewDecision.execute() : reviewHandler;
         this.memoryManager = memoryManager != null ? memoryManager : new MemoryManager(llmClient);
+        this.runStore = runStore == null ? RunStoreFactory.create() : runStore;
+        this.activeRunStore = this.runStore;
+        this.toolDispatcher = new ToolDispatcher(this.toolRegistry);
         this.toolRegistry.setContextProfile(this.memoryManager.getContextProfile());
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
         this.memoryManager.setProjectPath(this.toolRegistry.getProjectPath());
-        this.toolRegistry.setScopedMemorySaver(this.memoryManager::storeFact);
+        this.toolRegistry.setScopedMemoryWriter(this.memoryManager::storeFact);
         this.planner.setProjectMemorySupplier(this::buildProjectMemoryContext);
     }
 
@@ -228,20 +264,61 @@ public class PlanExecuteAgent {
      * 运行任务（自动判断是否需要规划）
      */
     public String run(String userInput) {
+        AgentRunContext runContext = AgentRunContext.create(
+                AgentMode.PLAN,
+                userInput,
+                toolRegistry.getProjectPath());
+        return runInternal(runContext, runStore, true);
+    }
+
+    public String run(AgentRunContext runContext, RunStore runStore) {
+        AgentRunContext effectiveContext = runContext == null
+                ? AgentRunContext.create(AgentMode.PLAN, "", toolRegistry.getProjectPath())
+                : runContext;
+        return runInternal(effectiveContext, runStore == null ? this.runStore : runStore, false);
+    }
+
+    private String runInternal(AgentRunContext runContext, RunStore activeStore, boolean appendLifecycleStart) {
+        String userInput = runContext.input();
         log.info("Plan run started: inputLength={}", userInput == null ? 0 : userInput.length());
-        StreamState streamState = new StreamState();
+        RunStore previousStore = activeRunStore;
+        AgentRunContext previousRunContext = activeRunContext;
+        String previousRuntimeOwnedRunId = runtimeOwnedLifecycleRunId;
+        activeRunStore = activeStore == null ? this.runStore : activeStore;
+        activeRunContext = runContext;
+        runtimeOwnedLifecycleRunId = appendLifecycleStart ? null : runContext.runId();
         try {
-            if (CancellationContext.isCancelled()) {
-                return "⏹️ 已取消当前计划执行。";
+            if (appendLifecycleStart) {
+                appendRunEvent(runContext, AgentRunEventType.RUN_STARTED);
+                appendRunEvent(runContext, AgentRunEventType.MODE_SELECTED, Map.of(
+                        "mode", AgentMode.PLAN.name(),
+                        "adapterMode", AgentMode.PLAN.name()));
             }
-            PlanRunOutcome outcome = runWithPlan(userInput, streamState);
-            if (streamState.hasStreamedOutput() && (outcome.result() == null || outcome.result().isBlank())) {
-                return "";
+            StreamState streamState = new StreamState();
+            try {
+                if (CancellationContext.isCancelled()) {
+                    String result = "⏹️ 已取消当前计划执行。";
+                    appendTerminalEvent(runContext, result);
+                    return result;
+                }
+                PlanRunOutcome outcome = runWithPlan(userInput, streamState);
+                appendTerminalEvent(runContext, outcome.result());
+                if (streamState.hasStreamedOutput() && (outcome.result() == null || outcome.result().isBlank())) {
+                    return "";
+                }
+                return outcome.result();
+            } catch (Exception e) {
+                log.error("Plan run failed", e);
+                String result = "❌ 执行失败: " + e.getMessage();
+                appendRunEvent(runContext, AgentRunEventType.RUN_FAILED, Map.of(
+                        "status", AgentRunStatus.FAILED.name(),
+                        "error", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+                return result;
             }
-            return outcome.result();
-        } catch (Exception e) {
-            log.error("Plan run failed", e);
-            return "❌ 执行失败: " + e.getMessage();
+        } finally {
+            activeRunStore = previousStore;
+            activeRunContext = previousRunContext;
+            runtimeOwnedLifecycleRunId = previousRuntimeOwnedRunId;
         }
     }
 
@@ -312,21 +389,46 @@ public class PlanExecuteAgent {
                 }
 
                 Exception error = batchResult.error();
-                task.markFailed(error.getMessage());
-                log.warn("Task failed: {} error={}", task.getId(), error.getMessage());
                 out.println("❌ 失败 [" + task.getId() + "]: " + error.getMessage() + "\n");
 
-                // 策略1：计划进度小于50%，直接重新规划整套任务
-                if (plan.getProgress() < 0.5) {
-                    out.println("🔄 尝试重新规划...\n");
-                    ExecutionPlan replanned = planner.replan(plan, error.getMessage());
-                    return reviewAndExecutePlan(replanned, streamState).result();
+                // --- 三级递进恢复 ---
+                // 第一级：瞬态错误 → 指数退避重试
+                if (task.shouldRetry(error)) {
+                    task.incrementRetry();
+                    task.resetToPending();
+                    long delayMs = (1L << (task.getRetryCount() - 1)) * 1000;
+                    out.println("🔁 重试 [" + task.getId() + "] ("
+                            + task.getRetryCount() + "/" + task.getMaxRetries()
+                            + ")，等待 " + delayMs + "ms...\n");
+                    log.info("Retrying task {} ({}/{}) after transient error: {}",
+                            task.getId(), task.getRetryCount(), task.getMaxRetries(), error.getMessage());
+                    try {
+                        Thread.sleep(delayMs);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                    }
+                    continue;
                 }
 
-                if (!finalResult.isEmpty()) {
-                    finalResult.append("\n");
+                // 第二级：关键路径任务 → 局部重规划子树
+                if (task.isOnCriticalPath(plan.getAllTasksMap())) {
+                    out.println("🔄 关键任务 [" + task.getId() + "] 失败，局部重规划子树...\n");
+                    task.markFailed(error.getMessage());
+                    try {
+                        ExecutionPlan partialPlan = planner.replanSubtree(plan, task, error.getMessage());
+                        plan.mergeSubtree(partialPlan);
+                        log.info("Subtree replan merged for failed task {}", task.getId());
+                    } catch (IOException e) {
+                        log.error("Subtree replan failed for task {}", task.getId(), e);
+                        task.markFailed("局部重规划失败: " + e.getMessage());
+                    }
+                    continue;
                 }
-                finalResult.append("任务 ").append(task.getId()).append(" 失败: ").append(error.getMessage());
+
+                // 第三级：非关键路径 → 跳过，下游降级执行
+                task.markSkipped();
+                log.warn("Task {} skipped (non-critical), dependents will degrade", task.getId());
+                out.println("⏭️ 跳过 [" + task.getId() + "]（非关键路径），下游将降级执行\n");
             }
         }
 
@@ -442,6 +544,49 @@ public class PlanExecuteAgent {
 
     private static final int MAX_TASK_ITERATIONS = 5;
 
+    private void appendRunEvent(AgentRunContext context, AgentRunEventType type) {
+        appendRunEvent(context, type, Map.of());
+    }
+
+    private void appendRunEvent(AgentRunContext context, AgentRunEventType type, Map<String, String> attributes) {
+        if (isRuntimeOwnedLifecycleEvent(context, type)) {
+            return;
+        }
+        activeRunStore.append(com.mindcli.runtime.run.AgentRunEvent.of(context, type, attributes));
+    }
+
+    private void appendTerminalEvent(AgentRunContext context, String result) {
+        String normalized = result == null ? "" : result.trim();
+        AgentRunEventType type;
+        AgentRunStatus status;
+        if (normalized.startsWith("⏹️")) {
+            type = AgentRunEventType.RUN_CANCELLED;
+            status = AgentRunStatus.CANCELLED;
+        } else if (normalized.startsWith("❌")) {
+            type = AgentRunEventType.RUN_FAILED;
+            status = AgentRunStatus.FAILED;
+        } else if (normalized.startsWith("⚠️")) {
+            type = AgentRunEventType.RUN_FAILED;
+            status = AgentRunStatus.BLOCKED;
+        } else {
+            type = AgentRunEventType.RUN_FINISHED;
+            status = AgentRunStatus.SUCCESS;
+        }
+        appendRunEvent(context, type, Map.of("status", status.name()));
+    }
+
+    private boolean isRuntimeOwnedLifecycleEvent(AgentRunContext context, AgentRunEventType type) {
+        return runtimeOwnedLifecycleRunId != null
+                && context != null
+                && runtimeOwnedLifecycleRunId.equals(context.runId())
+                && (type == AgentRunEventType.RUN_STARTED
+                || type == AgentRunEventType.MODE_SELECTED
+                || type == AgentRunEventType.RUN_FINISHED
+                || type == AgentRunEventType.RUN_FAILED
+                || type == AgentRunEventType.RUN_CANCELLED
+                || type == AgentRunEventType.BUDGET_EXHAUSTED);
+    }
+
     /**
      * 执行单个任务（支持多轮工具调用）
      */
@@ -459,7 +604,9 @@ public class PlanExecuteAgent {
         // 注入长期记忆上下文
         String memoryContext = memoryManager.buildContextForQuery(
                 task.getDescription(),
-                memoryManager.getContextProfile().memoryContextTokens());
+                memoryManager.getContextProfile().memoryContextTokens(),
+                activeRunContext,
+                activeRunStore);
         String taskInput = buildTaskContext(goal, plan, task);
         if (!memoryContext.isEmpty()) {
             taskInput = taskInput + "\n\n" + memoryContext;
@@ -475,6 +622,7 @@ public class PlanExecuteAgent {
         StringBuilder allResults = new StringBuilder();
         int iteration = 0;
         TaskStreamRenderer streamRenderer = new TaskStreamRenderer(task.getId(), streamState, out);
+        AgentBudget taskBudget = AgentBudget.fromLlmClient(llmClient);
 
         int totalInputTokens = 0;
         int totalOutputTokens = 0;
@@ -485,17 +633,44 @@ public class PlanExecuteAgent {
                 streamRenderer.finish();
                 return TaskRunResult.of("⏹️ 已取消任务 [" + task.getId() + "]。", streamRenderer.hasStreamedOutput());
             }
+
+            // AgentBudget 三重阀：token 耗尽 / 停滞检测 / 硬轮数兜底
+            AgentBudget.ExitReason exitReason = taskBudget.check();
+            if (exitReason != AgentBudget.ExitReason.WITHIN_BUDGET) {
+                log.warn("Task {} budget exhausted: reason={}, iteration={}",
+                        task.getId(), exitReason, iteration);
+                streamRenderer.finish();
+                String toolOnlyResult = allResults.toString().trim();
+                if (!toolOnlyResult.isEmpty()) {
+                    return TaskRunResult.of("⚠️ 子任务因 " + taskBudget.describeExit(exitReason)
+                            + " 提前终止，已有工具输出：\n" + toolOnlyResult, streamRenderer.hasStreamedOutput());
+                }
+                return TaskRunResult.of("⚠️ 子任务因 " + taskBudget.describeExit(exitReason) + " 提前终止",
+                        streamRenderer.hasStreamedOutput());
+            }
+
             iteration++;
+            taskBudget.beginIteration();
 
             // 调 LLM 前评估 messages 是否接近 window 上限；超阈值压缩早期消息为摘要。
             injectPendingLspDiagnostics(messages, out);
             trimConversationHistory(messages);
 
-            LlmClient.ChatResponse response = llmClient.chat(
-                    messages,
-                    llmClient.supportsTools() ? toolRegistry.getToolDefinitions() : null,
-                    streamRenderer
-            );
+            LlmClient.ChatResponse response;
+            try {
+                response = com.mindcli.platform.llm.LlmRetryPolicy.withRetry(() ->
+                        llmClient.chat(
+                                messages,
+                                llmClient.supportsTools() ? toolRegistry.getToolDefinitions() : null,
+                                streamRenderer
+                        ),
+                        "plan-task-" + task.getId()
+                );
+            } catch (Exception e) {
+                log.error("Task {} LLM call failed after retries: {}", task.getId(), e.getMessage());
+                streamRenderer.finish();
+                throw new IOException("LLM 调用失败: " + e.getMessage(), e);
+            }
             LlmTraceLogger.logReasoning(log,
                     "plan-task task=" + task.getId() + " iteration=" + iteration,
                     llmClient,
@@ -508,6 +683,7 @@ public class PlanExecuteAgent {
             totalInputTokens += response.inputTokens();
             totalOutputTokens += response.outputTokens();
             totalCachedInputTokens += response.cachedInputTokens();
+            taskBudget.recordTokens(response.inputTokens(), response.outputTokens(), response.cachedInputTokens());
 
             log.info("Task {} iteration {} response: toolCalls={}, reasoningChars={}, contentChars={}",
                     task.getId(),
@@ -519,7 +695,7 @@ public class PlanExecuteAgent {
             if (!response.hasToolCalls()) {
                 memoryManager.recordTokenUsage(totalInputTokens, totalOutputTokens, totalCachedInputTokens);
                 // 子任务结束，增量提取长期记忆
-                memoryManager.extractFactsIncrementalAsync(messages);
+                memoryManager.extractFactsIncrementalAsync(messages, activeRunContext, activeRunStore);
                 if (!allResults.isEmpty() && (response.content() == null || response.content().isBlank())) {
                     String toolOnlyResult = allResults.toString().trim();
                     streamRenderer.finish();
@@ -531,6 +707,7 @@ public class PlanExecuteAgent {
 
             // 有工具调用：执行工具并将结果回灌到消息历史
             printToolCalls(out, response.toolCalls());
+            taskBudget.recordToolCalls(response.toolCalls());
             messages.add(LlmClient.Message.assistant(
                     response.reasoningContent(),
                     response.content(),
@@ -610,11 +787,54 @@ public class PlanExecuteAgent {
         if (invocations.size() > 1) {
             log.info("Task {} executing {} tool calls in parallel", taskId, invocations.size());
         }
-        List<ToolExecutionResult> results = toolRegistry.executeTools(invocations);
+        AgentRunContext dispatchContext = toolDispatchContext(taskId);
+        List<ToolOutcome> outcomes = toolDispatcher.dispatchInvocations(invocations, dispatchContext);
+        appendToolOutcomeEvents(dispatchContext, outcomes);
+        List<ToolExecutionResult> results = outcomes.stream()
+                .map(PlanExecuteAgent::toLegacyResult)
+                .toList();
         for (ToolExecutionResult result : results) {
             log.debug("Task {} tool result preview [{}]: {}", taskId, result.name(), preview(result.result(), 300));
         }
         return results;
+    }
+
+    private AgentRunContext toolDispatchContext(String taskId) {
+        AgentRunContext base = activeRunContext == null
+                ? AgentRunContext.create(AgentMode.PLAN, "", toolRegistry.getProjectPath())
+                : activeRunContext;
+        Map<String, String> metadata = new LinkedHashMap<>(base.metadata());
+        metadata.put("role", "plan");
+        if (taskId != null && !taskId.isBlank()) {
+            metadata.put("taskId", taskId);
+        }
+        return new AgentRunContext(
+                base.runId(),
+                AgentMode.PLAN,
+                base.input(),
+                base.workspace(),
+                base.startedAt(),
+                metadata);
+    }
+
+    private void appendToolOutcomeEvents(AgentRunContext context, List<ToolOutcome> outcomes) {
+        if (outcomes == null || outcomes.isEmpty()) {
+            return;
+        }
+        for (ToolOutcome outcome : outcomes) {
+            activeRunStore.append(ToolOutcomeEventFactory.create(context, outcome, Map.of()));
+        }
+    }
+
+    private static ToolExecutionResult toLegacyResult(ToolOutcome outcome) {
+        return new ToolExecutionResult(
+                outcome.id(),
+                outcome.name(),
+                outcome.argumentsJson(),
+                outcome.text(),
+                outcome.elapsedMillis(),
+                outcome.status() == ToolOutcomeStatus.TIMED_OUT,
+                outcome.imageParts());
     }
 
     private void appendImageToolMessages(List<LlmClient.Message> messages, List<ToolExecutionResult> toolResults) {

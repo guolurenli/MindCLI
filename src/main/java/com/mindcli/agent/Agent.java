@@ -1,27 +1,40 @@
 package com.mindcli.agent;
 
-import com.mindcli.llm.LlmClient;
-import com.mindcli.llm.LlmTraceLogger;
-import com.mindcli.context.ContextProfile;
-import com.mindcli.context.TokenUsageFormatter;
-import com.mindcli.lsp.LspDiagnosticReport;
-import com.mindcli.memory.MemoryManager;
-import com.mindcli.prompt.PromptAssembler;
-import com.mindcli.prompt.PromptContext;
-import com.mindcli.prompt.PromptMode;
-import com.mindcli.prompt.ProjectMemoryLoader;
-import com.mindcli.render.PlainRenderer;
-import com.mindcli.render.Renderer;
-import com.mindcli.render.StatusInfo;
-import com.mindcli.runtime.CancellationContext;
-import com.mindcli.skill.SkillIndexFormatter;
-import com.mindcli.skill.SkillRegistry;
-import com.mindcli.util.AnsiStyle;
-import com.mindcli.tool.ToolRegistry;
-import com.mindcli.tool.ToolRegistry.ToolExecutionResult;
-import com.mindcli.tool.ToolRegistry.ToolInvocation;
-import com.mindcli.util.TerminalMarkdownRenderer;
-import com.mindcli.image.ImageReferenceParser;
+import com.mindcli.platform.llm.LlmClient;
+import com.mindcli.platform.llm.LlmTraceLogger;
+import com.mindcli.platform.llm.context.ContextProfile;
+import com.mindcli.platform.llm.context.TokenUsageFormatter;
+import com.mindcli.capability.lsp.LspDiagnosticReport;
+import com.mindcli.capability.memory.MemoryManager;
+import com.mindcli.platform.prompt.PromptAssembler;
+import com.mindcli.platform.prompt.PromptContext;
+import com.mindcli.platform.prompt.PromptMode;
+import com.mindcli.platform.prompt.ProjectMemoryLoader;
+import com.mindcli.platform.render.PlainRenderer;
+import com.mindcli.platform.render.Renderer;
+import com.mindcli.platform.render.StatusInfo;
+import com.mindcli.runtime.run.AgentLoopContext;
+import com.mindcli.runtime.run.AgentLoopExecutor;
+import com.mindcli.runtime.run.AgentLoopObserver;
+import com.mindcli.runtime.run.AgentLoopPolicy;
+import com.mindcli.runtime.run.AgentLoopResult;
+import com.mindcli.runtime.run.AgentLoopStatus;
+import com.mindcli.runtime.run.AgentMode;
+import com.mindcli.runtime.run.AgentRuntime;
+import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.runtime.run.AgentRunResult;
+import com.mindcli.runtime.run.InMemoryRunStore;
+import com.mindcli.runtime.run.ReActModeAdapter;
+import com.mindcli.runtime.run.RunStoreFactory;
+import com.mindcli.runtime.run.RunStore;
+import com.mindcli.runtime.run.ToolDispatcher;
+import com.mindcli.runtime.run.ToolOutcome;
+import com.mindcli.capability.skill.SkillIndexFormatter;
+import com.mindcli.capability.skill.SkillRegistry;
+import com.mindcli.platform.render.terminal.AnsiStyle;
+import com.mindcli.capability.tool.ToolRegistry;
+import com.mindcli.platform.render.terminal.TerminalMarkdownRenderer;
+import com.mindcli.capability.image.ImageReferenceParser;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,20 +74,27 @@ public class Agent {
     private boolean returnFinalResponseWhenStreamed;
     //提示词组装器
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
+    //运行时事件账本（Phase 2 先使用内存实现）
+    private final RunStore runStore;
 
     public Agent(LlmClient llmClient) {
-        this(llmClient, new ToolRegistry());
+        this(llmClient, new ToolRegistry(), RunStoreFactory.create());
     }
 
     public Agent(LlmClient llmClient, ToolRegistry toolRegistry) {
+        this(llmClient, toolRegistry, RunStoreFactory.create());
+    }
+
+    public Agent(LlmClient llmClient, ToolRegistry toolRegistry, RunStore runStore) {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
+        this.runStore = runStore == null ? new InMemoryRunStore() : runStore;
         this.conversationHistory = new ArrayList<>();
         this.memoryManager = new MemoryManager(llmClient);
         this.toolRegistry.setContextProfile(memoryManager.getContextProfile());
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
         this.memoryManager.setProjectPath(this.toolRegistry.getProjectPath());
-        this.toolRegistry.setScopedMemorySaver(memoryManager::storeFact);
+        this.toolRegistry.setScopedMemoryWriter(memoryManager::storeFact);
         conversationHistory.add(LlmClient.Message.system(buildSystemPrompt("")));
     }
 
@@ -124,6 +144,24 @@ public class Agent {
      * 运行 Agent 循环
      */
     public String run(String userInput) {
+        AgentRunContext runContext = AgentRunContext.create(
+                AgentMode.REACT,
+                userInput,
+                toolRegistry.getProjectPath());
+        return userFacingContent(new AgentRuntime(runStore, toolRegistry.getSnapshotService())
+                .run(runContext, new ReActModeAdapter(this)));
+    }
+
+    public RunStore runStore() {
+        return runStore;
+    }
+
+    public AgentRunResult run(AgentRunContext runContext, RunStore runStore) {
+        if (runContext == null) {
+            throw new IllegalArgumentException("runContext must not be null");
+        }
+        String userInput = runContext.input();
+        RunStore effectiveRunStore = runStore == null ? this.runStore : runStore;
         log.info("ReAct run started: inputLength={}", userInput == null ? 0 : userInput.length());
         pruneHistoricalImagePayloads();
 
@@ -136,7 +174,7 @@ public class Agent {
                 .map(LlmClient.Tool::name)
                 .collect(java.util.stream.Collectors.toSet());
         String memoryContext = memoryManager.buildContextForQuery(
-                userInput, contextProfile.memoryContextTokens(), activeToolNames);
+                userInput, contextProfile.memoryContextTokens(), activeToolNames, runContext, effectiveRunStore);
 
         // 预加载 MEMORY.md 索引（会话级缓存，只在首次运行时加载）
         String memoryIndexSection = buildMemoryIndexSection();
@@ -151,121 +189,133 @@ public class Agent {
         conversationHistory.add(ImageReferenceParser.userMessage(
                 userMessageContent,
                 Path.of(toolRegistry.getProjectPath())));
-        StringBuilder reasoningTranscript = new StringBuilder();
         StreamRenderer streamRenderer = new StreamRenderer(renderer());
 
         long startNanos = System.nanoTime();
         AgentBudget budget = AgentBudget.fromLlmClient(llmClient);
         pushStatus(budget, startNanos, "running");
 
-        // 主退出条件 = LLM 自己决定（不再调用工具就返回）；
-        // budget 仅在 token 用尽 / 检测到死循环 / 超出硬轮数时兜底。
-        while (true) {
-            if (CancellationContext.isCancelled()) {
-                log.info("ReAct run cancelled before iteration");
-                pushStatus(budget, startNanos, "idle");
-                return "⏹️ 已取消当前任务。";
-            }
-            // 调 LLM 前评估 conversationHistory 是否接近 window 上限；超阈值就把早期消息压缩成摘要。
-            // 真正决定下一轮 LLM input token 的是这里。
-            injectPendingLspDiagnostics();
-            trimConversationHistory();
-            AgentBudget.ExitReason exitReason = budget.check();
-            if (exitReason != AgentBudget.ExitReason.WITHIN_BUDGET) {
-                String description = budget.describeExit(exitReason);
-                log.warn("ReAct run exhausted budget: reason={}, iteration={}, tokens={}/{}",
-                        exitReason, budget.iteration(),
-                        budget.totalInputTokens() + budget.totalOutputTokens(), budget.tokenBudget());
-                pushStatus(budget, startNanos, "idle");
-                return "❌ " + description;
-            }
-
-            int iteration = budget.beginIteration();
-
-            try {
-                List<LlmClient.Tool> toolDefinitions = llmClient.supportsTools()
-                        ? toolRegistry.getToolDefinitions()
-                        : null;
-                logRequestContext("react iteration=" + iteration, toolDefinitions);
+        List<LlmClient.Tool> toolDefinitions = llmClient.supportsTools()
+                ? toolRegistry.getToolDefinitions()
+                : null;
+        AgentLoopObserver observer = new AgentLoopObserver() {
+            @Override
+            public void beforeIteration(int iteration, List<LlmClient.Message> messages, List<LlmClient.Tool> tools) {
+                injectPendingLspDiagnostics();
+                trimConversationHistory();
+                logRequestContext("react iteration=" + iteration, tools);
                 streamRenderer.beginThinking();
-                // 调用 LLM
-                LlmClient.ChatResponse response = llmClient.chat(
+            }
+
+            @Override
+            public void afterLlmResponse(int iteration, LlmClient.ChatResponse response) {
+                LlmTraceLogger.logReasoning(log, "react iteration=" + iteration, llmClient, response.reasoningContent());
+            }
+
+            @Override
+            public void beforeToolDispatch(int iteration, List<LlmClient.ToolCall> toolCalls) {
+                log.info("LLM requested {} tool call(s) in iteration {}", toolCalls.size(), iteration);
+                for (LlmClient.ToolCall toolCall : toolCalls) {
+                    String toolName = toolCall.function() == null ? "" : toolCall.function().name();
+                    String toolArgs = toolCall.function() == null ? "" : toolCall.function().arguments();
+                    log.info("Scheduling tool: {} (iteration={})", toolName, iteration);
+                    log.debug("Tool args [{}]: {}", toolName, toolArgs);
+                }
+                if (toolCalls.size() > 1) {
+                    log.info("Executing {} tool calls in parallel (iteration={})", toolCalls.size(), iteration);
+                }
+                // 在工具执行前就 flush 本轮流式渲染器，避免 TerminalMarkdownRenderer
+                // 内部 pending 缓冲区（仅按换行 flush）里的文本被 HITL 提示"跨过"。
+                streamRenderer.resetBetweenIterations();
+                renderer().appendToolCalls(toolCalls);
+            }
+
+            @Override
+            public void afterToolDispatch(int iteration, List<ToolOutcome> outcomes) {
+                for (ToolOutcome outcome : outcomes) {
+                    log.debug("Tool result preview [{}]: {}", outcome.name(), preview(outcome.text(), 300));
+                    emitToolResultSummary(outcome);
+                }
+                pushStatus(budget, startNanos, "running");
+            }
+        };
+
+        AgentLoopResult loopResult = new AgentLoopExecutor(llmClient, new ToolDispatcher(toolRegistry), effectiveRunStore)
+                .execute(new AgentLoopContext(
+                        runContext,
                         conversationHistory,
                         toolDefinitions,
-                        streamRenderer
-                );
-                LlmTraceLogger.logReasoning(log, "react iteration=" + iteration, llmClient, response.reasoningContent());
-                if (CancellationContext.isCancelled()) {
-                    log.info("ReAct run cancelled after LLM response");
-                    streamRenderer.finish();
-                    pushStatus(budget, startNanos, "idle");
-                    return "⏹️ 已取消当前任务。";
-                }
+                        new AgentLoopPolicy("react", llmClient.supportsTools()),
+                        budget,
+                        streamRenderer,
+                        observer));
 
-                budget.recordTokens(response.inputTokens(), response.outputTokens(), response.cachedInputTokens());
+        return handleLoopResult(runContext, effectiveRunStore, loopResult, budget, streamRenderer, startNanos);
+    }
 
-                // 如果有工具调用
-                if (response.hasToolCalls()) {
-                    appendReasoning(reasoningTranscript, response.reasoningContent());
-                    log.info("LLM requested {} tool call(s) in iteration {}", response.toolCalls().size(), iteration);
-                    budget.recordToolCalls(response.toolCalls());
-                    // 添加助手消息（包含工具调用）
-                    conversationHistory.add(LlmClient.Message.assistant(
-                            response.reasoningContent(),
-                            response.content(),
-                            response.toolCalls()
-                    ));
-
-                    // 在工具执行前就 flush 本轮流式渲染器，避免 TerminalMarkdownRenderer
-                    // 内部 pending 缓冲区（仅按换行 flush）里的文本被 HITL 提示"跨过"
-                    // 造成标题和内容错位。重置后下一轮迭代的 reasoning/content 会重新打印标题。
-                    streamRenderer.resetBetweenIterations();
-                    renderer().appendToolCalls(response.toolCalls());
-
-                    List<ToolExecutionResult> toolResults = executeToolCalls(response.toolCalls(), iteration);
-                    for (ToolExecutionResult toolResult : toolResults) {
-                        conversationHistory.add(LlmClient.Message.tool(toolResult.id(), toolResult.result()));
-                    }
-                    appendImageToolMessages(toolResults);
-                    pushStatus(budget, startNanos, "running");
-
-                    // 继续循环，让 LLM 根据工具结果继续思考
-                    continue;
-                }
-
-                // 没有工具调用，直接返回结果
-                appendReasoning(reasoningTranscript, response.reasoningContent());
-                conversationHistory.add(LlmClient.Message.assistant(response.content()));
-
-                // 增量异步提取本轮新增的长期记忆事实
-                // 对齐 Claude Code Stop hook：只传本轮新增 exchange，不重传整段历史
-                memoryManager.extractFactsIncrementalAsync(conversationHistory);
-
-                // 记录 token 使用
-                memoryManager.recordTokenUsage(budget.totalInputTokens(), budget.totalOutputTokens(), budget.totalCachedInputTokens());
-                pushStatus(budget, startNanos, "idle");
-                log.info("ReAct run finished: inputTokens={}, outputTokens={}, reasoningChars={}, answerChars={}",
-                        budget.totalInputTokens(),
-                        budget.totalOutputTokens(),
-                        response.reasoningContent() == null ? 0 : response.reasoningContent().length(),
-                        response.content() == null ? 0 : response.content().length());
-                if (log.isDebugEnabled()) {
-                    log.debug("Assistant answer preview: {}", preview(response.content(), 500));
-                }
-
-                if (streamRenderer.hasStreamedOutput()) {
-                    streamRenderer.finish();
-                    return returnFinalResponseWhenStreamed ? (response.content() == null ? "" : response.content().trim()) : "";
-                }
-                streamRenderer.clearThinkingPanel();
-                return formatUserFacingResponse(reasoningTranscript.toString(), response.content());
-
-            } catch (IOException e) {
-                log.error("LLM call failed in ReAct loop", e);
-                streamRenderer.finish();
-                return "❌ 调用 LLM 失败: " + e.getMessage();
-            }
+    private AgentRunResult handleLoopResult(AgentRunContext runContext, RunStore effectiveRunStore,
+                                            AgentLoopResult loopResult, AgentBudget budget,
+                                            StreamRenderer streamRenderer, long startNanos) {
+        if (loopResult.status() == AgentLoopStatus.CANCELLED) {
+            log.info("ReAct run cancelled");
+            streamRenderer.finish();
+            pushStatus(budget, startNanos, "idle");
+            String content = loopResult.content().isBlank() ? "⏹️ 已取消当前任务。" : loopResult.content();
+            return AgentRunResult.cancelled(runContext, content);
         }
+
+        if (loopResult.status() == AgentLoopStatus.BUDGET_EXHAUSTED) {
+            log.warn("ReAct run exhausted budget: description={}, iteration={}, tokens={}/{}",
+                    loopResult.exitDescription(),
+                    budget.iteration(),
+                    budget.totalInputTokens() + budget.totalOutputTokens(),
+                    budget.tokenBudget());
+            streamRenderer.finish();
+            pushStatus(budget, startNanos, "idle");
+            return AgentRunResult.budgetExhausted(runContext, "❌ " + loopResult.exitDescription());
+        }
+
+        if (loopResult.status() == AgentLoopStatus.FAILED) {
+            log.error("LLM call failed in ReAct loop: {}", loopResult.errorMessage());
+            streamRenderer.finish();
+            pushStatus(budget, startNanos, "idle");
+            return AgentRunResult.failed(runContext, "❌ 调用 LLM 失败: " + loopResult.errorMessage());
+        }
+
+        // 增量异步提取本轮新增的长期记忆事实。
+        // 对齐 Claude Code Stop hook：只传本轮新增 exchange，不重传整段历史。
+        memoryManager.extractFactsIncrementalAsync(conversationHistory, runContext, effectiveRunStore);
+        memoryManager.recordTokenUsage(
+                loopResult.inputTokens(),
+                loopResult.outputTokens(),
+                loopResult.cachedInputTokens());
+        pushStatus(budget, startNanos, "idle");
+        log.info("ReAct run finished: inputTokens={}, outputTokens={}, reasoningChars={}, answerChars={}",
+                loopResult.inputTokens(),
+                loopResult.outputTokens(),
+                loopResult.reasoningContent().length(),
+                loopResult.content().length());
+        if (log.isDebugEnabled()) {
+            log.debug("Assistant answer preview: {}", preview(loopResult.content(), 500));
+        }
+
+        if (streamRenderer.hasStreamedOutput()) {
+            streamRenderer.finish();
+            return AgentRunResult.success(runContext,
+                    returnFinalResponseWhenStreamed ? loopResult.content().trim() : "");
+        }
+        streamRenderer.clearThinkingPanel();
+        return AgentRunResult.success(runContext,
+                formatUserFacingResponse(loopResult.reasoningContent(), loopResult.content()));
+    }
+
+    private String userFacingContent(AgentRunResult result) {
+        if (result == null) {
+            return "";
+        }
+        return result.isSuccess() || result.status() == com.mindcli.runtime.run.AgentRunStatus.CANCELLED
+                ? result.content()
+                : result.errorMessage();
     }
 
     /**
@@ -554,14 +604,14 @@ public class Agent {
     }
 
     public String getContextStatus() {
-        com.mindcli.context.ContextProfile profile = memoryManager.getContextProfile();
+        com.mindcli.platform.llm.context.ContextProfile profile = memoryManager.getContextProfile();
         int window = profile.maxContextWindow();
 
         // 分类估算 token 占用
         int systemTokens = 0, userTokens = 0, assistantTokens = 0, toolTokens = 0;
         int systemCount = 0, userCount = 0, assistantCount = 0, toolCount = 0;
         for (LlmClient.Message msg : conversationHistory) {
-            int t = com.mindcli.memory.TokenBudget.estimateMessagesTokens(java.util.List.of(msg));
+            int t = com.mindcli.capability.memory.TokenBudget.estimateMessagesTokens(java.util.List.of(msg));
             switch (msg.role()) {
                 case "system" -> { systemTokens += t; systemCount++; }
                 case "user" -> { userTokens += t; userCount++; }
@@ -604,7 +654,7 @@ public class Agent {
 
     private int estimateToolsSchemaTokens() {
         try {
-            return com.mindcli.memory.MemoryEntry.estimateTokens(
+            return com.mindcli.capability.memory.MemoryEntry.estimateTokens(
                     new ObjectMapper().writeValueAsString(toolRegistry.getToolDefinitions()));
         } catch (Exception e) {
             return 0;
@@ -612,7 +662,7 @@ public class Agent {
     }
 
     private long estimateCurrentContextTokens() {
-        long messageTokens = com.mindcli.memory.TokenBudget.estimateMessagesTokens(conversationHistory);
+        long messageTokens = com.mindcli.capability.memory.TokenBudget.estimateMessagesTokens(conversationHistory);
         return Math.max(0L, messageTokens + estimateToolsSchemaTokens());
     }
 
@@ -630,7 +680,7 @@ public class Agent {
         for (int messageIndex = 0; messageIndex < conversationHistory.size(); messageIndex++) {
             LlmClient.Message msg = conversationHistory.get(messageIndex);
             messages++;
-            int tokens = com.mindcli.memory.TokenBudget.estimateMessagesTokens(List.of(msg));
+            int tokens = com.mindcli.capability.memory.TokenBudget.estimateMessagesTokens(List.of(msg));
             imageParts += msg.imagePartCount();
             appendImageDetails(imageDetails, msg, messageIndex);
             switch (msg.role()) {
@@ -646,7 +696,7 @@ public class Agent {
         int toolCount = tools == null ? 0 : tools.size();
         if (tools != null && !tools.isEmpty()) {
             try {
-                toolsSchemaTokens = com.mindcli.memory.MemoryEntry.estimateTokens(
+                toolsSchemaTokens = com.mindcli.capability.memory.MemoryEntry.estimateTokens(
                         new ObjectMapper().writeValueAsString(tools));
             } catch (Exception e) {
                 log.debug("Failed to estimate tools schema tokens", e);
@@ -759,38 +809,7 @@ public class Agent {
         }
     }
 
-    private void appendReasoning(StringBuilder reasoningTranscript, String reasoningContent) {
-        if (reasoningContent == null || reasoningContent.isBlank()) {
-            return;
-        }
-        if (!reasoningTranscript.isEmpty()) {
-            reasoningTranscript.append("\n\n");
-        }
-        reasoningTranscript.append(reasoningContent.trim());
-    }
-
-    private List<ToolExecutionResult> executeToolCalls(List<LlmClient.ToolCall> toolCalls, int iteration) {
-        List<ToolInvocation> invocations = new ArrayList<>();
-        for (LlmClient.ToolCall toolCall : toolCalls) {
-            String toolName = toolCall.function().name();
-            String toolArgs = toolCall.function().arguments();
-            log.info("Scheduling tool: {} (iteration={})", toolName, iteration);
-            log.debug("Tool args [{}]: {}", toolName, toolArgs);
-            invocations.add(new ToolInvocation(toolCall.id(), toolName, toolArgs));
-        }
-
-        if (invocations.size() > 1) {
-            log.info("Executing {} tool calls in parallel (iteration={})", invocations.size(), iteration);
-        }
-        List<ToolExecutionResult> results = toolRegistry.executeTools(invocations);
-        for (ToolExecutionResult result : results) {
-            log.debug("Tool result preview [{}]: {}", result.name(), preview(result.result(), 300));
-            emitToolResultSummary(result);
-        }
-        return results;
-    }
-
-    private void emitToolResultSummary(ToolExecutionResult result) {
+    private void emitToolResultSummary(ToolOutcome result) {
         if (result == null || result.name() == null) {
             return;
         }
@@ -804,8 +823,8 @@ public class Agent {
         }
     }
 
-    private String webSearchSummary(ToolExecutionResult result) {
-        String text = result.result() == null ? "" : result.result();
+    private String webSearchSummary(ToolOutcome result) {
+        String text = result.text() == null ? "" : result.text();
         boolean stepSearch = isStepSearchResult(text);
         if (text.startsWith("搜索失败") || text.startsWith("⚠️") || text.contains("未找到相关结果")) {
             return compactOneLine(text, 120);
@@ -821,8 +840,8 @@ public class Agent {
                 : label + " 已返回结果";
     }
 
-    private String webFetchSummary(ToolExecutionResult result) {
-        String text = result.result() == null ? "" : result.result();
+    private String webFetchSummary(ToolOutcome result) {
+        String text = result.text() == null ? "" : result.text();
         boolean stepSearch = isStepSearchResult(text);
         String url = extractJsonArg(result.argumentsJson(), "url");
         String target = url.isBlank() ? "页面" : compactOneLine(url.replaceFirst("^https?://", ""), 80);
@@ -877,21 +896,6 @@ public class Agent {
                 .orElse("")
                 .replaceAll("\\s+", " ");
         return value.length() > maxLength ? value.substring(0, Math.max(0, maxLength - 3)) + "..." : value;
-    }
-
-    private void appendImageToolMessages(List<ToolExecutionResult> toolResults) {
-        if (toolResults == null || toolResults.isEmpty()) {
-            return;
-        }
-        for (ToolExecutionResult result : toolResults) {
-            if (!result.hasImageParts()) {
-                continue;
-            }
-            List<LlmClient.ContentPart> parts = new ArrayList<>();
-            parts.add(LlmClient.ContentPart.text("工具 " + result.name() + " 返回了图片内容，请结合上面的工具文本结果分析。"));
-            parts.addAll(result.imageParts());
-            conversationHistory.add(LlmClient.Message.user(parts));
-        }
     }
 
     private String formatUserFacingResponse(String reasoningContent, String answer) {

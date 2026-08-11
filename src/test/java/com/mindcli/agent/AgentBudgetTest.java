@@ -1,7 +1,7 @@
 package com.mindcli.agent;
 
-import com.mindcli.llm.LlmClient;
-import com.mindcli.llm.GLMClient;
+import com.mindcli.platform.llm.LlmClient;
+import com.mindcli.platform.llm.GLMClient;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
