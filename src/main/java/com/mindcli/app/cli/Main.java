@@ -45,7 +45,15 @@ import com.mindcli.capability.rag.CodeRelation;
 import com.mindcli.capability.rag.SearchResultFormatter;
 import com.mindcli.runtime.CancellationContext;
 import com.mindcli.runtime.CancellationToken;
+import com.mindcli.runtime.run.AgentMode;
+import com.mindcli.runtime.run.AgentRuntime;
+import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.runtime.run.AgentRunResult;
+import com.mindcli.runtime.run.AgentRunStatus;
+import com.mindcli.runtime.run.ModeAdapter;
+import com.mindcli.runtime.run.PlanModeAdapter;
 import com.mindcli.runtime.run.RunStore;
+import com.mindcli.runtime.run.TeamModeAdapter;
 import com.mindcli.runtime.api.RuntimeApiServer;
 import com.mindcli.runtime.api.RuntimeThreadStore;
 import com.mindcli.runtime.task.DurableTaskManager;
@@ -763,7 +771,13 @@ public class Main {
                         PlanExecuteAgent planAgent = createPlanAgent(activeClient, reactAgent, terminal, lineReader, ui);
                         planAgent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
                         planAgent.setSkillRegistry(skillRegistry);
-                        return planAgent.run(taskInput);
+                        return runModeWithRuntime(
+                                AgentMode.PLAN,
+                                taskInput,
+                                reactAgent.getToolRegistry().getProjectPath(),
+                                reactAgent.runStore(),
+                                reactAgent.getToolRegistry().getSnapshotService(),
+                                new PlanModeAdapter(planAgent));
                     };
                 } else if (nextTaskUseTeamMode || command.type() == CliCommandParser.CommandType.SWITCH_TEAM) {
                     snapshotMode = "team";
@@ -772,7 +786,13 @@ public class Main {
                         AgentOrchestrator orchestrator = createTeamAgent(activeClient, reactAgent, ui);
                         orchestrator.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
                         orchestrator.setSkillSystem(skillRegistry);
-                        return orchestrator.run(taskInput);
+                        return runModeWithRuntime(
+                                AgentMode.TEAM,
+                                taskInput,
+                                reactAgent.getToolRegistry().getProjectPath(),
+                                reactAgent.runStore(),
+                                reactAgent.getToolRegistry().getSnapshotService(),
+                                new TeamModeAdapter(orchestrator));
                     };
                 } else {
                     snapshotMode = "react";
@@ -906,6 +926,27 @@ public class Main {
     private static AgentOrchestrator createTeamAgent(LlmClient llmClient, Agent reactAgent, PrintStream out) {
         out.println("👥 使用 Multi-Agent 协作模式\n");
         return new AgentOrchestrator(llmClient, reactAgent.getToolRegistry(), reactAgent.getMemoryManager(), out);
+    }
+
+    static String runModeWithRuntime(AgentMode mode, String input, String workspace,
+                                     RunStore runStore, SnapshotService snapshotService,
+                                     ModeAdapter adapter) {
+        AgentRunContext context = AgentRunContext.create(mode, input, workspace);
+        AgentRunResult result = new AgentRuntime(runStore, snapshotService).run(context, adapter);
+        return runtimeUserFacingContent(result);
+    }
+
+    private static String runtimeUserFacingContent(AgentRunResult result) {
+        if (result == null) {
+            return "";
+        }
+        if (result.isSuccess() || result.status() == AgentRunStatus.CANCELLED) {
+            return result.content();
+        }
+        if (result.errorMessage() != null && !result.errorMessage().isBlank()) {
+            return result.errorMessage();
+        }
+        return result.content();
     }
 
     private static String runWithCancelSupport(Terminal terminal, PrintStream out, Callable<String> task) {
