@@ -26,7 +26,7 @@ java -jar target/mindcli-1.0-SNAPSHOT.jar serve --http --port 8080
 
 ## 架构概览
 
-当前 CLI 生产入口中，默认 ReAct、`/plan` 和 `/team` 都会创建 `AgentRunContext` 并进入 `AgentRuntime`；Plan / Team 通过 `PlanModeAdapter` / `TeamModeAdapter` 复用统一生命周期、RunStore 和 snapshot 关联。
+当前 CLI 生产入口中，默认 ReAct、`/plan` 和 `/team` 都会经 `AgentModeRouter` 创建 `AgentRunContext` 并进入 `AgentRuntime`；三种模式通过 `ReActModeAdapter` / `PlanModeAdapter` / `TeamModeAdapter` 复用统一生命周期、RunStore 和 runtime snapshot 关联，不再额外套旧的 turn snapshot。
 
 ```mermaid
 flowchart LR

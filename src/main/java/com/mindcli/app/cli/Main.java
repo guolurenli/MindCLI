@@ -46,12 +46,13 @@ import com.mindcli.capability.rag.SearchResultFormatter;
 import com.mindcli.runtime.CancellationContext;
 import com.mindcli.runtime.CancellationToken;
 import com.mindcli.runtime.run.AgentMode;
+import com.mindcli.runtime.run.AgentModeRouter;
 import com.mindcli.runtime.run.AgentRuntime;
-import com.mindcli.runtime.run.AgentRunContext;
 import com.mindcli.runtime.run.AgentRunResult;
 import com.mindcli.runtime.run.AgentRunStatus;
 import com.mindcli.runtime.run.ModeAdapter;
 import com.mindcli.runtime.run.PlanModeAdapter;
+import com.mindcli.runtime.run.ReActModeAdapter;
 import com.mindcli.runtime.run.RunStore;
 import com.mindcli.runtime.run.TeamModeAdapter;
 import com.mindcli.runtime.api.RuntimeApiServer;
@@ -796,13 +797,18 @@ public class Main {
                     };
                 } else {
                     snapshotMode = "react";
-                    runTask = () -> reactAgent.run(taskInput);
+                    runTask = () -> runReactModeWithRuntime(
+                            taskInput,
+                            reactAgent.getToolRegistry().getProjectPath(),
+                            reactAgent.runStore(),
+                            reactAgent.getToolRegistry().getSnapshotService(),
+                            new ReActModeAdapter(reactAgent));
                 }
                 SnapshotService snapshotService = reactAgent.getToolRegistry().getSnapshotService();
                 renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, snapshotMode));
                 String response = runWithCancelSupport(terminal,
                         ui,
-                        () -> snapshotService.runTurn(snapshotMode, taskInput, runTask::call));
+                        () -> runAgentTask(snapshotMode, taskInput, snapshotService, runTask));
                 if (!"react".equals(snapshotMode)) {
                     renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
                 }
@@ -931,9 +937,21 @@ public class Main {
     static String runModeWithRuntime(AgentMode mode, String input, String workspace,
                                      RunStore runStore, SnapshotService snapshotService,
                                      ModeAdapter adapter) {
-        AgentRunContext context = AgentRunContext.create(mode, input, workspace);
-        AgentRunResult result = new AgentRuntime(runStore, snapshotService).run(context, adapter);
+        AgentRuntime runtime = new AgentRuntime(runStore, snapshotService);
+        AgentModeRouter router = new AgentModeRouter(runtime, List.of(adapter), workspace);
+        AgentRunResult result = router.submit(input, mode);
         return runtimeUserFacingContent(result);
+    }
+
+    static String runReactModeWithRuntime(String input, String workspace,
+                                          RunStore runStore, SnapshotService snapshotService,
+                                          ModeAdapter adapter) {
+        return runModeWithRuntime(AgentMode.REACT, input, workspace, runStore, snapshotService, adapter);
+    }
+
+    static String runAgentTask(String mode, String input, SnapshotService snapshotService,
+                               Callable<String> task) throws Exception {
+        return task.call();
     }
 
     private static String runtimeUserFacingContent(AgentRunResult result) {
