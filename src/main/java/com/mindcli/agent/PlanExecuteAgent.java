@@ -410,25 +410,37 @@ public class PlanExecuteAgent {
                     continue;
                 }
 
-                // 第二级：关键路径任务 → 局部重规划子树
-                if (task.isOnCriticalPath(plan.getAllTasksMap())) {
-                    out.println("🔄 关键任务 [" + task.getId() + "] 失败，局部重规划子树...\n");
-                    task.markFailed(error.getMessage());
-                    try {
-                        ExecutionPlan partialPlan = planner.replanSubtree(plan, task, error.getMessage());
-                        plan.mergeSubtree(partialPlan);
-                        log.info("Subtree replan merged for failed task {}", task.getId());
-                    } catch (IOException e) {
-                        log.error("Subtree replan failed for task {}", task.getId(), e);
-                        task.markFailed("局部重规划失败: " + e.getMessage());
-                    }
+                String degradation = Optional.ofNullable(task.getDegradation())
+                        .orElse("REPLAN")
+                        .trim()
+                        .toUpperCase(Locale.ROOT);
+
+                // 第二级：显式允许跳过，且任务本身非关键 → 跳过，下游降级执行
+                if ("SKIP".equals(degradation) && !task.isCritical()) {
+                    task.markSkipped();
+                    log.warn("Task {} skipped by degradation policy", task.getId());
+                    out.println("⏭️ 跳过 [" + task.getId() + "]（degradation=SKIP），下游将降级执行\n");
                     continue;
                 }
 
-                // 第三级：非关键路径 → 跳过，下游降级执行
-                task.markSkipped();
-                log.warn("Task {} skipped (non-critical), dependents will degrade", task.getId());
-                out.println("⏭️ 跳过 [" + task.getId() + "]（非关键路径），下游将降级执行\n");
+                if ("BLOCK".equals(degradation)) {
+                    task.markFailed(error.getMessage());
+                    log.warn("Task {} failed and blocked by degradation policy", task.getId());
+                    out.println("⛔ 阻断 [" + task.getId() + "]（degradation=BLOCK）\n");
+                    continue;
+                }
+
+                // 第三级：默认或安全回退 → 局部重规划子树
+                out.println("🔄 任务 [" + task.getId() + "] 失败，局部重规划子树...\n");
+                task.markFailed(error.getMessage());
+                try {
+                    ExecutionPlan partialPlan = planner.replanSubtree(plan, task, error.getMessage());
+                    plan.mergeSubtree(partialPlan);
+                    log.info("Subtree replan merged for failed task {}", task.getId());
+                } catch (IOException e) {
+                    log.error("Subtree replan failed for task {}", task.getId(), e);
+                    task.markFailed("局部重规划失败: " + e.getMessage());
+                }
             }
         }
 

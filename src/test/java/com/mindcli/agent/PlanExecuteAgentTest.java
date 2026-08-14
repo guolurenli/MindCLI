@@ -33,6 +33,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -261,6 +262,48 @@ class PlanExecuteAgentTest {
         assertTrue(outcome.attributes().get("lockKeys").contains("FILE:"));
     }
 
+    @Test
+    void nonCriticalSkipDegradationSkipsFailedTaskEvenWithDownstream() throws Exception {
+        FailsFirstThenSucceedsClient llmClient = new FailsFirstThenSucceedsClient();
+        AtomicInteger replanCalls = new AtomicInteger();
+        Task optionalTask = new Task("task_1", "读取可选背景信息", Task.TaskType.ANALYSIS);
+        optionalTask.setCritical(false);
+        optionalTask.setDegradation("SKIP");
+        optionalTask.setMaxRetries(0);
+        Task downstreamTask = new Task("task_2", "基于已有信息继续总结", Task.TaskType.ANALYSIS, List.of("task_1"));
+        Planner planner = new Planner(llmClient) {
+            @Override
+            public ExecutionPlan createPlan(String goal) {
+                ExecutionPlan plan = new ExecutionPlan("plan-skip", goal);
+                plan.addTask(optionalTask);
+                plan.addTask(downstreamTask);
+                plan.computeExecutionOrder();
+                return plan;
+            }
+
+            @Override
+            public ExecutionPlan replanSubtree(ExecutionPlan plan, Task failedTask, String failureReason) {
+                replanCalls.incrementAndGet();
+                return new ExecutionPlan("plan-replanned", plan.getGoal());
+            }
+        };
+        PlanExecuteAgent agent = new PlanExecuteAgent(
+                llmClient,
+                new ToolRegistry(),
+                planner,
+                null,
+                (goal, plan) -> PlanExecuteAgent.PlanReviewDecision.execute(),
+                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8)
+        );
+
+        String result = agent.run("测试可跳过节点");
+
+        assertEquals(Task.TaskStatus.SKIPPED, optionalTask.getStatus());
+        assertEquals(Task.TaskStatus.COMPLETED, downstreamTask.getStatus());
+        assertEquals(0, replanCalls.get());
+        assertTrue(result.startsWith("✅"), result);
+    }
+
     private record StubResponse(LlmClient.ChatResponse response, boolean streamContent,
                                 java.util.function.Consumer<LlmClient.StreamListener> streamScript) {
         private static StubResponse plain(LlmClient.ChatResponse response) {
@@ -377,6 +420,29 @@ class PlanExecuteAgentTest {
                 listener.onContentDelta(stubResponse.response().content());
             }
             return stubResponse.response();
+        }
+    }
+
+    private static final class FailsFirstThenSucceedsClient extends GLMClient {
+        private int calls;
+
+        private FailsFirstThenSucceedsClient() {
+            super("test-key");
+        }
+
+        @Override
+        public ChatResponse chat(List<Message> messages, List<Tool> tools) throws IOException {
+            return chat(messages, tools, StreamListener.NO_OP);
+        }
+
+        @Override
+        public ChatResponse chat(List<Message> messages, List<Tool> tools, StreamListener listener) throws IOException {
+            calls++;
+            if (calls == 1) {
+                throw new IOException("fatal optional step");
+            }
+            listener.onContentDelta("继续执行完成");
+            return new ChatResponse("assistant", "继续执行完成", null, null, 10, 5);
         }
     }
 }

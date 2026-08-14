@@ -3,6 +3,9 @@ package com.mindcli.platform.render.inline;
 import org.jline.terminal.Size;
 import org.jline.terminal.Terminal;
 
+import java.nio.charset.Charset;
+import java.nio.charset.CharsetEncoder;
+
 /**
  * 终端能力探测：决定 inline 渲染器的各项特性是否可启用。
  *
@@ -63,6 +66,34 @@ public final class TerminalCapabilities {
             return s;
         } catch (Exception e) {
             return new Size(80, 24);
+        }
+    }
+
+    public static boolean supportsUnicodeGlyphs(Terminal terminal, String glyphs) {
+        if (terminal == null || glyphs == null || glyphs.isEmpty()) {
+            return false;
+        }
+        Charset charset = safeOutputEncoding(terminal);
+        if (charset == null) {
+            return true;
+        }
+        CharsetEncoder encoder = charset.newEncoder();
+        return encoder.canEncode(glyphs);
+    }
+
+    private static Charset safeOutputEncoding(Terminal terminal) {
+        try {
+            Charset output = terminal.outputEncoding();
+            if (output != null) {
+                return output;
+            }
+        } catch (RuntimeException ignored) {
+            // Fall through to the older aggregate encoding.
+        }
+        try {
+            return terminal.encoding();
+        } catch (RuntimeException ignored) {
+            return null;
         }
     }
 }

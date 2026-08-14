@@ -41,6 +41,8 @@
 6. 复杂任务拆分为 5-10 个子任务。
 7. 不要为了“保存中间结果”额外创建 `FILE_WRITE` / `FILE_READ`，除非用户明确要求落盘。
 8. 如果一个任务一步就能完成，就保持最短计划。
-9. `degradation` 默认填 `REPLAN`，`expectedEvidence` 默认空数组。
+9. `critical=true` 只给不能跳过的关键节点；如果某步可安全略过，不影响后续主干，就写 `critical=false`。
+10. `degradation` 只用三种值：`REPLAN` 默认，`SKIP` 仅用于 `critical=false` 的可跳过节点，`BLOCK` 仅用于失败后应直接终止的节点。
+11. `expectedEvidence` 默认空数组。
 
 只输出 JSON，不要有其他内容。

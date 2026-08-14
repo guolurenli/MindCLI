@@ -73,14 +73,14 @@ public class RootPane extends Panel {
         topPanel.setLayoutManager(new LinearLayout(Direction.HORIZONTAL));
 
         // 文件树（固定比例）
-        topPanel.addComponent(fileTreePane.withBorder(Borders.singleLine("项目结构")));
+        topPanel.addComponent(fileTreePane.withBorder(Borders.singleLine("PROJECT // FILES")));
 
         // 对话流（填充剩余）
-        topPanel.addComponent(centerPane.withBorder(Borders.singleLine("对话")).setLayoutData(
+        topPanel.addComponent(centerPane.withBorder(Borders.singleLine("COMMS // STREAM")).setLayoutData(
                 LinearLayout.createLayoutData(LinearLayout.Alignment.Fill, LinearLayout.GrowPolicy.CanGrow)));
 
         // 状态栏（固定比例）
-        topPanel.addComponent(statusPane.withBorder(Borders.singleLine("状态")).setLayoutData(
+        topPanel.addComponent(statusPane.withBorder(Borders.singleLine("SYSTEM // STATUS")).setLayoutData(
                 LinearLayout.createLayoutData(LinearLayout.Alignment.Fill, LinearLayout.GrowPolicy.CanGrow)));
 
         // 添加顶部面板（自适应填充）
@@ -88,7 +88,7 @@ public class RootPane extends Panel {
                 LinearLayout.createLayoutData(LinearLayout.Alignment.Fill, LinearLayout.GrowPolicy.CanGrow)));
 
         // 输入栏（固定高度）
-        addComponent(inputBar.withBorder(Borders.singleLine("输入")).setLayoutData(
+        addComponent(inputBar.withBorder(Borders.singleLine("INPUT // COMMAND")).setLayoutData(
                 LinearLayout.createLayoutData(LinearLayout.Alignment.Fill, LinearLayout.GrowPolicy.CanGrow)));
     }
 
@@ -169,7 +169,7 @@ public class RootPane extends Panel {
         fileTreeVisible = !fileTreeVisible;
         fileTreePane.setVisible(fileTreeVisible);
         invalidate();
-        centerPane.appendSystemMessage("文件树已" + (fileTreeVisible ? "显示" : "隐藏"));
+        centerPane.appendSystemMessage("PROJECT FILES " + (fileTreeVisible ? "ONLINE" : "HIDDEN"));
     }
 
     /**
@@ -179,13 +179,13 @@ public class RootPane extends Panel {
     public boolean handleInput(KeyStroke keyStroke) {
         // Ctrl+O: 折叠/展开代码块
         if (keyStroke.getKeyType() == KeyType.Character && keyStroke.isCtrlDown() && keyStroke.getCharacter() == 'O') {
-            centerPane.appendSystemMessage("代码块折叠快捷键已收到；当前版本保留完整代码输出。");
+            centerPane.appendSystemMessage("FOLD SIGNAL RECEIVED; full code output stays visible in this build.");
             return true;
         }
 
         // Ctrl+P: 查看历史对话
         if (keyStroke.getKeyType() == KeyType.Character && keyStroke.isCtrlDown() && keyStroke.getCharacter() == 'P') {
-            centerPane.appendSystemMessage("对话历史已持续保存到 ~/.mindcli/history/。");
+            centerPane.appendSystemMessage("HISTORY STREAM persists at ~/.mindcli/history/.");
             return true;
         }
 

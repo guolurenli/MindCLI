@@ -160,7 +160,7 @@ public final class BottomStatusBar implements AutoCloseable {
     }
 
     static String formatStatusLine(StatusInfo info, int cols) {
-        String mode = info.hitlEnabled() ? "HITL Ctrl+Y for YOLO" : "YOLO Ctrl+Y to enable HITL";
+        String mode = info.hitlEnabled() ? "HITL ON  ctrl+y -> YOLO" : "YOLO MODE  ctrl+y -> HITL";
         String right = environmentSummary(info);
         if (right.isBlank()) {
             return fitToColumns(" " + mode, cols);
@@ -172,14 +172,14 @@ public final class BottomStatusBar implements AutoCloseable {
     static String formatFooterLine(StatusInfo info, int cols) {
         String model = info.model() == null || info.model().isBlank() ? "Auto Model" : info.model().trim();
         String phase = info.phase() == null || info.phase().isBlank() ? "idle" : info.phase().trim();
-        StringBuilder sb = new StringBuilder(" Auto Model · ");
+        StringBuilder sb = new StringBuilder(" MINDCLI // ");
         sb.append(model);
-        appendField(sb, phase);
+        sb.append(" | ").append(phase);
         appendField(sb, contextSegment(info));
         if (info.inputTokens() > 0 || info.outputTokens() > 0 || info.cachedInputTokens() > 0) {
-            appendField(sb, "in " + formatTokens(info.inputTokens()) + " out " + formatTokens(info.outputTokens()));
+            appendField(sb, "IN " + formatTokens(info.inputTokens()) + " OUT " + formatTokens(info.outputTokens()));
             if (info.cachedInputTokens() > 0) {
-                sb.append(" cache ").append(formatTokens(info.cachedInputTokens()));
+                sb.append(" CACHE ").append(formatTokens(info.cachedInputTokens()));
             }
             if (info.estimatedCost() != null && !info.estimatedCost().isBlank()) {
                 sb.append(" · ").append(info.estimatedCost().trim());
@@ -223,7 +223,7 @@ public final class BottomStatusBar implements AutoCloseable {
     }
 
     static AttributedString formatStatusLineAttributed(StatusInfo info, int cols) {
-        String mode = info.hitlEnabled() ? "HITL Ctrl+Y for YOLO" : "YOLO Ctrl+Y to enable HITL";
+        String mode = info.hitlEnabled() ? "HITL ON  ctrl+y -> YOLO" : "YOLO MODE  ctrl+y -> HITL";
         String right = environmentSummary(info);
         AttributedStringBuilder builder = new AttributedStringBuilder(Math.max(0, cols));
         builder.append(" ", BASE_STYLE);
@@ -242,10 +242,11 @@ public final class BottomStatusBar implements AutoCloseable {
         String phase = info.phase() == null || info.phase().isBlank() ? "idle" : info.phase().trim();
         AttributedStringBuilder builder = new AttributedStringBuilder(Math.max(0, cols));
         builder.append(" ", BASE_STYLE);
-        builder.append("Auto Model", BRAND_STYLE);
-        builder.append(" · ", BASE_STYLE);
+        builder.append("MINDCLI //", BRAND_STYLE);
+        builder.append(" ", BASE_STYLE);
         builder.append(model, MODEL_STYLE);
-        appendStyledField(builder, phase, "idle".equalsIgnoreCase(phase) ? PHASE_IDLE_STYLE : PHASE_ACTIVE_STYLE);
+        builder.append(" | ", BASE_STYLE);
+        builder.append(phase, "idle".equalsIgnoreCase(phase) ? PHASE_IDLE_STYLE : PHASE_ACTIVE_STYLE);
         appendContextField(builder, info);
         if (info.inputTokens() > 0 || info.outputTokens() > 0 || info.cachedInputTokens() > 0) {
             appendUsageField(builder, info);
@@ -277,18 +278,18 @@ public final class BottomStatusBar implements AutoCloseable {
     }
 
     private static String environmentSummary(StatusInfo info) {
-        String mcp = formatEnvironment(info.mcpSummary(), "MCP server", "MCP servers");
-        String skill = formatEnvironment(info.skillSummary(), "skill", "skills");
+        String mcp = formatEnvironment(info.mcpSummary(), "MCP");
+        String skill = formatEnvironment(info.skillSummary(), "SKILL");
         if (mcp.isBlank()) {
             return skill;
         }
         if (skill.isBlank()) {
             return mcp;
         }
-        return mcp + " · " + skill;
+        return mcp + " | " + skill;
     }
 
-    private static String formatEnvironment(String raw, String singular, String plural) {
+    private static String formatEnvironment(String raw, String label) {
         if (raw == null || raw.isBlank()) {
             return "";
         }
@@ -299,20 +300,17 @@ public final class BottomStatusBar implements AutoCloseable {
         }
         int active = Integer.parseInt(matcher.group(1));
         int total = Integer.parseInt(matcher.group(2));
-        if (active == total) {
-            return total + " " + (total == 1 ? singular : plural);
-        }
-        return active + "/" + total + " " + plural;
+        return label + " " + active + "/" + total;
     }
 
     private static void appendEnvironmentSummaryStyled(AttributedStringBuilder builder, StatusInfo info) {
-        String mcp = formatEnvironment(info.mcpSummary(), "MCP server", "MCP servers");
-        String skill = formatEnvironment(info.skillSummary(), "skill", "skills");
+        String mcp = formatEnvironment(info.mcpSummary(), "MCP");
+        String skill = formatEnvironment(info.skillSummary(), "SKILL");
         if (!mcp.isBlank()) {
             builder.append(mcp, MCP_STYLE);
         }
         if (!mcp.isBlank() && !skill.isBlank()) {
-            builder.append(" · ", BASE_STYLE);
+            builder.append(" | ", BASE_STYLE);
         }
         if (!skill.isBlank()) {
             builder.append(skill, SKILL_STYLE);
@@ -330,28 +328,28 @@ public final class BottomStatusBar implements AutoCloseable {
     private static void appendContextField(AttributedStringBuilder builder, StatusInfo info) {
         ContextGauge gauge = contextGauge(info);
         builder.append("  ", BASE_STYLE);
-        builder.append("ctx", CTX_LABEL_STYLE);
-        builder.append(" ", BASE_STYLE);
+        builder.append("CTX", CTX_LABEL_STYLE);
+        builder.append(" [", BASE_STYLE);
         if (gauge.filled() > 0) {
             builder.append("█".repeat(gauge.filled()), CTX_FILL_STYLE);
         }
         if (gauge.empty() > 0) {
             builder.append("░".repeat(gauge.empty()), CTX_EMPTY_STYLE);
         }
-        builder.append(" ", BASE_STYLE);
+        builder.append("] ", BASE_STYLE);
         builder.append(gauge.percent() + "%", contextPercentStyle(gauge.percent()));
         builder.append(" (" + formatTokens(gauge.total()) + "/" + formatTokens(gauge.window()) + ")", BASE_STYLE);
     }
 
     private static void appendUsageField(AttributedStringBuilder builder, StatusInfo info) {
         builder.append("  ", BASE_STYLE);
-        builder.append("in", TOKEN_LABEL_STYLE);
+        builder.append("IN", TOKEN_LABEL_STYLE);
         builder.append(" " + formatTokens(info.inputTokens()) + " ", BASE_STYLE);
-        builder.append("out", TOKEN_LABEL_STYLE);
+        builder.append("OUT", TOKEN_LABEL_STYLE);
         builder.append(" " + formatTokens(info.outputTokens()), BASE_STYLE);
         if (info.cachedInputTokens() > 0) {
             builder.append(" ", BASE_STYLE);
-            builder.append("cache", CACHE_LABEL_STYLE);
+            builder.append("CACHE", CACHE_LABEL_STYLE);
             builder.append(" " + formatTokens(info.cachedInputTokens()), BASE_STYLE);
         }
     }
@@ -392,7 +390,7 @@ public final class BottomStatusBar implements AutoCloseable {
         ContextGauge gauge = contextGauge(info);
         String bar = "█".repeat(Math.max(0, gauge.filled()))
                 + "░".repeat(Math.max(0, gauge.empty()));
-        return "ctx " + bar + " " + gauge.percent() + "% ("
+        return "CTX [" + bar + "] " + gauge.percent() + "% ("
                 + formatTokens(gauge.total()) + "/" + formatTokens(gauge.window()) + ")";
     }
 

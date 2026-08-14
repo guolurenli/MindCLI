@@ -56,11 +56,11 @@ public final class ToolCallRenderer {
         if (grouped.size() == 1) {
             var entry = grouped.entrySet().iterator().next();
             String label = toolCollapsedLabel(entry.getKey(), entry.getValue());
-            return AnsiStyle.subtle("⏵ " + stripPrefixIcon(label) + " (ctrl+o to expand)");
+            return AnsiStyle.subtle("▸ TOOL " + stripPrefixIcon(label) + "  ctrl+o expand");
         }
         int totalCalls = grouped.values().stream().mapToInt(List::size).sum();
-        return AnsiStyle.subtle("⏵ " + grouped.size() + " 组工具调用 / "
-                + totalCalls + " 次 (ctrl+o to expand)");
+        return AnsiStyle.subtle("▸ TOOL " + grouped.size() + " 组工具调用 / "
+                + totalCalls + " 次  ctrl+o expand");
     }
 
     static List<String> expandedLines(Map<String, List<LlmClient.ToolCall>> grouped) {

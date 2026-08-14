@@ -225,7 +225,8 @@ public final class InlineRenderer implements Renderer {
         reader.getWidgets().put(LineReader.CALLBACK_INIT, () -> {
             boolean ok = previous == null || previous.apply();
             if (startupScreenPrinted.compareAndSet(false, true)) {
-                reader.printAbove(joinLines(snapshot));
+                String mascot = TerminalMascotRenderer.startupMascot(terminal).orElse("");
+                reader.printAbove(mascot + joinLines(snapshot));
             }
             return ok;
         });

@@ -28,7 +28,7 @@ java -jar target/mindcli-1.0-SNAPSHOT.jar serve --http --port 8080
 
 当前 CLI 生产入口中，默认 ReAct、`/plan` 和 `/team` 都会经 `AgentModeRouter` 创建 `AgentRunContext` 并进入 `AgentRuntime`；三种模式通过 `ReActModeAdapter` / `PlanModeAdapter` / `TeamModeAdapter` 复用统一生命周期、RunStore 和 runtime snapshot 关联，不再额外套旧的 turn snapshot。
 
-`/plan` 和 `/team` 保持两套编排模式：前者是单 Agent 的计划审阅、执行、重试与重规划，后者是 planner / worker / reviewer/profile lease 的多 Agent 协作。二者只共享 `DependencyGraph` 的中性 DAG 计算与阻塞依赖诊断，依赖状态语义由各自模式传入。
+`/plan` 和 `/team` 保持两套编排模式：前者是单 Agent 的计划审阅、执行、重试与重规划，后者是 planner / worker / reviewer/profile lease 的多 Agent 协作。二者只共享 `DependencyGraph` 的中性 DAG 计算与阻塞依赖诊断，依赖状态语义由各自模式传入。`/plan` 失败恢复按 `critical` / `degradation` 决策：只有 `critical=false + degradation=SKIP` 会跳过，`BLOCK` 直接失败，其余回退为局部重规划。
 
 ```mermaid
 flowchart LR
@@ -94,7 +94,7 @@ src/main/java/com/mindcli/
 | 浏览器 | 默认 `chrome-devtools` MCP isolated 模式，`/browser connect` 可复用本机 Chrome 登录态 |
 | Web | `web_search` 支持 zhipu / serpapi / searxng，`web_fetch` 通过 HTTP + Jsoup 提取 Markdown |
 | 安全 | HITL、PathGuard、CommandGuard、BrowserGuard、危险工具 JSONL 审计 |
-| 交互体验 | JLine 4 inline renderer、底部状态栏、slash 补全、输入高亮、`@path` 与 MCP resource 展开 |
+| 交互体验 | JLine 4 cyber-lite inline renderer、猫耳助手 ANSI 彩色启动图 fallback、`MINDCLI //` 底部状态栏、Lanterna cyber-lite 三栏 TUI、slash 补全、输入高亮、`@path` 与 MCP resource 展开 |
 | 其他入口 | 微信 iLink 通道、后台任务 `/task`、本地 Runtime HTTP API |
 
 ## 内置工具
@@ -275,6 +275,8 @@ SEARXNG_URL=http://localhost:8888
 # 渲染与日志
 MINDCLI_RENDERER=inline     # inline | lanterna | plain
 MINDCLI_NO_STATUSBAR=true
+MINDCLI_UI_MASCOT=true      # 支持 ANSI 的终端显示猫耳助手彩色启动图；false 禁用
+MINDCLI_TERMINAL_ENCODING=UTF-8  # 覆盖终端编码；Windows cmd 可用 GBK/GB18030
 NO_COLOR=1
 MINDCLI_LOG_LEVEL=INFO
 MINDCLI_LOG_DIR=~/.mindcli/logs

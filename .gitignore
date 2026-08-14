@@ -32,8 +32,9 @@ docs/*
 
 # IDE
 .idea/
-*.iml
-.vscode/
+.idea.bak
+
+mindcli.iml
 
 # 日志
 *.log

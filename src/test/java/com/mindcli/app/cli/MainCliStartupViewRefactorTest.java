@@ -15,8 +15,9 @@ class MainCliStartupViewRefactorTest {
         List<String> viewLines = CliStartupView.startupBannerLines("16.1.0");
 
         assertEquals(mainLines, viewLines);
-        assertTrue(viewLines.stream().anyMatch(line -> line.contains("MindCLI") && line.contains("v16.1.0")));
-        assertTrue(viewLines.stream().anyMatch(line -> line.contains("Tips for getting started")));
+        assertTrue(viewLines.stream().anyMatch(line -> line.contains("MINDCLI // v16.1.0")));
+        assertTrue(viewLines.stream().anyMatch(line -> line.contains("COMMAND /")));
+        assertTrue(viewLines.stream().anyMatch(line -> line.contains("CONTEXT @path")));
         assertTrue(viewLines.stream().noneMatch(line -> line.endsWith("║")),
                 "banner should not depend on a padded right border");
     }
@@ -39,8 +40,9 @@ class MainCliStartupViewRefactorTest {
         List<String> viewLines = CliStartupView.startupScreenLines("16.1.0", info);
 
         assertEquals(mainLines, viewLines);
-        assertTrue(viewLines.stream().anyMatch(line -> line.contains("glm-5.1")));
-        assertTrue(viewLines.stream().anyMatch(line -> line.contains("MCP 1/2")));
+        assertTrue(viewLines.stream().anyMatch(line -> line.contains("MODEL") && line.contains("glm-5.1 / glm")));
+        assertTrue(viewLines.stream().anyMatch(line -> line.contains("MCP") && line.contains("1/2 online")));
+        assertTrue(viewLines.stream().anyMatch(line -> line.contains("SKILLS") && line.contains("1/2 armed")));
         assertTrue(viewLines.stream().anyMatch(line -> line.contains("MCP ready")));
     }
 }

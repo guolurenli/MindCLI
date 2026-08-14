@@ -179,6 +179,8 @@ public class Main {
         }
 
         configureLogging();
+        TerminalEncoding.Plan terminalEncoding = TerminalEncoding.detect();
+        TerminalEncoding.configureStandardStreams(terminalEncoding);
 
         MindCliConfig config = MindCliConfig.load();
         LlmClient llmClient = LlmClientFactory.createFromConfig(config);
@@ -189,7 +191,9 @@ public class Main {
         }
         AtomicReference<LlmClient> llmClientRef = new AtomicReference<>(llmClient);
 
-        try (Terminal terminal = TerminalBuilder.builder().system(true).dumb(true).build()) {
+        try (Terminal terminal = TerminalEncoding.applyTo(
+                TerminalBuilder.builder().system(true).dumb(true),
+                terminalEncoding).build()) {
             refreshTerminalColumns(terminal);
             TerminalHitlHandler terminalHitlHandler = new TerminalHitlHandler(false);
             SwitchableHitlHandler hitlHandler = new SwitchableHitlHandler(terminalHitlHandler);
@@ -245,17 +249,17 @@ public class Main {
             renderer.start();
             renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, null));
 
-            String startupNote = "";
+            String startupNote = terminalEncoding.startupNote();
             try {
                 McpConfigBootstrapResult bootstrapResult = ensureDefaultMcpConfig(Path.of(System.getProperty("user.home")));
                 if (!bootstrapResult.message().isBlank()) {
-                    startupNote = bootstrapResult.message();
+                    startupNote = appendStartupNote(startupNote, bootstrapResult.message());
                 }
                 mcpServerManager.loadConfiguredServers();
                 mcpServerManager.startAll(ui, mcpStartupWait());
                 Runtime.getRuntime().addShutdownHook(new Thread(mcpServerManager::close, "mindcli-mcp-shutdown"));
             } catch (Exception e) {
-                startupNote = "MCP 初始化失败: " + e.getMessage();
+                startupNote = appendStartupNote(startupNote, "MCP 初始化失败: " + e.getMessage());
             }
             AtMentionExpander mentionExpander = new AtMentionExpander(mcpServerManager);
             LocalPathMentionExpander localPathMentionExpander = new LocalPathMentionExpander(Path.of("."));

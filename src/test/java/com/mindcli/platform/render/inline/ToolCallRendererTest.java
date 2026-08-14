@@ -20,7 +20,7 @@ class ToolCallRendererTest {
                 tc("read_file", "{\"path\":\"a.md\"}"),
                 tc("read_file", "{\"path\":\"b.md\"}")));
         String header = ToolCallRenderer.collapsedHeader(grouped);
-        assertTrue(header.contains("⏵"), header);
+        assertTrue(header.contains("▸ TOOL"), header);
         assertTrue(header.contains("读取 2 个文件"), header);
         assertTrue(header.contains("ctrl+o"), header);
     }
@@ -77,7 +77,7 @@ class ToolCallRendererTest {
         FoldableBlock b = registry.peekLast();
         assertFalse(b.isExpanded());
         String emitted = sink.toString(StandardCharsets.UTF_8);
-        assertTrue(emitted.contains("⏵"), emitted);
+        assertTrue(emitted.contains("▸ TOOL"), emitted);
     }
 
     @Test

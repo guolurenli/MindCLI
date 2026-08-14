@@ -164,7 +164,8 @@ public class ExecutionPlan {
      */
     public boolean isAllCompleted() {
         return tasks.values().stream()
-                .allMatch(t -> t.getStatus() == Task.TaskStatus.COMPLETED);
+                .allMatch(t -> t.getStatus() == Task.TaskStatus.COMPLETED
+                        || t.getStatus() == Task.TaskStatus.SKIPPED);
     }
 
     /**
