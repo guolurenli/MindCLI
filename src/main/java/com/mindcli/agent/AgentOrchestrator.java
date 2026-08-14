@@ -7,6 +7,7 @@ import com.mindcli.agent.profile.AgentProfile;
 import com.mindcli.agent.profile.AgentProfileLoader;
 import com.mindcli.agent.profile.AgentTaskRequirements;
 import com.mindcli.agent.profile.AgentToolPolicy;
+import com.mindcli.agent.plan.DependencyGraph;
 import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.capability.memory.MemoryManager;
 import com.mindcli.agent.plan.PlanSchema;
@@ -353,14 +354,15 @@ public class AgentOrchestrator {
         }
 
         // 5. 处理未能执行的残留步骤（显式提示用户）
+        List<DependencyGraph.BlockedNode<ExecutionStep>> blockedSteps = blockedSteps(steps);
         for (ExecutionStep step : steps) {
             if (step.status() == StepStatus.PENDING) {
-                // 列出其依赖状态，帮助用户理解为何未能执行
-                List<String> depStatus = step.dependencies().stream()
-                        .map(dep -> dep + "=" + getStepStatus(dep, steps))
-                        .toList();
+                DependencyGraph.BlockedNode<ExecutionStep> blocked = blockedSteps.stream()
+                        .filter(item -> item.node().id().equals(step.id()))
+                        .findFirst()
+                        .orElse(null);
                 out.println("⏭️ 步骤 [" + step.id() + "] 未能执行（依赖状态: "
-                        + String.join(", ", depStatus) + "）: " + step.description());
+                        + formatBlockedDependencies(blocked, step.dependencies(), steps) + "）: " + step.description());
             }
             if (step.status() == StepStatus.SKIPPED) {
                 out.println("⏭️ 步骤 [" + step.id() + "] 已跳过: " + step.description());
@@ -371,6 +373,29 @@ public class AgentOrchestrator {
         String finalResult = buildFinalResult(steps);
         appendTerminalEvent(runContext, finalResult);
         return finalResult;
+    }
+
+    private List<DependencyGraph.BlockedNode<ExecutionStep>> blockedSteps(List<ExecutionStep> steps) {
+        return DependencyGraph.of(
+                steps,
+                ExecutionStep::id,
+                ExecutionStep::dependencies).blockedNodes(
+                candidate -> candidate.status() == StepStatus.PENDING,
+                dep -> getStepStatus(dep, steps).name(),
+                state -> "COMPLETED".equals(state) || "SKIPPED".equals(state));
+    }
+
+    private String formatBlockedDependencies(DependencyGraph.BlockedNode<ExecutionStep> blocked,
+                                             List<String> dependencies,
+                                             List<ExecutionStep> steps) {
+        if (blocked != null && !blocked.blockingDependencies().isEmpty()) {
+            return String.join(", ", blocked.blockingDependencies().stream()
+                    .map(dep -> dep.dependencyId() + "=" + dep.state())
+                    .toList());
+        }
+        return String.join(", ", dependencies.stream()
+                .map(dep -> dep + "=" + getStepStatus(dep, steps))
+                .toList());
     }
 
     /**
@@ -434,17 +459,18 @@ public class AgentOrchestrator {
             statusMap.put(step.id(), step.status());
         }
 
-        return steps.stream()
-                .filter(step -> step.status() == StepStatus.PENDING)
-                .filter(step -> step.dependencies().stream()
-                        .allMatch(dep -> {
-                            StepStatus s = statusMap.get(dep);
-                            // COMPLETED（正常）和 SKIPPED（显式降级）可放行；
-                            // FAILED 表示依赖结果不可用，必须阻断下游步骤。
-                            return s == StepStatus.COMPLETED
-                                || s == StepStatus.SKIPPED;
-                        }))
-                .toList();
+        DependencyGraph<ExecutionStep> graph = DependencyGraph.of(
+                steps,
+                ExecutionStep::id,
+                ExecutionStep::dependencies);
+        return graph.readyNodes(
+                step -> step.status() == StepStatus.PENDING,
+                dependencyId -> {
+                    StepStatus status = statusMap.get(dependencyId);
+                    // COMPLETED（正常）和 SKIPPED（显式降级）可放行；
+                    // FAILED 表示依赖结果不可用，必须阻断下游步骤。
+                    return status == StepStatus.COMPLETED || status == StepStatus.SKIPPED;
+                });
     }
 
     /**
@@ -1012,6 +1038,7 @@ public class AgentOrchestrator {
             result.append("⚠️ 多 Agent 协作任务部分完成，仍有未执行步骤。\n\n");
         }
         result.append("📋 执行总结：\n");
+        List<DependencyGraph.BlockedNode<ExecutionStep>> blockedSteps = blockedSteps(steps);
 
         for (ExecutionStep step : steps) {
             result.append("[").append(step.id()).append("] ");
@@ -1031,6 +1058,13 @@ public class AgentOrchestrator {
                         ? step.result().substring(0, 120) + "..."
                         : step.result();
                 result.append("   结果：").append(preview).append("\n");
+            } else if (step.status() == StepStatus.PENDING) {
+                blockedSteps.stream()
+                        .filter(blocked -> blocked.node().id().equals(step.id()))
+                        .findFirst()
+                        .map(blocked -> formatBlockedDependencies(blocked, step.dependencies(), steps))
+                        .filter(reason -> !reason.isBlank())
+                        .ifPresent(reason -> result.append("   阻塞：").append(reason).append("\n"));
             }
         }
 

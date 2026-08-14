@@ -434,6 +434,12 @@ public class PlanExecuteAgent {
 
         if (!plan.isAllCompleted() && !plan.hasFailed()) {
             plan.markFailed();
+            List<DependencyGraph.BlockedNode<Task>> blockedTasks = plan.getBlockedTasks();
+            if (!blockedTasks.isEmpty()) {
+                DependencyGraph.BlockedNode<Task> blocked = blockedTasks.get(0);
+                return "⚠️ 计划未能继续推进，存在未满足依赖的任务（"
+                        + formatBlockedDependencies(blocked.blockingDependencies()) + "）。";
+            }
             return "⚠️ 计划未能继续推进，存在未满足依赖的任务。";
         }
 
@@ -1086,6 +1092,12 @@ public class PlanExecuteAgent {
 
         context.append("请执行此任务。如果是ANALYSIS或VERIFICATION类型，请基于以上上下文直接给出结果。");
         return context.toString();
+    }
+
+    private String formatBlockedDependencies(List<DependencyGraph.DependencyBlocker> blockers) {
+        return String.join(", ", blockers.stream()
+                .map(blocker -> blocker.dependencyId() + "=" + blocker.state())
+                .toList());
     }
 
     private String buildFinalResult(ExecutionPlan plan, Map<String, Boolean> streamedTaskOutputs) {

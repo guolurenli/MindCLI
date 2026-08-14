@@ -28,6 +28,8 @@ java -jar target/mindcli-1.0-SNAPSHOT.jar serve --http --port 8080
 
 当前 CLI 生产入口中，默认 ReAct、`/plan` 和 `/team` 都会经 `AgentModeRouter` 创建 `AgentRunContext` 并进入 `AgentRuntime`；三种模式通过 `ReActModeAdapter` / `PlanModeAdapter` / `TeamModeAdapter` 复用统一生命周期、RunStore 和 runtime snapshot 关联，不再额外套旧的 turn snapshot。
 
+`/plan` 和 `/team` 保持两套编排模式：前者是单 Agent 的计划审阅、执行、重试与重规划，后者是 planner / worker / reviewer/profile lease 的多 Agent 协作。二者只共享 `DependencyGraph` 的中性 DAG 计算与阻塞依赖诊断，依赖状态语义由各自模式传入。
+
 ```mermaid
 flowchart LR
     CLI["JLine CLI / Inline Renderer"] --> Parser["CliCommandParser"]
@@ -72,7 +74,7 @@ sequenceDiagram
 
 ```text
 src/main/java/com/mindcli/
-├── agent/       ReAct / Plan / Multi-Agent 编排，profile/ 是 Agent Profile 与 worker lease
+├── agent/       ReAct / Plan / Multi-Agent 编排，plan/ 含 DependencyGraph，profile/ 是 Agent Profile 与 worker lease
 ├── app/         cli / tui / wechat 用户入口与命令 handler
 ├── capability/  browser / image / lsp / mcp / memory / rag / skill / tool / web
 ├── platform/    config / hitl / llm / prompt / render / security / snapshot / text

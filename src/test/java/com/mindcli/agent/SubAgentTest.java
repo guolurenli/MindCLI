@@ -27,6 +27,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -227,12 +228,20 @@ class SubAgentTest {
         CountDownLatch lockEntered = new CountDownLatch(1);
         CountDownLatch releaseLock = new CountDownLatch(1);
         CountDownLatch workerToolStarted = new CountDownLatch(1);
+        CountDownLatch toolCallResponseDelivered = new CountDownLatch(1);
+        AtomicBoolean workerToolStartedBeforeRelease = new AtomicBoolean(false);
         ToolDispatcher lockHolder = new ToolDispatcher(new LockHoldingToolRegistry(lockEntered, releaseLock));
-        RecordingToolRegistry registry = new RecordingToolRegistry(workerToolStarted);
+        RecordingToolRegistry registry = new RecordingToolRegistry(
+                workerToolStarted,
+                releaseLock,
+                workerToolStartedBeforeRelease);
         registry.setProjectPath(tempDir.toString());
         MultiCallStreamClient llm = new MultiCallStreamClient(List.of(
                 new CallScript(
-                        listener -> listener.onContentDelta("准备写入"),
+                        listener -> {
+                            listener.onContentDelta("准备写入");
+                            toolCallResponseDelivered.countDown();
+                        },
                         new LlmClient.ChatResponse(
                                 "assistant",
                                 "准备写入",
@@ -267,7 +276,7 @@ class SubAgentTest {
                     new LlmClient.ToolCall("call_lock", new LlmClient.ToolCall.Function(
                             "write_file", "{\"path\":\"shared.txt\",\"content\":\"lock\"}"))
             ), lockContext));
-            assertTrue(lockEntered.await(1, TimeUnit.SECONDS));
+            assertTrue(lockEntered.await(5, TimeUnit.SECONDS));
 
             Future<AgentMessage> workerFuture = executor.submit(() -> {
                 ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -275,14 +284,17 @@ class SubAgentTest {
                 return worker.execute(AgentMessage.task("orchestrator", "写入 shared.txt"), ps);
             });
 
-            assertFalse(workerToolStarted.await(1, TimeUnit.SECONDS),
+            assertTrue(toolCallResponseDelivered.await(5, TimeUnit.SECONDS));
+            assertFalse(workerToolStarted.await(250, TimeUnit.MILLISECONDS),
                     "SubAgent worker tool execution must wait for the shared dispatcher lock");
             releaseLock.countDown();
 
-            AgentMessage result = workerFuture.get(2, TimeUnit.SECONDS);
+            AgentMessage result = workerFuture.get(10, TimeUnit.SECONDS);
             assertEquals(AgentMessage.Type.RESULT, result.type());
-            lockFuture.get(1, TimeUnit.SECONDS);
-            assertTrue(workerToolStarted.await(1, TimeUnit.SECONDS));
+            lockFuture.get(5, TimeUnit.SECONDS);
+            assertTrue(workerToolStarted.await(5, TimeUnit.SECONDS));
+            assertFalse(workerToolStartedBeforeRelease.get(),
+                    "SubAgent worker tool execution must not enter ToolRegistry before the shared lock is released");
         } finally {
             releaseLock.countDown();
             executor.shutdownNow();
@@ -317,13 +329,26 @@ class SubAgentTest {
 
     private static final class RecordingToolRegistry extends ToolRegistry {
         private final CountDownLatch toolStarted;
+        private final CountDownLatch releaseLock;
+        private final AtomicBoolean toolStartedBeforeRelease;
 
         private RecordingToolRegistry(CountDownLatch toolStarted) {
+            this(toolStarted, null, null);
+        }
+
+        private RecordingToolRegistry(CountDownLatch toolStarted,
+                                      CountDownLatch releaseLock,
+                                      AtomicBoolean toolStartedBeforeRelease) {
             this.toolStarted = toolStarted;
+            this.releaseLock = releaseLock;
+            this.toolStartedBeforeRelease = toolStartedBeforeRelease;
         }
 
         @Override
         public String executeTool(String name, String argumentsJson) {
+            if (releaseLock != null && releaseLock.getCount() > 0 && toolStartedBeforeRelease != null) {
+                toolStartedBeforeRelease.set(true);
+            }
             toolStarted.countDown();
             return "文件已写入: shared.txt";
         }
@@ -342,7 +367,7 @@ class SubAgentTest {
         public List<ToolExecutionResult> executeTools(List<ToolInvocation> invocations) {
             lockEntered.countDown();
             try {
-                assertTrue(releaseLock.await(2, TimeUnit.SECONDS));
+                releaseLock.await(30, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }

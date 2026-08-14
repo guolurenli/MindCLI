@@ -52,6 +52,8 @@ mvn test -DskipTests=false                  # 全量回归
 | Plan-and-Execute | `PlanExecuteAgent.java` | `/plan` |
 | Multi-Agent | `AgentOrchestrator.java` + `agent/profile/*` | `/team` |
 
+`/plan` 与 `/team` 是两个不同执行模式，不合并编排语义；二者只共享 `agent/plan/DependencyGraph.java` 里的中性 DAG 计算（拓扑顺序、就绪节点、批次和阻塞依赖诊断），依赖满足规则仍由各自模式按 Task/Step 状态传入。
+
 ReAct 的 LLM/tool 循环已委托给 `runtime/run/AgentLoopExecutor.java`；`Agent.java` 继续负责 prompt / memory / renderer / 状态栏等 ReAct 周边体验。CLI 生产入口中，ReAct、`/plan`、`/team` 都会先经 `AgentModeRouter` 选择 `ReActModeAdapter` / `PlanModeAdapter` / `TeamModeAdapter`，再进入 `AgentRuntime`；runtime 提供的 `AgentRunContext` 与共享 `RunStore` 会向下传递，避免分裂 runId / store。三条路径的工具调用都会先经 `runtime/run/ToolDispatcher.java` 进入内部 Hook、资源分类和资源锁，再映射为结构化 `ToolOutcome`；Plan 和 Multi-Agent 暂时仍保留各自 loop，但 `PlanExecuteAgent` / `SubAgent` 的实际工具执行也会写 `TOOL_OUTCOME` 事件。`/team` 已接入 `AgentProfile` / `AgentPool`：默认使用兼容 profile，项目可通过 `.mindcli/agents.json` 配置 planner / worker / reviewer 的工具 allowlist、命令 allowlist、并发和权限模式；`AgentPool` 按 profile semaphore 原子 `tryAcquire` 分配 lease，避免并行步骤争抢同一个 worker profile 后串行化；child run 与 `TOOL_OUTCOME` 会记录 `profileName`、`permissionMode`、`selectedReason` 和 profile policy 决策。
 
 Agent Runtime 账本默认通过 `RunStoreFactory` 写到 `~/.mindcli/runs`（可用 `mindcli.runs.dir` / `MINDCLI_RUNS_DIR` 改写），`InMemoryRunStore` 仅保留给测试和降级。JSONL ledger 是 source of truth：每个事件包含 run 内递增 `seq` 和唯一 `eventId`，`run.meta.json` / `run.state.json` 由事件投影生成；读取会忽略尾部坏行，继续 append 前会先截断坏尾，`runId` 只能使用安全路径字符。AgentRuntime 可写 `SNAPSHOT_CREATED`，把 `PRE_RUN` / `POST_RUN` Side-Git checkpoint 与 runId 关联；CLI Agent 主路径不再额外套 `SnapshotService.runTurn(...)`，避免同一 run 产生旧 turn snapshot 与 runtime snapshot 两套快照；`/run inspect <runId>` 通过 `RunRecoveryService` 展示状态、checkpoint 和恢复提示。Multi-Agent 的 planner / worker / reviewer 会写入 child run：目录布局为 `parentRun/children/childRun/`，事件 attributes 带 `parentRunId`、`rootRunId`、`role`、`stepId`、`attempt`；parent `run.state.json` 会 materialize child run 摘要。Reviewer 调用失败、输出不可解析、重试后仍拒绝时必须 fail closed，不能把 worker 候选结果标记为完成；reviewer child 摘要要保留 `approved` / `businessStatus`，供恢复和审计判断。
@@ -75,7 +77,7 @@ DeepSeek SSE 调用默认强制 HTTP/1.1，避免部分网络/网关下 HTTP/2 �
 
 ```
 src/main/java/com/mindcli/
-├── agent/       ReAct / Plan / Multi-Agent 编排；plan/ 放 Planner / ExecutionPlan / Task，profile/ 放 AgentProfile / AgentPool
+├── agent/       ReAct / Plan / Multi-Agent 编排；plan/ 放 Planner / ExecutionPlan / Task / DependencyGraph，profile/ 放 AgentProfile / AgentPool
 ├── app/         用户入口适配：cli/、tui/、wechat/
 ├── capability/  Agent 能力：browser/、image/、lsp/、mcp/、memory/、rag/、skill/、tool/、web/
 ├── platform/    平台支撑：config/、hitl/、llm/、prompt/、render/、security/、snapshot/、text/

@@ -11,12 +11,16 @@ import com.mindcli.capability.memory.LongTermMemory;
 import com.mindcli.capability.memory.MemoryManager;
 import com.mindcli.runtime.run.AgentRunEvent;
 import com.mindcli.runtime.run.AgentRunEventType;
+import com.mindcli.runtime.run.InMemoryRunStore;
 import com.mindcli.runtime.run.JsonlRunStore;
 import com.mindcli.runtime.run.RunStore;
 import com.mindcli.capability.tool.ToolRegistry;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -24,7 +28,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
@@ -350,11 +358,15 @@ class AgentOrchestratorTest {
     @Test
     void shouldRunIndependentStepsInParallel(@TempDir Path tempDir) throws Exception {
         // 两个互相独立的步骤同属一个依赖批次。若并行执行生效，两个 worker 应同时在 chat() 内等待。
-        CountDownLatch workersInFlight = new CountDownLatch(2);
+        CountDownLatch workersReady = new CountDownLatch(2);
+        CountDownLatch releaseWorkers = new CountDownLatch(1);
         AtomicInteger peakConcurrency = new AtomicInteger();
         AtomicInteger currentConcurrency = new AtomicInteger();
+        AtomicInteger workerChatCalls = new AtomicInteger();
+        Queue<String> seenUserMessages = new ConcurrentLinkedQueue<>();
 
         Function<String, LlmClient.ChatResponse> dispatcher = body -> {
+            seenUserMessages.add(body);
             if (body.contains("请为以下任务制定执行计划")) {
                 return response("""
                         {
@@ -372,46 +384,76 @@ class AgentOrchestratorTest {
                         """);
             }
             if (body.contains("任务A")) {
-                return awaitBarrierThenReturn(workersInFlight, currentConcurrency, peakConcurrency,
+                workerChatCalls.incrementAndGet();
+                return waitForReleaseThenReturn(workersReady, releaseWorkers, currentConcurrency, peakConcurrency,
                         response("任务A 的结果"));
             }
             if (body.contains("任务B")) {
-                return awaitBarrierThenReturn(workersInFlight, currentConcurrency, peakConcurrency,
+                workerChatCalls.incrementAndGet();
+                return waitForReleaseThenReturn(workersReady, releaseWorkers, currentConcurrency, peakConcurrency,
                         response("任务B 的结果"));
             }
             return response("fallback");
         };
 
         DispatchingStubGLMClient llmClient = new DispatchingStubGLMClient(dispatcher);
+        ToolRegistry registry = new ToolRegistry();
+        registry.setProjectPath(tempDir.toString());
         AgentOrchestrator orchestrator = new AgentOrchestrator(
                 llmClient,
-                new ToolRegistry(),
-                new NoOpMemoryManager(tempDir.toFile())
+                registry,
+                new NoOpMemoryManager(tempDir.toFile()),
+                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
+                new InMemoryRunStore()
         );
 
-        String finalResult = orchestrator.run("测试并行执行");
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<String> runFuture = executor.submit(() -> orchestrator.run("测试并行执行"));
 
-        assertTrue(finalResult.contains("任务A"), "finalResult should mention task A");
-        assertTrue(finalResult.contains("任务B"), "finalResult should mention task B");
-        // 两个 Worker 同时持有 chat() 调用 → 并发峰值至少为 2
-        assertEquals(2, peakConcurrency.get(), "Expected two workers to run concurrently");
+            assertTrue(workersReady.await(10, TimeUnit.SECONDS),
+                    "Both workers should reach chat() concurrently, current="
+                            + currentConcurrency.get() + ", peak=" + peakConcurrency.get()
+                            + ", seen=" + seenUserMessages.stream().map(AgentOrchestratorTest::preview).toList());
+            assertEquals(2, currentConcurrency.get(), "Both workers should be waiting before release");
+            releaseWorkers.countDown();
+
+            String finalResult = runFuture.get(10, TimeUnit.SECONDS);
+            assertTrue(finalResult.contains("多 Agent 协作任务完成"), "finalResult should report completion");
+            assertTrue(finalResult.contains("任务A"), "finalResult should mention task A");
+            assertTrue(finalResult.contains("任务B"), "finalResult should mention task B");
+            assertEquals(2, workerChatCalls.get(), "Each worker should call chat() exactly once");
+            assertEquals(2, peakConcurrency.get(), "Expected two workers to run concurrently");
+        } finally {
+            releaseWorkers.countDown();
+            executor.shutdownNow();
+        }
     }
 
-    private static LlmClient.ChatResponse awaitBarrierThenReturn(CountDownLatch latch,
+    private static LlmClient.ChatResponse waitForReleaseThenReturn(CountDownLatch workersReady,
+                                                                  CountDownLatch releaseWorkers,
                                                                   AtomicInteger current,
                                                                   AtomicInteger peak,
                                                                   LlmClient.ChatResponse response) {
         int now = current.incrementAndGet();
         peak.updateAndGet(prev -> Math.max(prev, now));
-        latch.countDown();
+        workersReady.countDown();
         try {
-            assertTrue(latch.await(5, TimeUnit.SECONDS), "Both workers should reach chat() concurrently");
+            releaseWorkers.await(10, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
             current.decrementAndGet();
         }
         return response;
+    }
+
+    private static String preview(String value) {
+        if (value == null) {
+            return "<null>";
+        }
+        String normalized = value.replace('\n', ' ').replace('\r', ' ');
+        return normalized.length() > 160 ? normalized.substring(0, 157) + "..." : normalized;
     }
 
     @Test
@@ -450,6 +492,7 @@ class AgentOrchestratorTest {
         assertTrue(finalResult.contains("未完全完成"));
         assertTrue(finalResult.contains("[step_1] ❌ 第一步"));
         assertTrue(finalResult.contains("[step_2] ⏳ 第二步"));
+        assertTrue(finalResult.contains("FAILED"), "blocked dependency reason should be surfaced: " + finalResult);
     }
 
     @Test

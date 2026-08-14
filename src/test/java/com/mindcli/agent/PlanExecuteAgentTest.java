@@ -32,6 +32,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -65,6 +66,31 @@ class PlanExecuteAgentTest {
         String result = agent.run("列出当前目录的文件");
 
         assertEquals("✅ 计划执行完成！", result);
+    }
+
+    @Test
+    void shouldReportBlockedDependenciesWhenPlanCannotProceed() throws Exception {
+        StubGLMClient llmClient = StubGLMClient.streaming(List.of());
+        PlanExecuteAgent agent = new PlanExecuteAgent(
+                llmClient,
+                new ToolRegistry(),
+                new Planner(llmClient) {
+                    @Override
+                    public ExecutionPlan createPlan(String goal) {
+                        ExecutionPlan plan = new ExecutionPlan("plan-test", goal);
+                        plan.addTask(new Task("task_1", "完成准备", Task.TaskType.ANALYSIS));
+                        plan.addTask(new Task("task_2", "继续执行", Task.TaskType.ANALYSIS, List.of("task_missing")));
+                        plan.computeExecutionOrder();
+                        return plan;
+                    }
+                },
+                null,
+                (goal, plan) -> PlanExecuteAgent.PlanReviewDecision.execute()
+        );
+
+        String result = agent.run("测试缺失依赖");
+
+        assertTrue(result.contains("MISSING"), "blocked dependency reason should be surfaced: " + result);
     }
 
     @Test
@@ -116,11 +142,16 @@ class PlanExecuteAgentTest {
         CountDownLatch lockEntered = new CountDownLatch(1);
         CountDownLatch releaseLock = new CountDownLatch(1);
         CountDownLatch planToolStarted = new CountDownLatch(1);
+        CountDownLatch toolCallResponseDelivered = new CountDownLatch(1);
+        AtomicBoolean planToolStartedBeforeRelease = new AtomicBoolean(false);
         ToolDispatcher lockHolder = new ToolDispatcher(new LockHoldingToolRegistry(lockEntered, releaseLock));
-        RecordingToolRegistry registry = new RecordingToolRegistry(planToolStarted);
+        RecordingToolRegistry registry = new RecordingToolRegistry(
+                planToolStarted,
+                releaseLock,
+                planToolStartedBeforeRelease);
         registry.setProjectPath(tempDir.toString());
         StubGLMClient llmClient = StubGLMClient.streaming(List.of(
-                StubResponse.plain(new LlmClient.ChatResponse(
+                StubResponse.scripted(listener -> toolCallResponseDelivered.countDown(), new LlmClient.ChatResponse(
                         "assistant",
                         "准备写入文件",
                         null,
@@ -158,17 +189,20 @@ class PlanExecuteAgentTest {
                     new LlmClient.ToolCall("call_lock", new LlmClient.ToolCall.Function(
                             "write_file", "{\"path\":\"shared.txt\",\"content\":\"lock\"}"))
             ), lockContext));
-            assertTrue(lockEntered.await(1, TimeUnit.SECONDS));
+            assertTrue(lockEntered.await(5, TimeUnit.SECONDS));
 
             Future<String> planFuture = executor.submit(() -> agent.run("写入 shared.txt"));
 
-            assertFalse(planToolStarted.await(1, TimeUnit.SECONDS),
+            assertTrue(toolCallResponseDelivered.await(5, TimeUnit.SECONDS));
+            assertFalse(planToolStarted.await(250, TimeUnit.MILLISECONDS),
                     "Plan tool execution must wait for the shared dispatcher lock");
             releaseLock.countDown();
 
-            assertEquals("✅ 计划执行完成！", planFuture.get(2, TimeUnit.SECONDS));
-            lockFuture.get(1, TimeUnit.SECONDS);
-            assertTrue(planToolStarted.await(1, TimeUnit.SECONDS));
+            assertEquals("✅ 计划执行完成！", planFuture.get(10, TimeUnit.SECONDS));
+            lockFuture.get(5, TimeUnit.SECONDS);
+            assertTrue(planToolStarted.await(5, TimeUnit.SECONDS));
+            assertFalse(planToolStartedBeforeRelease.get(),
+                    "Plan tool execution must not enter ToolRegistry before the shared lock is released");
         } finally {
             releaseLock.countDown();
             executor.shutdownNow();
@@ -259,13 +293,26 @@ class PlanExecuteAgentTest {
 
     private static final class RecordingToolRegistry extends ToolRegistry {
         private final CountDownLatch toolStarted;
+        private final CountDownLatch releaseLock;
+        private final AtomicBoolean toolStartedBeforeRelease;
 
         private RecordingToolRegistry(CountDownLatch toolStarted) {
+            this(toolStarted, null, null);
+        }
+
+        private RecordingToolRegistry(CountDownLatch toolStarted,
+                                      CountDownLatch releaseLock,
+                                      AtomicBoolean toolStartedBeforeRelease) {
             this.toolStarted = toolStarted;
+            this.releaseLock = releaseLock;
+            this.toolStartedBeforeRelease = toolStartedBeforeRelease;
         }
 
         @Override
         public String executeTool(String name, String argumentsJson) {
+            if (releaseLock != null && releaseLock.getCount() > 0 && toolStartedBeforeRelease != null) {
+                toolStartedBeforeRelease.set(true);
+            }
             toolStarted.countDown();
             return "文件已写入: shared.txt";
         }
@@ -284,7 +331,7 @@ class PlanExecuteAgentTest {
         public List<ToolExecutionResult> executeTools(List<ToolInvocation> invocations) {
             lockEntered.countDown();
             try {
-                assertTrue(releaseLock.await(2, TimeUnit.SECONDS));
+                releaseLock.await(30, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
