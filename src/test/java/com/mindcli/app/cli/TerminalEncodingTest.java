@@ -107,4 +107,23 @@ class TerminalEncodingTest {
         assertFalse(plan.startupNote().isBlank());
         assertTrue(plan.startupNote().contains("not-a-charset"), plan.startupNote());
     }
+
+    @Test
+    void terminalTypeUsesExplicitPropertyBeforeTermEnvironment() {
+        Properties props = new Properties();
+        props.setProperty("mindcli.terminal.type", "xterm-direct");
+
+        assertEquals("xterm-direct", TerminalEncoding.detectTerminalType(props, Map.of("TERM", "xterm-256color")));
+    }
+
+    @Test
+    void terminalTypeUsesNonDumbTermEnvironment() {
+        assertEquals("xterm-256color", TerminalEncoding.detectTerminalType(new Properties(),
+                Map.of("TERM", "xterm-256color")));
+    }
+
+    @Test
+    void terminalTypeIgnoresDumbTermEnvironment() {
+        assertEquals("", TerminalEncoding.detectTerminalType(new Properties(), Map.of("TERM", "dumb")));
+    }
 }

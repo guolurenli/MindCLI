@@ -33,6 +33,7 @@ import com.mindcli.platform.render.Renderer;
 import com.mindcli.platform.render.RendererFactory;
 import com.mindcli.platform.render.StatusInfo;
 import com.mindcli.platform.render.inline.InlineRenderer;
+import com.mindcli.platform.render.inline.TerminalMascotRenderer;
 import com.mindcli.capability.image.ClipboardImage;
 import com.mindcli.capability.mcp.McpServerManager;
 import com.mindcli.capability.mcp.mention.AtMentionExpander;
@@ -237,8 +238,9 @@ public class Main {
             configureSlashCommandHint(lineReader);
             configureJLineInteractiveWidgets(lineReader);
 
-            // JLine-first：启动输出、命令输出、Agent 流式内容都走同一条 Renderer.stream() 通道。
-            // inline 首屏要挂到 LineReader 首次初始化回调里，避免在 readLine 接管屏幕前用裸输出抢光标。
+            // JLine-first：命令输出、Agent 流式内容都走同一条 Renderer.stream() 通道。
+            // 启动猫耳图由 native chafa 直接写真实终端；状态栏必须在它之后启动，
+            // 避免 JLine Status/scroll-region 改变 chafa 的终端探测与显示效果。
             Renderer renderer = RendererFactory.create(RendererFactory.resolveMode(), terminal);
             RendererHitlHandler rendererHitl = new RendererHitlHandler(renderer, hitlHandler.isEnabled());
             hitlHandler.setDelegate(rendererHitl);
@@ -246,8 +248,6 @@ public class Main {
                 inline.bindLineReader(lineReader);
             }
             PrintStream ui = renderer.stream();
-            renderer.start();
-            renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, null));
 
             String startupNote = terminalEncoding.startupNote();
             try {
@@ -290,14 +290,13 @@ public class Main {
             WechatCliCommandHandler.WechatRuntimeController wechatRuntime =
                     new WechatCliCommandHandler.WechatRuntimeController(renderer);
             Runtime.getRuntime().addShutdownHook(new Thread(wechatRuntime::stop, "mindcli-wechat-shutdown"));
-            renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
             CliStartupView.StartupScreenInfo startupScreenInfo =
                     startupScreenInfo(llmClient, mcpServerManager, skillRegistry, startupNote);
-            if (renderer instanceof InlineRenderer inline) {
-                inline.installStartupScreen(startupScreenLines(startupScreenInfo));
-            } else {
-                printStartupScreen(ui, startupScreenInfo);
-            }
+            List<String> startupBannerLines = startupScreenLines(startupScreenInfo);
+            TerminalMascotRenderer.renderStartupMascot(terminal);
+            printStartupScreen(ui, startupBannerLines);
+            renderer.start();
+            renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
             boolean nextTaskUsePlanMode = false;
             boolean nextTaskUseTeamMode = false;
 
@@ -1773,6 +1772,12 @@ public class Main {
 
     private static void printStartupScreen(PrintStream out, CliStartupView.StartupScreenInfo info) {
         CliStartupView.printStartupScreen(out, VERSION, info);
+    }
+
+    private static void printStartupScreen(PrintStream out, List<String> lines) {
+        for (String line : lines) {
+            out.println(line);
+        }
     }
 
     static List<String> startupScreenLines(CliStartupView.StartupScreenInfo info) {

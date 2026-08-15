@@ -16,6 +16,7 @@ import java.io.OutputStreamWriter;
 import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -98,7 +99,7 @@ class InlineRendererTest {
     }
 
     @Test
-    void startupScreenPrependsAnsiMascotWhenMascotIsEnabled() {
+    void startupScreenRunsDirectRendererBeforePrintingBannerOnce() {
         String oldMascot = System.getProperty("mindcli.ui.mascot");
         try {
             System.setProperty("mindcli.ui.mascot", "true");
@@ -108,20 +109,29 @@ class InlineRendererTest {
             LineReader lineReader = Mockito.mock(LineReader.class);
             Map<String, org.jline.reader.Widget> widgets = new HashMap<>();
             Mockito.when(lineReader.getWidgets()).thenReturn(widgets);
+            List<String> events = new ArrayList<>();
+            Mockito.doAnswer(invocation -> {
+                events.add("banner");
+                return null;
+            }).when(lineReader).printAbove(Mockito.anyString());
 
             InlineRenderer renderer = new InlineRenderer(terminal);
             try {
                 renderer.bindLineReader(lineReader);
-                renderer.installStartupScreen(List.of("MINDCLI // v16.1.0"));
+                renderer.installDirectStartupScreen(
+                        () -> events.add("direct"),
+                        List.of("MINDCLI // v16.1.0"));
 
                 assertTrue(widgets.get(LineReader.CALLBACK_INIT).apply());
                 ArgumentCaptor<String> output = ArgumentCaptor.forClass(String.class);
                 Mockito.verify(lineReader).printAbove(output.capture());
                 String rendered = output.getValue();
-                assertTrue(rendered.contains("\u001B[38;2;"), rendered);
-                assertTrue(rendered.contains("▀"), rendered);
-                assertFalse(rendered.contains("\u001B]1337;File=inline=1;"), rendered);
+                assertEquals(List.of("direct", "banner"), events);
                 assertTrue(rendered.contains("MINDCLI // v16.1.0"), rendered);
+                assertFalse(rendered.contains("PIXELS"), rendered);
+
+                assertTrue(widgets.get(LineReader.CALLBACK_INIT).apply());
+                assertEquals(List.of("direct", "banner"), events);
             } finally {
                 renderer.close();
             }

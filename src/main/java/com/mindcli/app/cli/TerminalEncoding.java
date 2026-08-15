@@ -20,6 +20,9 @@ final class TerminalEncoding {
 
     static final String PROPERTY = "mindcli.terminal.encoding";
     static final String ENV = "MINDCLI_TERMINAL_ENCODING";
+    static final String TERMINAL_TYPE_PROPERTY = "mindcli.terminal.type";
+    static final String TERMINAL_TYPE_ENV = "MINDCLI_TERMINAL_TYPE";
+    private static final String TERM_ENV = "TERM";
 
     private TerminalEncoding() {
     }
@@ -139,10 +142,24 @@ final class TerminalEncoding {
         if (builder == null || plan == null || plan.charset() == null) {
             return builder;
         }
-        return builder.encoding(plan.charset())
+        String terminalType = detectTerminalType(System.getProperties(), System.getenv());
+        TerminalBuilder configured = terminalType.isBlank() ? builder : builder.type(terminalType);
+        return configured.encoding(plan.charset())
                 .stdinEncoding(plan.charset())
                 .stdoutEncoding(plan.charset())
                 .stderrEncoding(plan.charset());
+    }
+
+    static String detectTerminalType(Properties properties, Map<String, String> env) {
+        String configured = firstNonBlank(
+                properties == null ? null : properties.getProperty(TERMINAL_TYPE_PROPERTY),
+                env == null ? null : env.get(TERMINAL_TYPE_ENV),
+                env == null ? null : env.get(TERM_ENV));
+        if (configured == null) {
+            return "";
+        }
+        String value = configured.trim();
+        return "dumb".equalsIgnoreCase(value) ? "" : value;
     }
 
     static void configureStandardStreams(Plan plan) {
@@ -183,6 +200,19 @@ final class TerminalEncoding {
 
     private static boolean isWindows(String osName) {
         return osName != null && osName.toLowerCase(Locale.ROOT).contains("win");
+    }
+
+    private static String firstNonBlank(String first, String second, String third) {
+        if (first != null && !first.isBlank()) {
+            return first;
+        }
+        if (second != null && !second.isBlank()) {
+            return second;
+        }
+        if (third != null && !third.isBlank()) {
+            return third;
+        }
+        return null;
     }
 
     private static Charset consoleCharset() {

@@ -94,7 +94,7 @@ src/main/java/com/mindcli/
 | 浏览器 | 默认 `chrome-devtools` MCP isolated 模式，`/browser connect` 可复用本机 Chrome 登录态 |
 | Web | `web_search` 支持 zhipu / serpapi / searxng，`web_fetch` 通过 HTTP + Jsoup 提取 Markdown |
 | 安全 | HITL、PathGuard、CommandGuard、BrowserGuard、危险工具 JSONL 审计 |
-| 交互体验 | JLine 4 cyber-lite inline renderer、猫耳助手 ANSI 彩色启动图 fallback、`MINDCLI //` 底部状态栏、Lanterna cyber-lite 三栏 TUI、slash 补全、输入高亮、`@path` 与 MCP resource 展开 |
+| 交互体验 | JLine 4 cyber-lite inline renderer、本机 chafa 10x10 随机猫耳助手启动图、`MINDCLI //` 底部状态栏、Lanterna cyber-lite 三栏 TUI、slash 补全、输入高亮、`@path` 与 MCP resource 展开 |
 | 其他入口 | 微信 iLink 通道、后台任务 `/task`、本地 Runtime HTTP API |
 
 ## 内置工具
@@ -275,8 +275,10 @@ SEARXNG_URL=http://localhost:8888
 # 渲染与日志
 MINDCLI_RENDERER=inline     # inline | lanterna | plain
 MINDCLI_NO_STATUSBAR=true
-MINDCLI_UI_MASCOT=true      # 支持 ANSI 的终端显示猫耳助手彩色启动图；false 禁用
+MINDCLI_UI_MASCOT=true      # 检测到本机 chafa 时从 ui/*.png 随机显示 10x10 猫耳助手启动图；false 禁用
+MINDCLI_CHAFA_BIN=chafa     # chafa 可执行文件路径；未设置时从 PATH 查找，并继承控制台完成终端探测
 MINDCLI_TERMINAL_ENCODING=UTF-8  # 覆盖终端编码；Windows cmd 可用 GBK/GB18030
+MINDCLI_TERMINAL_TYPE=xterm-256color  # JLine 将 Windows Terminal 误判为 dumb 时使用
 NO_COLOR=1
 MINDCLI_LOG_LEVEL=INFO
 MINDCLI_LOG_DIR=~/.mindcli/logs
