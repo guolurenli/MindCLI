@@ -14,10 +14,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AgentToolPolicyTest {
     @Test
-    void readOnlyReviewerCannotWriteEvenIfWriteToolIsConfigured() {
-        AgentProfile reviewer = new AgentProfile(
+    void readOnlyProfileCannotWriteEvenIfWriteToolIsConfigured() {
+        AgentProfile explorer = new AgentProfile(
                 "verifier",
-                AgentRole.REVIEWER,
+                AgentRole.EXPLORER,
                 "review",
                 List.of("read_file", "write_file"),
                 List.of(),
@@ -26,9 +26,11 @@ class AgentToolPolicyTest {
                 1,
                 "READ_ONLY",
                 "PARENT_SUMMARY",
-                "balanced");
+                "balanced",
+                "",
+                "on-request");
 
-        AgentToolPolicy.Decision decision = AgentToolPolicy.evaluate(reviewer,
+        AgentToolPolicy.Decision decision = AgentToolPolicy.evaluate(explorer,
                 new ToolRegistry.ToolInvocation("call_1", "write_file", "{\"path\":\"a.txt\"}"));
 
         assertFalse(decision.allowed());
@@ -39,7 +41,7 @@ class AgentToolPolicyTest {
     void executeCommandRequiresCommandAllowlistMatch() {
         AgentProfile verifier = new AgentProfile(
                 "verifier",
-                AgentRole.REVIEWER,
+                AgentRole.EXPLORER,
                 "review",
                 List.of("execute_command"),
                 List.of(),
@@ -48,7 +50,9 @@ class AgentToolPolicyTest {
                 1,
                 "READ_ONLY",
                 "PARENT_SUMMARY",
-                "balanced");
+                "balanced",
+                "",
+                "on-request");
 
         assertTrue(AgentToolPolicy.evaluate(verifier,
                 new ToolRegistry.ToolInvocation("call_1", "execute_command",
@@ -56,6 +60,17 @@ class AgentToolPolicyTest {
         assertFalse(AgentToolPolicy.evaluate(verifier,
                 new ToolRegistry.ToolInvocation("call_2", "execute_command",
                         "{\"command\":\"mvn test -Pquick\"}")).allowed());
+    }
+
+    @Test
+    void emptyCommandAllowlistDoesNotAddProfileLevelRestriction() {
+        AgentProfile worker = AgentProfile.builtinWorker("worker-1");
+
+        AgentToolPolicy.Decision decision = AgentToolPolicy.evaluate(worker,
+                new ToolRegistry.ToolInvocation("call_3", "execute_command",
+                        "{\"command\":\"mvn test -Pquick\"}"));
+
+        assertTrue(decision.allowed(), decision.reason());
     }
 
     @Test

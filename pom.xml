@@ -100,6 +100,13 @@
             <version>1.18.1</version>
         </dependency>
 
+        <!-- TOML 解析（自定义子代理 .mindcli/agents/*.toml） -->
+        <dependency>
+            <groupId>org.tomlj</groupId>
+            <artifactId>tomlj</artifactId>
+            <version>1.1.1</version>
+        </dependency>
+
         <!-- OkHttp MockWebServer（仅测试） -->
         <dependency>
             <groupId>com.squareup.okhttp3</groupId>

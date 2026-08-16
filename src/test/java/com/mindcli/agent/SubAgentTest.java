@@ -40,12 +40,10 @@ class SubAgentTest {
     Path tempDir;
 
     @Test
-    void shouldOnlyEnableToolsForWorker() throws Exception {
-        assertFalse(invokeShouldUseTools(new SubAgent("planner", AgentRole.PLANNER,
+    void shouldEnableToolsForBuiltinExplorerAndWorker() throws Exception {
+        assertTrue(invokeShouldUseTools(new SubAgent(AgentProfile.builtinExplorer("explorer#1"),
                 new GLMClient("test-key"), new ToolRegistry())));
-        assertTrue(invokeShouldUseTools(new SubAgent("worker", AgentRole.WORKER,
-                new GLMClient("test-key"), new ToolRegistry())));
-        assertTrue(invokeShouldUseTools(new SubAgent("reviewer", AgentRole.REVIEWER,
+        assertTrue(invokeShouldUseTools(new SubAgent(AgentProfile.builtinWorker("worker#1"),
                 new GLMClient("test-key"), new ToolRegistry())));
     }
 
@@ -90,7 +88,9 @@ class SubAgentTest {
                 1,
                 "READ_ONLY",
                 "PARENT_SUMMARY",
-                "balanced");
+                "balanced",
+                "",
+                "on-request");
         ToolRegistry registry = new ToolRegistry();
         registry.setProjectPath(tempDir.toString());
         SubAgent worker = new SubAgent(reader, llm, registry);
@@ -120,7 +120,7 @@ class SubAgentTest {
             listener.onContentDelta("最终答案内容");
             listener.onReasoningDelta("这段思考在答案之后才到");
         });
-        SubAgent worker = new SubAgent("test-worker", AgentRole.WORKER, llm, new ToolRegistry());
+        SubAgent worker = new SubAgent(AgentProfile.builtinWorker("test-worker"), llm, new ToolRegistry());
 
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         PrintStream ps = new PrintStream(baos, true, StandardCharsets.UTF_8);
@@ -178,7 +178,7 @@ class SubAgentTest {
                         )
                 )
         ));
-        SubAgent worker = new SubAgent("w1", AgentRole.WORKER, llm, new ToolRegistry());
+        SubAgent worker = new SubAgent(AgentProfile.builtinWorker("w1"), llm, new ToolRegistry());
 
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         PrintStream ps = new PrintStream(baos, true, StandardCharsets.UTF_8);
@@ -209,7 +209,7 @@ class SubAgentTest {
             listener.onReasoningDelta("\n");
             listener.onContentDelta("答案");
         });
-        SubAgent worker = new SubAgent("test-worker", AgentRole.WORKER, llm, new ToolRegistry());
+        SubAgent worker = new SubAgent(AgentProfile.builtinWorker("test-worker"), llm, new ToolRegistry());
 
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         PrintStream ps = new PrintStream(baos, true, StandardCharsets.UTF_8);
@@ -267,7 +267,7 @@ class SubAgentTest {
                         )
                 )
         ));
-        SubAgent worker = new SubAgent("w-lock", AgentRole.WORKER, llm, registry);
+        SubAgent worker = new SubAgent(AgentProfile.builtinWorker("w-lock"), llm, registry);
         AgentRunContext lockContext = AgentRunContext.create(AgentMode.TEAM, "lock", tempDir.toString());
         ExecutorService executor = Executors.newFixedThreadPool(2);
 

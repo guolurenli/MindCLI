@@ -20,7 +20,8 @@
       "expectedEvidence": [],
       "requiredTools": [],
       "preferredAgent": "",
-      "riskLevel": "low | medium | high"
+      "riskLevel": "low | medium | high",
+      "writeScope": []
     }
   ]
 }
@@ -40,5 +41,8 @@
 10. 如步骤需要工具，尽量填写 `requiredTools`，例如 `read_file`、`write_file`、`execute_command`。
 11. 如果明显需要某个具名 agent，可以填写 `preferredAgent`；不确定时留空，由编排器自动选择。
 12. `riskLevel` 按副作用估计：只读为 `low`，写文件或命令为 `medium`，高风险外部副作用为 `high`。
+13. 写入型步骤必须尽量填写 `writeScope`，用文件、目录或 glob 表达该步骤允许修改的范围。
+14. 拆解写入任务时遵守 many readers, one writer：不要让两个可并行步骤拥有重叠的 `writeScope`；如果无法切出互斥范围，就加依赖或合并为同一步骤。
+15. 只读步骤的 `writeScope` 保持空数组。
 
 只输出 JSON，不要有其他内容。

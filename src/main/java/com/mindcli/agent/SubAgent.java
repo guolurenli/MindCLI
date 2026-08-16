@@ -64,10 +64,6 @@ public class SubAgent {
     private MemoryManager memoryManager;
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
 
-    public SubAgent(String name, AgentRole role, LlmClient llmClient, ToolRegistry toolRegistry) {
-        this(AgentProfile.legacy(name, role), llmClient, toolRegistry);
-    }
-
     public SubAgent(AgentProfile profile, LlmClient llmClient, ToolRegistry toolRegistry) {
         this.profile = profile;
         this.name = profile.name();
@@ -98,19 +94,23 @@ public class SubAgent {
      * 根据角色获取系统提示词
      */
     private String getSystemPrompt() {
-        return promptAssembler.assemble(promptMode(), PromptContext.builder()
+        PromptContext context = PromptContext.builder()
                 .projectMemoryContext(buildProjectMemoryContext())
                 .externalContext(buildProfileAndExternalContext())
                 .skillIndex(buildSkillIndex())
                 .toolsEnabled(llmClient == null || llmClient.supportsTools())
-                .build());
+                .build();
+        if (role == AgentRole.CUSTOM) {
+            return promptAssembler.assembleCustom(profile.developerInstructions(), context);
+        }
+        return promptAssembler.assemble(promptMode(), context);
     }
 
     private PromptMode promptMode() {
         return switch (role) {
-            case PLANNER -> PromptMode.TEAM_PLANNER;
+            case EXPLORER -> PromptMode.TEAM_EXPLORER;
             case WORKER -> PromptMode.TEAM_WORKER;
-            case REVIEWER -> PromptMode.TEAM_REVIEWER;
+            case CUSTOM -> PromptMode.TEAM_WORKER;
         };
     }
 
@@ -356,6 +356,22 @@ public class SubAgent {
     }
 
     /**
+     * 直连执行单条任务并返回统一约定字符串（供 {@code /agent <name> <任务>} 与 SingleAgentAdapter 使用）。
+     * 返回格式与 TeamModeAdapter 对齐：成功返回正文，错误以 ❌ 开头。
+     */
+    public String run(String task, PrintStream out, AgentRunContext runContext, RunStore runStore) {
+        AgentMessage result = executeWithContext(
+                AgentMessage.task("user", task), "", out, runContext, runStore);
+        if (result == null) {
+            return "❌ 子代理未返回结果";
+        }
+        if (result.type() == AgentMessage.Type.ERROR) {
+            return "❌ " + (result.content() == null ? "执行失败" : result.content());
+        }
+        return result.content() == null ? "" : result.content();
+    }
+
+    /**
      * 执行任务（带上下文注入），用于 Worker 接收额外上下文
      */
     public AgentMessage executeWithContext(AgentMessage task, String context) {
@@ -383,7 +399,7 @@ public class SubAgent {
     }
 
     /**
-     * 检查结果（Reviewer 专用）
+     * 检查执行结果。默认 /team 会由实际执行的 Worker/Explorer 调用此方法完成自审。
      */
     public AgentMessage review(String originalTask, String executionResult) {
         return review(originalTask, executionResult, System.out);
@@ -400,7 +416,23 @@ public class SubAgent {
 
     AgentMessage review(String originalTask, String executionResult, PrintStream out,
                         AgentRunContext runContext, RunStore runStore) {
-        String reviewInput = "原始任务：" + originalTask + "\n\n执行结果：\n" + executionResult;
+        String reviewInput = """
+                你现在进入当前步骤的自审阶段。请检查执行结果是否正确、完整、可交付。
+                自审阶段不要写文件、创建项目或执行有副作用的命令；如需修复，请返回 approved=false 并说明问题。
+
+                请只输出 JSON：
+                {
+                  "approved": true,
+                  "summary": "检查摘要",
+                  "issues": [],
+                  "suggestions": []
+                }
+
+                原始任务：%s
+
+                执行结果：
+                %s
+                """.formatted(originalTask, executionResult).trim();
         AgentMessage reviewTask = AgentMessage.task("orchestrator", reviewInput);
         return executeWithRunContext(reviewTask, out, runContext, runStore);
     }
@@ -534,6 +566,7 @@ public class SubAgent {
         metadata.put("memoryScope", profile.memoryScope());
         metadata.put("model", profile.model());
         metadata.put("contextMode", profile.contextMode());
+        metadata.put("approvalPolicy", profile.approvalPolicy());
         return new AgentRunContext(
                 base.runId(),
                 base.mode(),
@@ -740,19 +773,18 @@ public class SubAgent {
 
         private String reasoningLabel() {
             return switch (role) {
-                case PLANNER -> "规划思考";
+                case EXPLORER -> "探索思考";
                 case WORKER -> "执行思考";
-                case REVIEWER -> "审查思考";
+                case CUSTOM -> "思考";
             };
         }
 
         private String contentLabel() {
-            // 故意区分：PLANNER/REVIEWER 不调用工具，content 一定是最终输出，用"结果"；
             // WORKER 可能在 tool_calls 前先 narrate，用"输出"避免"结果"暗示已经完成。
             return switch (role) {
-                case PLANNER -> "规划结果";
+                case EXPLORER -> "探索结果";
                 case WORKER -> "执行输出";
-                case REVIEWER -> "审查结果";
+                case CUSTOM -> "输出";
             };
         }
 

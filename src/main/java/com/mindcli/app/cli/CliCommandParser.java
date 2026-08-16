@@ -51,6 +51,7 @@ final class CliCommandParser {
         SKILL_OFF,
         SKILL_RELOAD,
         CONFIG,
+        AGENT,
         EXPORT
     }
 
@@ -126,6 +127,14 @@ final class CliCommandParser {
 
         if (trimmed.regionMatches(true, 0, "/team ", 0, 6)) {
             return new ParsedCommand(CommandType.SWITCH_TEAM, trimmed.substring(6).trim());
+        }
+
+        if (trimmed.equalsIgnoreCase("/agent")) {
+            return new ParsedCommand(CommandType.AGENT, null);
+        }
+
+        if (trimmed.regionMatches(true, 0, "/agent ", 0, 7)) {
+            return new ParsedCommand(CommandType.AGENT, trimmed.substring(7).trim());
         }
 
         if (trimmed.equalsIgnoreCase("/hitl on")) {

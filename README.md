@@ -28,7 +28,7 @@ java -jar target/mindcli-1.0-SNAPSHOT.jar serve --http --port 8080
 
 当前 CLI 生产入口中，默认 ReAct、`/plan` 和 `/team` 都会经 `AgentModeRouter` 创建 `AgentRunContext` 并进入 `AgentRuntime`；三种模式通过 `ReActModeAdapter` / `PlanModeAdapter` / `TeamModeAdapter` 复用统一生命周期、RunStore 和 runtime snapshot 关联，不再额外套旧的 turn snapshot。
 
-`/plan` 和 `/team` 保持两套编排模式：前者是单 Agent 的计划审阅、执行、重试与重规划，后者是 planner / worker / reviewer/profile lease 的多 Agent 协作。二者只共享 `DependencyGraph` 的中性 DAG 计算与阻塞依赖诊断，依赖状态语义由各自模式传入。`/plan` 失败恢复按 `critical` / `degradation` 决策：只有 `critical=false + degradation=SKIP` 会跳过，`BLOCK` 直接失败，其余回退为局部重规划。
+`/plan` 和 `/team` 保持两套编排模式：前者是单 Agent 的计划审阅、执行、重试与重规划，后者由主代理内部规划，再委派给 explorer / worker profile lease 协作。二者只共享 `DependencyGraph` 的中性 DAG 计算与阻塞依赖诊断，依赖状态语义由各自模式传入。`/plan` 失败恢复按 `critical` / `degradation` 决策：只有 `critical=false + degradation=SKIP` 会跳过，`BLOCK` 直接失败，其余回退为局部重规划。`/team` 内置 `EXPLORER` / `WORKER` 两个子代理，硬编码在源码（`AgentProfile.builtinExplorer` / `builtinWorker`），实例固定为 `explorer#1`、`explorer#2`、`worker#1`，不再读取 `.mindcli/config.toml`；规划职责收编到 orchestrator 内建（直接调 LLM + `TEAM_PLANNER` prompt），无独立 planner 子代理；只读步骤优先由 `explorer` 执行，写入型步骤会携带 `writeScope` 文件所有权边界并串行交给 `worker`，执行者随后进入自己的 review->repair 循环，审查失败、输出不可解析或重试耗尽都会 fail closed。
 
 ```mermaid
 flowchart LR
@@ -74,7 +74,7 @@ sequenceDiagram
 
 ```text
 src/main/java/com/mindcli/
-├── agent/       ReAct / Plan / Multi-Agent 编排，plan/ 含 DependencyGraph，profile/ 是 Agent Profile 与 worker lease
+├── agent/       ReAct / Plan / Multi-Agent 编排，plan/ 含 DependencyGraph，profile/ 是 Agent Profile 与 profile lease
 ├── app/         cli / tui / wechat 用户入口与命令 handler
 ├── capability/  browser / image / lsp / mcp / memory / rag / skill / tool / web
 ├── platform/    config / hitl / llm / prompt / render / security / snapshot / text
@@ -85,7 +85,7 @@ src/main/java/com/mindcli/
 
 | 能力 | 当前实现 |
 |---|---|
-| 执行模式 | 默认 ReAct；`/plan` 进入计划审阅与执行；`/team` 使用 planner / worker / reviewer 协作 |
+| 执行模式 | 默认 ReAct；`/plan` 进入计划审阅与执行；`/team` 由 orchestrator 内建规划 + explorer/worker 协作，worker/explorer 自审修复，写入步骤记录 `writeScope` 边界 |
 | Runtime 账本 | `JsonlRunStore` 按 run 写 JSONL 事件，投影 `run.meta.json` / `run.state.json`，支持 child run 摘要 |
 | 工具调度 | `ToolDispatcher` 统一进入 Hook、资源分类、资源锁与结构化 `ToolOutcome` |
 | 代码理解 | `glob_files` / `grep_code` / `read_file` 实时探索，`/index` + `/search` + `/graph` 提供 RAG 语义辅助 |

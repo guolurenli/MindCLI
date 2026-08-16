@@ -60,6 +60,33 @@ public final class AgentPool {
         return profiles.stream().filter(profile -> profile.role() == role).toList();
     }
 
+    public boolean hasProfile(String name) {
+        if (name == null || name.isBlank()) {
+            return false;
+        }
+        return profiles.stream().anyMatch(profile -> profile.name().equals(name));
+    }
+
+    /**
+     * 跨 role 按名字精确匹配（用于自定义 agent 或显式指定内置 agent 的委派）。
+     */
+    public AgentLease acquireByName(String name, AgentTaskRequirements requirements) {
+        AgentTaskRequirements req = requirements == null
+                ? new AgentTaskRequirements("", List.of(), "", "low")
+                : requirements;
+        AgentProfile profile = profiles.stream()
+                .filter(p -> p.name().equals(name))
+                .filter(p -> satisfies(p, req.requiredTools()))
+                .findFirst()
+                .orElse(null);
+        if (profile == null) {
+            throw new IllegalStateException(
+                    "No profile named " + name + " satisfies required tools: " + req.requiredTools());
+        }
+        acquireBlocking(profile);
+        return new AgentLease(profile, "preferredAgent matched", this);
+    }
+
     private boolean satisfies(AgentProfile profile, List<String> requiredTools) {
         if (requiredTools == null || requiredTools.isEmpty()) {
             return true;

@@ -88,7 +88,7 @@
 **目标**：多个Agent协作完成复杂任务
 
 **功能迭代**：
-- Agent角色定义（规划者、执行者、检查者）
+- Agent角色定义（探索者、执行者）
 - Agent间通信机制
 - 任务分配与协调
 - 冲突解决策略
@@ -491,7 +491,7 @@
 **功能迭代**：
 - 分层 prompt 文件（`src/main/resources/prompts/`）：
   - `base.md`：核心规则（工具使用、输出格式、子 Agent 协议、上下文管理）
-  - `modes/agent.md` / `modes/plan.md` / `modes/planner.md` / `modes/team-planner.md` / `modes/team-worker.md` / `modes/team-reviewer.md`：各模式的工作流预期和权限
+  - `modes/agent.md` / `modes/plan.md` / `modes/planner.md` / `modes/team-planner.md` / `modes/team-explorer.md` / `modes/team-worker.md`：各模式的工作流预期和权限
   - `approvals/suggest.md` / `approvals/auto.md` / `approvals/never.md`：审批策略
   - `personalities/calm.md`：语调（保留现有 `AGENTS.md` 中的 Personality 规范）
 - `PromptAssembler`：按固定顺序组装（base → personality → mode → approval → project_context → skills → context_mgmt → handoff），遵循"volatile content last"原则以最大化 KV prefix cache 命中率

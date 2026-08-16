@@ -3,6 +3,7 @@ package com.mindcli.runtime.run;
 import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.agent.profile.AgentToolPolicy;
 import com.mindcli.capability.tool.ToolRegistry;
+import com.mindcli.platform.hitl.ApprovalPolicy;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -104,8 +105,13 @@ public final class ToolDispatcher {
             prepared.add(new PreparedInvocation(i, effectiveInvocation, resourceKeys, metadata));
         }
 
-        for (List<PreparedInvocation> batch : batches(prepared)) {
-            executeBatch(batch, effectiveContext, outcomes);
+        ApprovalPolicy.applyApprovalPolicy(effectiveContext.metadata().getOrDefault("approvalPolicy", "on-request"));
+        try {
+            for (List<PreparedInvocation> batch : batches(prepared)) {
+                executeBatch(batch, effectiveContext, outcomes);
+            }
+        } finally {
+            ApprovalPolicy.clearApprovalPolicy();
         }
 
         return outcomes.stream()

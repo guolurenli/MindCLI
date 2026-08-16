@@ -13,7 +13,8 @@ public record PlanTaskSpec(
         List<String> expectedEvidence,
         List<String> requiredTools,
         String preferredAgent,
-        String riskLevel
+        String riskLevel,
+        List<String> writeScope
 ) {
     public PlanTaskSpec(String id,
                         String description,
@@ -24,7 +25,7 @@ public record PlanTaskSpec(
                         String degradation,
                         List<String> expectedEvidence) {
         this(id, description, type, dependencies, critical, maxRetries, degradation,
-                expectedEvidence, null, "", "");
+                expectedEvidence, null, "", "", null);
     }
 
     public PlanTaskSpec {
@@ -35,6 +36,7 @@ public record PlanTaskSpec(
                 : List.copyOf(requiredTools);
         preferredAgent = preferredAgent == null ? "" : preferredAgent.trim();
         riskLevel = riskLevel == null || riskLevel.isBlank() ? inferRiskLevel(type) : riskLevel.trim().toLowerCase();
+        writeScope = writeScope == null ? List.of() : List.copyOf(writeScope);
     }
 
     private static List<String> inferRequiredTools(Task.TaskType type) {

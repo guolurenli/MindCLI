@@ -1,5 +1,6 @@
 package com.mindcli.platform.hitl;
 
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -22,14 +23,50 @@ public class ApprovalPolicy {
             "revert_turn"
     );
 
+    private static final ThreadLocal<String> CURRENT_POLICY = new ThreadLocal<>();
+
     private ApprovalPolicy() {
     }
 
     /**
-     * 判断该工具调用是否需要人工确认
+     * 判断该工具调用是否需要人工确认。
+     *
+     * 优先使用当前线程上由 {@link #applyApprovalPolicy(String)} 绑定的 agent 策略；
+     * 未绑定时回退 on-request。这样 HITL 审批链路可以按每个子代理的 approval_policy
+     * 差异化生效，而无需把策略一路传进 ToolRegistry。
      */
     public static boolean requiresApproval(String toolName) {
-        return DANGEROUS_TOOLS.contains(toolName) || isMcpTool(toolName);
+        return requiresApproval(toolName, CURRENT_POLICY.get());
+    }
+
+    /**
+     * 在当前线程内绑定 agent 的 approval_policy（工具分发前调用，分发结束后 clearApprovalPolicy）。
+     */
+    public static void applyApprovalPolicy(String approvalPolicy) {
+        CURRENT_POLICY.set(approvalPolicy);
+    }
+
+    /**
+     * 清除当前线程绑定的 approval_policy。
+     */
+    public static void clearApprovalPolicy() {
+        CURRENT_POLICY.remove();
+    }
+
+    /**
+     * 判断该工具调用是否需要人工确认（按 agent 的 approval_policy 覆盖）
+     *
+     * - never      从不审批
+     * - untrusted  每步都审批（连只读都问）
+     * - on-request 默认：危险工具 / MCP 才审批
+     */
+    public static boolean requiresApproval(String toolName, String approvalPolicy) {
+        String policy = approvalPolicy == null ? "on-request" : approvalPolicy.trim().toLowerCase(Locale.ROOT);
+        return switch (policy) {
+            case "never" -> false;
+            case "untrusted" -> true;
+            default -> DANGEROUS_TOOLS.contains(toolName) || isMcpTool(toolName);
+        };
     }
 
     /**

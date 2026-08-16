@@ -3,11 +3,15 @@ package com.mindcli.app.cli;
 import com.mindcli.agent.Agent;
 import com.mindcli.agent.AgentOrchestrator;
 import com.mindcli.agent.PlanExecuteAgent;
+import com.mindcli.agent.SubAgent;
+import com.mindcli.agent.profile.AgentProfile;
+import com.mindcli.agent.profile.AgentProfileLoader;
 import com.mindcli.capability.browser.BrowserAuditMetadata;
 import com.mindcli.capability.browser.BrowserConnectivityCheck;
 import com.mindcli.capability.browser.BrowserGuard;
 import com.mindcli.capability.browser.BrowserSession;
 import com.mindcli.capability.browser.SensitivePagePolicy;
+import com.mindcli.app.cli.command.AgentCommandHandler;
 import com.mindcli.app.cli.command.BrowserCommandHandler;
 import com.mindcli.app.cli.command.ConfigCommandHandler;
 import com.mindcli.app.cli.command.ExportCommandHandler;
@@ -55,6 +59,7 @@ import com.mindcli.runtime.run.ModeAdapter;
 import com.mindcli.runtime.run.PlanModeAdapter;
 import com.mindcli.runtime.run.ReActModeAdapter;
 import com.mindcli.runtime.run.RunStore;
+import com.mindcli.runtime.run.SingleAgentAdapter;
 import com.mindcli.runtime.run.TeamModeAdapter;
 import com.mindcli.runtime.api.RuntimeApiServer;
 import com.mindcli.runtime.api.RuntimeThreadStore;
@@ -582,6 +587,51 @@ public class Main {
                         }
                         continue;
                     }
+                    case AGENT -> {
+                        String projectPath = reactAgent.getToolRegistry().getProjectPath();
+                        AgentCommandHandler.AgentCommandTarget target =
+                                AgentCommandHandler.parse(command.payload());
+                        if (target.create()) {
+                            ui.println(AgentCommandHandler.create(Path.of(projectPath), lineReader));
+                            continue;
+                        }
+                        List<AgentProfile> profiles = AgentProfileLoader.load(Path.of(projectPath));
+                        if (target.name() == null) {
+                            ui.println(AgentCommandHandler.list(profiles));
+                            continue;
+                        }
+                        if (target.task() == null) {
+                            ui.println(AgentCommandHandler.detail(profiles, target.name()));
+                            continue;
+                        }
+                        AgentProfile profile = AgentCommandHandler.find(profiles, target.name());
+                        if (profile == null) {
+                            ui.println("❌ 未找到子代理: " + target.name() + "（用 /agent 查看列表）\n");
+                            continue;
+                        }
+                        SnapshotService agentSnapshotService = reactAgent.getToolRegistry().getSnapshotService();
+                        RunStore agentRunStore = reactAgent.runStore();
+                        String agentTask = target.task();
+                        LlmClient activeClient = llmClient;
+                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "agent"));
+                        String agentResponse = runWithCancelSupport(terminal, ui, () -> {
+                            SubAgent subAgent = createSingleAgent(profile, activeClient, reactAgent,
+                                    mcpServerManager, skillRegistry);
+                            return runModeWithRuntime(
+                                    AgentMode.TEAM,
+                                    agentTask,
+                                    projectPath,
+                                    agentRunStore,
+                                    agentSnapshotService,
+                                    new SingleAgentAdapter(subAgent, ui));
+                        });
+                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
+                        if (agentResponse != null && !agentResponse.isBlank()) {
+                            ui.println(agentResponse);
+                            ui.println();
+                        }
+                        continue;
+                    }
                     case AUDIT_TAIL -> {
                         printAuditTail(ui, reactAgent, command.payload());
                         continue;
@@ -935,6 +985,16 @@ public class Main {
     private static AgentOrchestrator createTeamAgent(LlmClient llmClient, Agent reactAgent, PrintStream out) {
         out.println("👥 使用 Multi-Agent 协作模式\n");
         return new AgentOrchestrator(llmClient, reactAgent.getToolRegistry(), reactAgent.getMemoryManager(), out);
+    }
+
+    private static SubAgent createSingleAgent(AgentProfile profile, LlmClient llmClient, Agent reactAgent,
+                                              McpServerManager mcpServerManager,
+                                              SkillRegistry skillRegistry) {
+        SubAgent agent = new SubAgent(profile, llmClient, reactAgent.getToolRegistry());
+        agent.setMemoryManager(reactAgent.getMemoryManager());
+        agent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
+        agent.setSkillRegistry(skillRegistry);
+        return agent;
     }
 
     static String runModeWithRuntime(AgentMode mode, String input, String workspace,
