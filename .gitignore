@@ -3,6 +3,7 @@
 .mindcli/*
 !.mindcli/
 !.mindcli/PAI.md
+!.mindcli/config.toml
 PAI.local.md
 
 # 编译输出
@@ -26,6 +27,7 @@ docs/*
 !docs/mindcli-agent-orchestrator-parallel-test-stability.md
 !docs/mindcli-package-tree-enterprise-refactor.md
 !docs/mindcli-package-tree-large-module-migration.md
+!docs/mindcli-team-builtin-agents-codex-alignment-design.md
 
 # Claude Code
 .claude/
