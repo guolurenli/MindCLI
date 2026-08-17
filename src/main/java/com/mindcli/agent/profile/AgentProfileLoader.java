@@ -47,7 +47,8 @@ public final class AgentProfileLoader {
         return List.of(
                 AgentProfile.builtinExplorer("explorer#1"),
                 AgentProfile.builtinExplorer("explorer#2"),
-                AgentProfile.builtinWorker("worker#1"));
+                // worktree 隔离让写入步骤可安全并行，worker 默认允许 2 个并发副本
+                AgentProfile.builtinWorker("worker#1", 2));
     }
 
     private static Path resolveAgentsDir(Path projectRoot) {

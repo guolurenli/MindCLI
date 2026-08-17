@@ -2,6 +2,7 @@ package com.mindcli.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.eclipse.jgit.api.Git;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -410,6 +411,197 @@ class AgentOrchestratorTest {
             assertEquals(1, peakConcurrency.get(), "mutating steps should not overlap");
         } finally {
             releaseFirstWorker.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void disjointWriteScopesFallBackToSerialWhenNotGitRepo(@TempDir Path tempDir) throws Exception {
+        CountDownLatch firstWorkerStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirstWorker = new CountDownLatch(1);
+        CountDownLatch secondWorkerStarted = new CountDownLatch(1);
+        AtomicBoolean secondStartedBeforeRelease = new AtomicBoolean(false);
+        AtomicInteger peakConcurrency = new AtomicInteger();
+        AtomicInteger currentConcurrency = new AtomicInteger();
+
+        Function<String, LlmClient.ChatResponse> dispatcher = body -> {
+            if (body.contains("请为以下任务制定执行计划")) {
+                return response("""
+                        {
+                          "schemaVersion": 3,
+                          "summary": "两步写入",
+                          "tasks": [
+                            {"id": "a", "description": "更新 A 文件", "type": "FILE_WRITE", "dependencies": [], "writeScope": ["src/a/**"]},
+                            {"id": "b", "description": "更新 B 文件", "type": "FILE_WRITE", "dependencies": [], "writeScope": ["src/b/**"]}
+                          ]
+                        }
+                        """);
+            }
+            if (body.contains("原始任务：")) {
+                return response("{\"approved\": true, \"summary\": \"通过\", \"issues\": []}");
+            }
+            if (body.contains("当前任务：更新 A 文件")) {
+                return waitForReleaseThenReturn(firstWorkerStarted, releaseFirstWorker,
+                        currentConcurrency, peakConcurrency, response("A 已更新"));
+            }
+            if (body.contains("当前任务：更新 B 文件")) {
+                secondStartedBeforeRelease.set(releaseFirstWorker.getCount() > 0);
+                secondWorkerStarted.countDown();
+                return response("B 已更新");
+            }
+            return response("fallback");
+        };
+
+        ToolRegistry registry = new ToolRegistry();
+        registry.setProjectPath(tempDir.toString()); // 非 git 目录
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                new DispatchingStubGLMClient(dispatcher),
+                registry,
+                new NoOpMemoryManager(tempDir.toFile()),
+                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
+                new InMemoryRunStore()
+        );
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<String> runFuture = executor.submit(() -> orchestrator.run("测试非 git 目录回退串行"));
+
+            assertTrue(firstWorkerStarted.await(10, TimeUnit.SECONDS), "first worker should start");
+            assertFalse(secondWorkerStarted.await(300, TimeUnit.MILLISECONDS),
+                    "second worker should not start before first releases");
+            assertFalse(secondStartedBeforeRelease.get(), "second worker must not start concurrently");
+
+            releaseFirstWorker.countDown();
+
+            assertTrue(secondWorkerStarted.await(5, TimeUnit.SECONDS),
+                    "second worker should start after first finishes");
+            String finalResult = runFuture.get(10, TimeUnit.SECONDS);
+            assertTrue(finalResult.contains("多 Agent 协作任务完成"), finalResult);
+            assertEquals(1, peakConcurrency.get(), "非 git 目录下写入步骤应回退串行");
+        } finally {
+            releaseFirstWorker.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void disjointWriteScopesRunInParallelViaWorktreeIsolation(@TempDir Path tempDir) throws Exception {
+        Path project = tempDir.resolve("project");
+        initGitRepo(project);
+
+        CountDownLatch workersReady = new CountDownLatch(2);
+        CountDownLatch releaseWorkers = new CountDownLatch(1);
+        AtomicInteger peakConcurrency = new AtomicInteger();
+        AtomicInteger currentConcurrency = new AtomicInteger();
+
+        Function<String, LlmClient.ChatResponse> dispatcher = body -> {
+            if (body.contains("请为以下任务制定执行计划")) {
+                return response("""
+                        {
+                          "schemaVersion": 3,
+                          "summary": "两步写入",
+                          "tasks": [
+                            {"id": "a", "description": "更新 A 文件", "type": "FILE_WRITE", "dependencies": [], "writeScope": ["src/a/**"]},
+                            {"id": "b", "description": "更新 B 文件", "type": "FILE_WRITE", "dependencies": [], "writeScope": ["src/b/**"]}
+                          ]
+                        }
+                        """);
+            }
+            if (body.contains("原始任务：")) {
+                return response("{\"approved\": true, \"summary\": \"通过\", \"issues\": []}");
+            }
+            if (body.contains("当前任务：更新 A 文件") || body.contains("当前任务：更新 B 文件")) {
+                return waitForReleaseThenReturn(workersReady, releaseWorkers,
+                        currentConcurrency, peakConcurrency, response("done"));
+            }
+            return response("fallback");
+        };
+
+        ToolRegistry registry = new ToolRegistry();
+        registry.setProjectPath(project.toString());
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                new DispatchingStubGLMClient(dispatcher),
+                registry,
+                new NoOpMemoryManager(project.toFile()),
+                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
+                new InMemoryRunStore()
+        );
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<String> runFuture = executor.submit(() -> orchestrator.run("测试 worktree 并行写入"));
+
+            assertTrue(workersReady.await(10, TimeUnit.SECONDS),
+                    "both workers should reach chat() concurrently, current=" + currentConcurrency.get());
+            assertEquals(2, currentConcurrency.get(), "both workers should be waiting before release");
+            releaseWorkers.countDown();
+
+            String finalResult = runFuture.get(15, TimeUnit.SECONDS);
+            assertTrue(finalResult.contains("多 Agent 协作任务完成"), finalResult);
+            assertEquals(2, peakConcurrency.get(), "写 scope 不重叠的写入步骤应通过 worktree 隔离并行执行");
+        } finally {
+            releaseWorkers.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void mixedDeclaredAndUndeclaredWriteScopesSerializeWholeBatch(@TempDir Path tempDir) throws Exception {
+        Path project = tempDir.resolve("project");
+        initGitRepo(project);
+
+        CountDownLatch workersReady = new CountDownLatch(2);
+        CountDownLatch releaseWorkers = new CountDownLatch(1);
+        AtomicInteger peakConcurrency = new AtomicInteger();
+        AtomicInteger currentConcurrency = new AtomicInteger();
+
+        Function<String, LlmClient.ChatResponse> dispatcher = body -> {
+            if (body.contains("请为以下任务制定执行计划")) {
+                return response("""
+                        {
+                          "schemaVersion": 3,
+                          "summary": "混合 scope 写入",
+                          "tasks": [
+                            {"id": "a", "description": "更新 A 文件", "type": "FILE_WRITE", "dependencies": [], "writeScope": ["src/a/**"]},
+                            {"id": "b", "description": "更新 B 文件", "type": "FILE_WRITE", "dependencies": []}
+                          ]
+                        }
+                        """);
+            }
+            if (body.contains("原始任务：")) {
+                return response("{\"approved\": true, \"summary\": \"通过\", \"issues\": []}");
+            }
+            if (body.contains("当前任务：更新 A 文件") || body.contains("当前任务：更新 B 文件")) {
+                return waitForReleaseThenReturn(workersReady, releaseWorkers,
+                        currentConcurrency, peakConcurrency, response("done"));
+            }
+            return response("fallback");
+        };
+
+        ToolRegistry registry = new ToolRegistry();
+        registry.setProjectPath(project.toString());
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                new DispatchingStubGLMClient(dispatcher),
+                registry,
+                new NoOpMemoryManager(project.toFile()),
+                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
+                new InMemoryRunStore()
+        );
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<String> runFuture = executor.submit(() -> orchestrator.run("测试混合 scope 串行"));
+
+            // 存在未声明 scope 的步骤时整批串行：两个 worker 不应同时阻塞在 chat()
+            assertFalse(workersReady.await(1, TimeUnit.SECONDS),
+                    "混合 scope 时写入步骤应整批串行，不应有第二个 worker 并发进入 chat()");
+            releaseWorkers.countDown();
+
+            String finalResult = runFuture.get(15, TimeUnit.SECONDS);
+            assertTrue(finalResult.contains("多 Agent 协作任务完成"), finalResult);
+            assertEquals(1, peakConcurrency.get(), "混合 scope（一条声明一条未声明）应整批串行");
+        } finally {
+            releaseWorkers.countDown();
             executor.shutdownNow();
         }
     }
@@ -1119,6 +1311,19 @@ class AgentOrchestratorTest {
 
     private static LlmClient.ChatResponse response(String content) {
         return new LlmClient.ChatResponse("assistant", content, null, 100, 20);
+    }
+
+    /** 用 JGit 建仓并做初始提交，使 CLI git 的 worktree 能力可用。 */
+    private static void initGitRepo(Path root) throws Exception {
+        Files.createDirectories(root);
+        try (Git git = Git.init().setDirectory(root.toFile()).call()) {
+            git.getRepository().getConfig().setString("user", null, "name", "test");
+            git.getRepository().getConfig().setString("user", null, "email", "test@example.com");
+            git.getRepository().getConfig().save();
+            Files.writeString(root.resolve("README.md"), "init\n");
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("init").call();
+        }
     }
 
     private static final class NoOpMemoryManager extends MemoryManager {

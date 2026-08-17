@@ -45,9 +45,13 @@ public record AgentProfile(
     }
 
     public static AgentProfile builtinWorker(String name) {
+        return builtinWorker(name, 1);
+    }
+
+    public static AgentProfile builtinWorker(String name, int maxConcurrency) {
         return new AgentProfile(name, AgentRole.WORKER, AgentRole.WORKER.getDescription(),
                 List.of("*"), List.of(), List.of(),
-                "auto", 1, "LEGACY_COMPAT", "PARENT_SUMMARY", "balanced", "", "on-request");
+                "auto", maxConcurrency, "LEGACY_COMPAT", "PARENT_SUMMARY", "balanced", "", "on-request");
     }
 
     public static AgentProfile worker(String name, List<String> tools, int maxConcurrency) {

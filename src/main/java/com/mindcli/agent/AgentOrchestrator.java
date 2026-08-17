@@ -31,12 +31,14 @@ import com.mindcli.runtime.run.RunStore;
 import com.mindcli.runtime.run.RunStoreFactory;
 import com.mindcli.capability.skill.SkillRegistry;
 import com.mindcli.capability.tool.ToolRegistry;
+import com.mindcli.platform.worktree.GitWorktreeManager;
 import com.mindcli.platform.render.terminal.AnsiStyle;
 import com.mindcli.platform.render.terminal.TerminalMarkdownRenderer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
@@ -87,6 +89,7 @@ public class AgentOrchestrator {
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
     private Supplier<String> externalContextSupplier = () -> "";
     private SkillRegistry skillRegistry;
+    private GitWorktreeManager worktreeManager = new GitWorktreeManager();
 
     // 执行步骤的数据结构（package-private 供测试访问）
     record ExecutionStep(String id, String description, String type,
@@ -217,7 +220,11 @@ public class AgentOrchestrator {
     }
 
     private SubAgent createSubAgent(AgentProfile profile) {
-        SubAgent agent = new SubAgent(profile, llmClient, toolRegistry);
+        return createSubAgent(profile, toolRegistry);
+    }
+
+    private SubAgent createSubAgent(AgentProfile profile, ToolRegistry registry) {
+        SubAgent agent = new SubAgent(profile, llmClient, registry);
         agent.setMemoryManager(memoryManager);
         agent.setExternalContextSupplier(externalContextSupplier);
         if (skillRegistry != null) {
@@ -464,16 +471,10 @@ public class AgentOrchestrator {
 
             Map<String, String> mutatingSerialReasons = mutatingSerialReasons(groups);
             List<StepExecutionGroup> readOnlyBatch = new ArrayList<>();
+            List<StepExecutionGroup> mutatingGroups = new ArrayList<>();
             for (StepExecutionGroup group : groups) {
                 if (group.mutating()) {
-                    if (!readOnlyBatch.isEmpty()) {
-                        batchIndex++;
-                        runReadOnlyGroupBatch(runContext, readOnlyBatch, steps, retryCount, batchIndex);
-                        readOnlyBatch.clear();
-                    }
-                    batchIndex++;
-                    runMutatingGroup(runContext, group, steps, retryCount, batchIndex, out,
-                            mutatingSerialReasons.getOrDefault(group.leader().id(), ""));
+                    mutatingGroups.add(group);
                 } else {
                     readOnlyBatch.add(group);
                 }
@@ -481,6 +482,11 @@ public class AgentOrchestrator {
             if (!readOnlyBatch.isEmpty()) {
                 batchIndex++;
                 runReadOnlyGroupBatch(runContext, readOnlyBatch, steps, retryCount, batchIndex);
+            }
+            if (!mutatingGroups.isEmpty()) {
+                batchIndex++;
+                runMutatingGroups(runContext, mutatingGroups, steps, retryCount, batchIndex,
+                        mutatingSerialReasons);
             }
         }
 
@@ -601,6 +607,230 @@ public class AgentOrchestrator {
         String context = buildStepContext(steps, group.leader());
         runStep(runContext, group.leader(), steps, retryCount, context, out);
         propagateDuplicateResult(group, steps);
+    }
+
+    /**
+     * 调度一批可同时执行的写入型分组。
+     *
+     * 依据 writeScope 是否已声明且互不重叠，将分组拆成「必须串行」与「可 worktree 隔离并行」两类：
+     * 前者走原有 runMutatingGroup（共享主工作区，按序执行）；后者走 runMutatingBatchParallel，
+     * 每个写入 step 在独立 worktree 中写文件，完成后 merge 回主工作区。
+     */
+    private void runMutatingGroups(AgentRunContext runContext, List<StepExecutionGroup> groups,
+                                   List<ExecutionStep> steps, Map<String, Integer> retryCount,
+                                   int batchIndex, Map<String, String> mutatingSerialReasons) {
+        if (groups == null || groups.isEmpty()) {
+            return;
+        }
+        if (groups.size() == 1) {
+            StepExecutionGroup group = groups.get(0);
+            runMutatingGroup(runContext, group, steps, retryCount, batchIndex, out,
+                    mutatingSerialReasons.getOrDefault(group.leader().id(), ""));
+            return;
+        }
+
+        // 只要有一步需要串行（scope 未声明 / 重叠），整批串行：
+        // 串行 step 直接在主工作区产生未提交变更，若同 wave 混跑 worktree 并行，
+        // 后者的 merge 会撞上脏工作区或未声明 scope 的写入，导致 merge 失败/静默冲突。
+        boolean anySerial = groups.stream()
+                .anyMatch(group -> mutatingSerialReasons.containsKey(group.leader().id()));
+        if (anySerial) {
+            for (StepExecutionGroup group : groups) {
+                runMutatingGroup(runContext, group, steps, retryCount, batchIndex, out,
+                        mutatingSerialReasons.getOrDefault(group.leader().id(), ""));
+            }
+            return;
+        }
+        runMutatingBatchParallel(runContext, groups, steps, retryCount, batchIndex);
+    }
+
+    /**
+     * worktree 隔离并行执行一批写 scope 互不重叠的写入步骤。
+     *
+     * 流程：固化主工作区为 checkpoint commit -> 每步在独立 worktree 中创建 fork 注册表执行
+     * -> 成功后 merge 回主工作区；merge 冲突时标记步骤 FAILED 并上报冲突文件，不静默覆盖。
+     * 非 git 目录或 worktree 创建失败时回退到串行执行。
+     */
+    private void runMutatingBatchParallel(AgentRunContext runContext, List<StepExecutionGroup> groups,
+                                          List<ExecutionStep> steps, Map<String, Integer> retryCount,
+                                          int batchIndex) {
+        Path projectRoot = Path.of(toolRegistry.getProjectPath()).toAbsolutePath().normalize();
+        if (!worktreeManager.isGitRepository(projectRoot) || !worktreeManager.isGitAvailable()) {
+            for (StepExecutionGroup group : groups) {
+                runMutatingGroup(runContext, group, steps, retryCount, batchIndex, out,
+                        "git 仓库不可用，写入步骤回退串行执行");
+            }
+            return;
+        }
+
+        try {
+            boolean committed = worktreeManager.commitCheckpoint(projectRoot, null);
+            if (committed) {
+                out.println("ℹ️ 已将主工作区未提交变更固化为 checkpoint 提交，作为 worktree 并行基线。\n");
+            }
+        } catch (IOException e) {
+            log.warn("worktree checkpoint 失败，回退串行: {}", e.getMessage());
+            for (StepExecutionGroup group : groups) {
+                runMutatingGroup(runContext, group, steps, retryCount, batchIndex, out,
+                        "无法创建 worktree 基线，写入步骤回退串行执行");
+            }
+            return;
+        }
+
+        List<ExecutionStep> leaders = groups.stream().map(StepExecutionGroup::leader).toList();
+
+        // 预创建全部 worktree：任一步失败则整批回退串行，避免「单步回退主工作区写入」与并行 merge 竞争。
+        Map<String, GitWorktreeManager.WorktreeHandle> handles = new LinkedHashMap<>();
+        for (ExecutionStep step : leaders) {
+            try {
+                handles.put(step.id(), worktreeManager.create(projectRoot,
+                        worktreePathFor(projectRoot, runContext, step), branchNameFor(step, runContext)));
+            } catch (IOException e) {
+                log.warn("worktree create failed for step {}: {}", step.id(), e.getMessage());
+                for (GitWorktreeManager.WorktreeHandle created : handles.values()) {
+                    worktreeManager.dispose(projectRoot, created);
+                }
+                for (StepExecutionGroup group : groups) {
+                    runMutatingGroup(runContext, group, steps, retryCount, batchIndex, out,
+                            "worktree 创建失败，写入步骤回退串行执行");
+                }
+                return;
+            }
+        }
+
+        out.println("🌿 批次 #" + batchIndex + "：" + leaders.size()
+                + " 个写入步骤并行执行（worktree 隔离，最多 " + batchParallelism(leaders)
+                + " 个并发 " + batchRoleLabel(leaders) + "）\n");
+
+        int parallelism = Math.min(leaders.size(), batchParallelism(leaders));
+        ExecutorService executor = Executors.newFixedThreadPool(parallelism, r -> {
+            Thread t = new Thread(r, "mindcli-multi-agent-worktree");
+            t.setDaemon(true);
+            return t;
+        });
+        Map<String, ByteArrayOutputStream> buffers = new ConcurrentHashMap<>();
+        List<Future<?>> futures = new ArrayList<>();
+
+        for (ExecutionStep step : leaders) {
+            GitWorktreeManager.WorktreeHandle handle = handles.get(step.id());
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            buffers.put(step.id(), baos);
+            PrintStream stepOut = new PrintStream(baos, true, StandardCharsets.UTF_8);
+            String context = buildStepContext(steps, step);
+            futures.add(executor.submit(() -> {
+                try {
+                    runStepInWorktree(runContext, step, steps, retryCount, context, stepOut, projectRoot, handle);
+                } catch (RuntimeException e) {
+                    log.error("Worktree step {} failed unexpectedly", step.id(), e);
+                    updateStep(steps, step.id(), step.withFailed("worktree 并行执行异常: " + e.getMessage()));
+                    stepOut.println("❌ 步骤 [" + step.id() + "] worktree 并行执行异常：" + e.getMessage() + "\n");
+                } finally {
+                    stepOut.flush();
+                }
+                return null;
+            }));
+        }
+
+        for (Future<?> f : futures) {
+            try {
+                f.get();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("Batch wait interrupted");
+            } catch (ExecutionException e) {
+                log.error("Worktree parallel step task failed", e.getCause());
+            }
+        }
+        executor.shutdownNow();
+
+        for (ExecutionStep step : leaders) {
+            ByteArrayOutputStream buf = buffers.get(step.id());
+            if (buf != null && buf.size() > 0) {
+                out.print(buf.toString(StandardCharsets.UTF_8));
+                out.flush();
+            }
+        }
+
+        for (StepExecutionGroup group : groups) {
+            propagateDuplicateResult(group, steps);
+        }
+    }
+
+    /**
+     * 在已创建的独立 worktree 中执行单个写入步骤，成功后 merge 回主工作区；失败则丢弃 worktree 变更。
+     */
+    private void runStepInWorktree(AgentRunContext runContext, ExecutionStep step, List<ExecutionStep> steps,
+                                   Map<String, Integer> retryCount, String context, PrintStream out,
+                                   Path projectRoot, GitWorktreeManager.WorktreeHandle handle) {
+        AgentTaskRequirements workerRequirements = requirementsFor(step);
+        List<String> forbiddenWriteScope = forbiddenWriteScopes(steps, step);
+
+        boolean succeeded = false;
+        try {
+            ToolRegistry fork = toolRegistry.forkForProject(handle.path());
+            try (AgentPool.AgentLease workerLease = acquireForStep(step, workerRequirements)) {
+                SubAgent worker = createSubAgent(workerLease.profile(), fork);
+                appendAgentSelected(runContext, childRoleName(worker.getRole()), step, workerLease.profile(),
+                        workerRequirements, workerLease.selectionReason(), forbiddenWriteScope);
+                runStepWithWorker(runContext, step, steps, retryCount, worker, context, out,
+                        workerRequirements, workerLease.selectionReason(), forbiddenWriteScope);
+            } catch (IllegalStateException e) {
+                updateStep(steps, step.id(), step.withFailed("Agent profile 选择失败: " + e.getMessage()));
+                out.println("❌ 步骤 [" + step.id() + "] Agent profile 选择失败：" + e.getMessage() + "\n");
+            }
+            ExecutionStep current = stepById(steps, step.id());
+            succeeded = current != null && current.status() == StepStatus.COMPLETED;
+        } finally {
+            if (succeeded) {
+                mergeWorktreeAndDispose(projectRoot, handle, step, steps, out);
+            } else {
+                worktreeManager.dispose(projectRoot, handle);
+            }
+        }
+    }
+
+    private void mergeWorktreeAndDispose(Path projectRoot, GitWorktreeManager.WorktreeHandle handle,
+                                         ExecutionStep step, List<ExecutionStep> steps, PrintStream out) {
+        try {
+            GitWorktreeManager.WorktreeMergeResult mergeResult =
+                    worktreeManager.mergeAndDispose(projectRoot, handle, "mindcli: worktree " + step.id());
+            if (mergeResult.status() == GitWorktreeManager.WorktreeMergeResult.Status.CONFLICTING) {
+                String files = String.join(", ", mergeResult.conflictingFiles());
+                out.println("⚠️ 步骤 [" + step.id() + "] worktree merge 冲突，需人工处理：" + files + "\n");
+                updateStep(steps, step.id(), step.withFailed("worktree merge 冲突: " + files));
+            }
+        } catch (IOException e) {
+            log.warn("worktree merge failed for step {}: {}", step.id(), e.getMessage());
+            out.println("⚠️ 步骤 [" + step.id() + "] worktree 合并失败：" + e.getMessage() + "\n");
+            worktreeManager.dispose(projectRoot, handle);
+        }
+    }
+
+    private static Path worktreePathFor(Path projectRoot, AgentRunContext runContext, ExecutionStep step) {
+        Path parent = projectRoot.getParent();
+        Path base = parent != null ? parent : projectRoot;
+        return base.resolve(".mindcli-worktrees")
+                .resolve(sanitizeDirName(runToken(runContext)))
+                .resolve(step.id());
+    }
+
+    private static String branchNameFor(ExecutionStep step, AgentRunContext runContext) {
+        return "mindcli-" + sanitizeDirName(step.id()) + "-" + sanitizeDirName(runToken(runContext));
+    }
+
+    private static String runToken(AgentRunContext runContext) {
+        String token = runContext == null ? null : runContext.runId();
+        return (token == null || token.isBlank()) ? "run-" + System.currentTimeMillis() : token;
+    }
+
+    private static String sanitizeDirName(String value) {
+        if (value == null || value.isBlank()) {
+            return "run";
+        }
+        String sanitized = value.replaceAll("[^a-zA-Z0-9._-]", "_")
+                .replaceAll("^\\.+", "")
+                .replaceAll("\\.+$", "");
+        return sanitized.isBlank() ? "run" : sanitized;
     }
 
     private Map<String, String> mutatingSerialReasons(List<StepExecutionGroup> groups) {
@@ -933,6 +1163,11 @@ public class AgentOrchestrator {
         return toolRegistry;
     }
 
+    /** 注入 worktree 管理器（默认惰性创建，测试可替换为 stub）。 */
+    void setWorktreeManager(GitWorktreeManager worktreeManager) {
+        this.worktreeManager = worktreeManager == null ? new GitWorktreeManager() : worktreeManager;
+    }
+
     private synchronized void updateStep(List<ExecutionStep> steps, String stepId, ExecutionStep updated) {
         for (int i = 0; i < steps.size(); i++) {
             if (steps.get(i).id().equals(stepId)) {
@@ -1214,10 +1449,16 @@ public class AgentOrchestrator {
     private void runStep(AgentRunContext runContext, ExecutionStep step, List<ExecutionStep> steps,
                          Map<String, Integer> retryCount,
                          String context, PrintStream out) {
+        runStepOnRegistry(runContext, step, steps, retryCount, context, out, toolRegistry);
+    }
+
+    private void runStepOnRegistry(AgentRunContext runContext, ExecutionStep step, List<ExecutionStep> steps,
+                                   Map<String, Integer> retryCount, String context, PrintStream out,
+                                   ToolRegistry registry) {
         AgentTaskRequirements workerRequirements = requirementsFor(step);
         List<String> forbiddenWriteScope = forbiddenWriteScopes(steps, step);
         try (AgentPool.AgentLease workerLease = acquireForStep(step, workerRequirements)) {
-            SubAgent worker = createSubAgent(workerLease.profile());
+            SubAgent worker = createSubAgent(workerLease.profile(), registry);
             appendAgentSelected(runContext, childRoleName(worker.getRole()), step, workerLease.profile(),
                     workerRequirements, workerLease.selectionReason(), forbiddenWriteScope);
             runStepWithWorker(runContext, step, steps, retryCount, worker, context, out,

@@ -85,4 +85,10 @@ public class HitlToolRegistry extends ToolRegistry {
     public HitlHandler getHitlHandler() {
         return hitlHandler;
     }
+
+    /** worktree 隔离 fork 时保留 HITL 审批，避免危险工具绕过人工确认。 */
+    @Override
+    protected ToolRegistry newInstance() {
+        return new HitlToolRegistry(hitlHandler);
+    }
 }

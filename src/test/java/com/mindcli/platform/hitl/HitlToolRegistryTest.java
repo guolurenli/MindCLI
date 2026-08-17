@@ -8,6 +8,7 @@ import com.mindcli.capability.browser.BrowserGuard;
 import com.mindcli.capability.browser.BrowserSession;
 import com.mindcli.capability.browser.SensitivePagePolicy;
 import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
+import com.mindcli.capability.tool.ToolRegistry;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -39,6 +40,17 @@ class HitlToolRegistryTest {
         TerminalHitlHandler handler = new TerminalHitlHandler(false);
         HitlToolRegistry registry = new HitlToolRegistry(handler);
         assertSame(handler, registry.getHitlHandler());
+    }
+
+    @Test
+    void forkForProject_preservesHitlHandler() {
+        TerminalHitlHandler handler = new TerminalHitlHandler(false);
+        HitlToolRegistry registry = new HitlToolRegistry(handler);
+
+        ToolRegistry fork = registry.forkForProject(Path.of("."));
+
+        assertInstanceOf(HitlToolRegistry.class, fork, "worktree fork 应保留 HITL 审批能力");
+        assertSame(handler, ((HitlToolRegistry) fork).getHitlHandler());
     }
 
     @Test
