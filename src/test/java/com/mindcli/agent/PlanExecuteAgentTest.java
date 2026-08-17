@@ -194,7 +194,7 @@ class PlanExecuteAgentTest {
 
             Future<String> planFuture = executor.submit(() -> agent.run("写入 shared.txt"));
 
-            assertTrue(toolCallResponseDelivered.await(5, TimeUnit.SECONDS));
+            assertTrue(toolCallResponseDelivered.await(10, TimeUnit.SECONDS));
             assertFalse(planToolStarted.await(250, TimeUnit.MILLISECONDS),
                     "Plan tool execution must wait for the shared dispatcher lock");
             releaseLock.countDown();

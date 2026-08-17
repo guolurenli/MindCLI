@@ -62,7 +62,7 @@ class AgentOrchestratorTest {
                 }
                 """;
 
-        List<AgentOrchestrator.ExecutionStep> steps = orchestrator.parsePlan(planJson);
+        List<ExecutionStep> steps = orchestrator.parsePlan(planJson);
         assertEquals(1, steps.size());
         assertEquals("step_1", steps.get(0).id());
         assertEquals("读取 pom.xml", steps.get(0).description());
@@ -97,7 +97,7 @@ class AgentOrchestratorTest {
                 }
                 """;
 
-        List<AgentOrchestrator.ExecutionStep> steps = orchestrator.parsePlan(planJson);
+        List<ExecutionStep> steps = orchestrator.parsePlan(planJson);
         assertEquals(3, steps.size());
 
         // 验证重编号
@@ -130,10 +130,46 @@ class AgentOrchestratorTest {
                 }
                 """;
 
-        List<AgentOrchestrator.ExecutionStep> steps = orchestrator.parsePlan(planJson);
+        List<ExecutionStep> steps = orchestrator.parsePlan(planJson);
 
         assertEquals(1, steps.size());
         assertEquals(List.of("src/main/java/auth/login/**"), steps.get(0).writeScope());
+    }
+
+    @Test
+    void teamWriteScopeDoesNotLeakToSharedRegistryAfterRun(@TempDir Path tempDir) {
+        StubGLMClient llmClient = new StubGLMClient(List.of(
+                response("""
+                        {
+                          "summary": "单步写入",
+                          "steps": [
+                            {
+                              "id": "s1",
+                              "description": "写入限定范围",
+                              "type": "FILE_WRITE",
+                              "dependencies": [],
+                              "writeScope": ["src/main/**"]
+                            }
+                          ]
+                        }
+                        """),
+                response("写入完成"),
+                response("{\"approved\": true, \"summary\": \"通过\", \"issues\": []}")
+        ));
+        ToolRegistry registry = new ToolRegistry();
+        registry.setProjectPath(tempDir.toString());
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                llmClient,
+                registry,
+                new NoOpMemoryManager(tempDir.toFile()));
+
+        orchestrator.run("测试 scope 恢复");
+        String result = registry.executeTool("write_file",
+                "{\"path\":\"outside-team.txt\",\"content\":\"ok\"}");
+
+        assertTrue(result.contains("文件已写入"),
+                "team 结束后共享 ToolRegistry 不应残留旧 writeScope: " + result);
+        assertTrue(Files.exists(tempDir.resolve("outside-team.txt")));
     }
 
     @Test
@@ -155,7 +191,7 @@ class AgentOrchestratorTest {
                 ```
                 """;
 
-        List<AgentOrchestrator.ExecutionStep> steps = orchestrator.parsePlan(planJson);
+        List<ExecutionStep> steps = orchestrator.parsePlan(planJson);
         assertEquals(1, steps.size());
     }
 
@@ -177,7 +213,7 @@ class AgentOrchestratorTest {
                 }
                 """;
 
-        List<AgentOrchestrator.ExecutionStep> steps = orchestrator.parsePlan(planJson);
+        List<ExecutionStep> steps = orchestrator.parsePlan(planJson);
         assertEquals(1, steps.size());
         assertEquals("第一步", steps.get(0).description());
     }
@@ -203,7 +239,7 @@ class AgentOrchestratorTest {
                 }
                 """;
 
-        List<AgentOrchestrator.ExecutionStep> steps = orchestrator.parsePlan(planJson);
+        List<ExecutionStep> steps = orchestrator.parsePlan(planJson);
 
         assertEquals(List.of("read_file", "write_file"), steps.get(0).requiredTools());
         assertEquals("code-writer", steps.get(0).preferredAgent());
@@ -242,38 +278,45 @@ class AgentOrchestratorTest {
 
     @Test
     void shouldGetExecutableSteps() {
-        AgentOrchestrator orchestrator = new AgentOrchestrator(new GLMClient("test-key"));
+        TeamScheduler scheduler = new TeamScheduler();
 
         // step_1 无依赖，step_2 依赖 step_1
-        List<AgentOrchestrator.ExecutionStep> steps = new ArrayList<>(List.of(
-                AgentOrchestrator.ExecutionStep.pending("step_1", "创建项目", "COMMAND", List.of()),
-                AgentOrchestrator.ExecutionStep.pending("step_2", "验证结构", "VERIFICATION", List.of("step_1"))
+        List<ExecutionStep> steps = new ArrayList<>(List.of(
+                ExecutionStep.pending("step_1", "创建项目", "COMMAND", List.of()),
+                ExecutionStep.pending("step_2", "验证结构", "VERIFICATION", List.of("step_1"))
         ));
 
         // 只有 step_1 可执行
-        List<AgentOrchestrator.ExecutionStep> executable = orchestrator.getExecutableSteps(steps);
+        List<ExecutionStep> executable = leadersOf(scheduler.nextWave(steps));
         assertEquals(1, executable.size());
         assertEquals("step_1", executable.get(0).id());
 
         // 完成 step_1 后 step_2 可执行
         steps.set(0, steps.get(0).withResult("项目已创建"));
-        executable = orchestrator.getExecutableSteps(steps);
+        executable = leadersOf(scheduler.nextWave(steps));
         assertEquals(1, executable.size());
         assertEquals("step_2", executable.get(0).id());
     }
 
     @Test
     void shouldGetMultipleExecutableStepsForParallelTasks() {
-        AgentOrchestrator orchestrator = new AgentOrchestrator(new GLMClient("test-key"));
+        TeamScheduler scheduler = new TeamScheduler();
 
-        List<AgentOrchestrator.ExecutionStep> steps = List.of(
-                AgentOrchestrator.ExecutionStep.pending("step_1", "任务A", "COMMAND", List.of()),
-                AgentOrchestrator.ExecutionStep.pending("step_2", "任务B", "COMMAND", List.of()),
-                AgentOrchestrator.ExecutionStep.pending("step_3", "汇总", "ANALYSIS", List.of("step_1", "step_2"))
+        List<ExecutionStep> steps = List.of(
+                ExecutionStep.pending("step_1", "任务A", "COMMAND", List.of()),
+                ExecutionStep.pending("step_2", "任务B", "COMMAND", List.of()),
+                ExecutionStep.pending("step_3", "汇总", "ANALYSIS", List.of("step_1", "step_2"))
         );
 
-        List<AgentOrchestrator.ExecutionStep> executable = orchestrator.getExecutableSteps(steps);
+        List<ExecutionStep> executable = leadersOf(scheduler.nextWave(steps));
         assertEquals(2, executable.size());
+    }
+
+    private static List<ExecutionStep> leadersOf(ScheduleWave wave) {
+        List<ExecutionStep> leaders = new ArrayList<>();
+        wave.readOnly().forEach(group -> leaders.add(group.leader()));
+        wave.mutating().forEach(group -> leaders.add(group.leader()));
+        return leaders;
     }
 
     @Test

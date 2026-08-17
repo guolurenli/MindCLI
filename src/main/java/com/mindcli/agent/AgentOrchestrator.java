@@ -31,6 +31,7 @@ import com.mindcli.runtime.run.RunStore;
 import com.mindcli.runtime.run.RunStoreFactory;
 import com.mindcli.capability.skill.SkillRegistry;
 import com.mindcli.capability.tool.ToolRegistry;
+import com.mindcli.platform.security.WriteScopeRules;
 import com.mindcli.platform.worktree.GitWorktreeManager;
 import com.mindcli.platform.render.terminal.AnsiStyle;
 import com.mindcli.platform.render.terminal.TerminalMarkdownRenderer;
@@ -90,73 +91,9 @@ public class AgentOrchestrator {
     private Supplier<String> externalContextSupplier = () -> "";
     private SkillRegistry skillRegistry;
     private GitWorktreeManager worktreeManager = new GitWorktreeManager();
-
-    // 执行步骤的数据结构（package-private 供测试访问）
-    record ExecutionStep(String id, String description, String type,
-                                  List<String> dependencies, List<String> requiredTools,
-                                  String preferredAgent, String riskLevel,
-                                  List<String> writeScope,
-                                  String result, StepStatus status) {
-        static ExecutionStep pending(String id, String description, String type, List<String> dependencies) {
-            return pending(id, description, type, dependencies, List.of(), "", "", List.of());
-        }
-
-        static ExecutionStep pending(String id, String description, String type, List<String> dependencies,
-                                     List<String> requiredTools, String preferredAgent, String riskLevel) {
-            return pending(id, description, type, dependencies, requiredTools, preferredAgent, riskLevel, List.of());
-        }
-
-        static ExecutionStep pending(String id, String description, String type, List<String> dependencies,
-                                     List<String> requiredTools, String preferredAgent, String riskLevel,
-                                     List<String> writeScope) {
-            return new ExecutionStep(id, description, type, dependencies,
-                    requiredTools == null ? List.of() : List.copyOf(requiredTools),
-                    preferredAgent == null ? "" : preferredAgent,
-                    riskLevel == null || riskLevel.isBlank() ? "low" : riskLevel,
-                    writeScope == null ? List.of() : List.copyOf(writeScope),
-                    null, StepStatus.PENDING);
-        }
-
-        ExecutionStep withResult(String result) {
-            return new ExecutionStep(id, description, type, dependencies, requiredTools,
-                    preferredAgent, riskLevel, writeScope, result, StepStatus.COMPLETED);
-        }
-
-        ExecutionStep withFailed(String result) {
-            return new ExecutionStep(id, description, type, dependencies, requiredTools,
-                    preferredAgent, riskLevel, writeScope, result, StepStatus.FAILED);
-        }
-
-        ExecutionStep withSkipped(String reason) {
-            return new ExecutionStep(id, description, type, dependencies,
-                    requiredTools, preferredAgent, riskLevel, writeScope,
-                    reason != null ? reason : "步骤被跳过", StepStatus.SKIPPED);
-        }
-
-        ExecutionStep started() {
-            return new ExecutionStep(id, description, type, dependencies, requiredTools,
-                    preferredAgent, riskLevel, writeScope, result, StepStatus.RUNNING);
-        }
-    }
+    private final TeamScheduler teamScheduler = new TeamScheduler();
 
     private record ReviewChildResult(AgentRunContext context, AgentMessage message) {
-    }
-
-    enum StepStatus {
-        PENDING, RUNNING, COMPLETED, FAILED, SKIPPED
-    }
-
-    private record StepExecutionGroup(
-            String fingerprint,
-            ExecutionStep leader,
-            List<ExecutionStep> duplicates,
-            boolean mutating
-    ) {
-        private StepExecutionGroup {
-            fingerprint = fingerprint == null ? "" : fingerprint;
-            leader = Objects.requireNonNull(leader, "leader");
-            duplicates = duplicates == null ? List.of() : List.copyOf(duplicates);
-        }
     }
 
     public AgentOrchestrator(LlmClient llmClient) {
@@ -289,7 +226,7 @@ public class AgentOrchestrator {
     }
 
     private AgentRole executionRoleFor(ExecutionStep step) {
-        if (isMutatingStep(step)) {
+        if (TeamStepClassifier.isMutating(step)) {
             return AgentRole.WORKER;
         }
         AgentRole readOnlyRole = readOnlyExecutionRole();
@@ -460,33 +397,18 @@ public class AgentOrchestrator {
                 appendTerminalEvent(runContext, cancelled);
                 return cancelled;
             }
-            List<ExecutionStep> executable = getExecutableSteps(steps);
-            if (executable.isEmpty()) {
+            ScheduleWave wave = teamScheduler.nextWave(steps);
+            if (!wave.hasWork()) {
                 break;
             }
-            List<StepExecutionGroup> groups = collapseExecutableGroups(executable);
-            if (groups.isEmpty()) {
-                continue;
-            }
-
-            Map<String, String> mutatingSerialReasons = mutatingSerialReasons(groups);
-            List<StepExecutionGroup> readOnlyBatch = new ArrayList<>();
-            List<StepExecutionGroup> mutatingGroups = new ArrayList<>();
-            for (StepExecutionGroup group : groups) {
-                if (group.mutating()) {
-                    mutatingGroups.add(group);
-                } else {
-                    readOnlyBatch.add(group);
-                }
-            }
-            if (!readOnlyBatch.isEmpty()) {
+            if (!wave.readOnly().isEmpty()) {
                 batchIndex++;
-                runReadOnlyGroupBatch(runContext, readOnlyBatch, steps, retryCount, batchIndex);
+                runReadOnlyGroupBatch(runContext, wave.readOnly(), steps, retryCount, batchIndex);
             }
-            if (!mutatingGroups.isEmpty()) {
+            if (!wave.mutating().isEmpty()) {
                 batchIndex++;
-                runMutatingGroups(runContext, mutatingGroups, steps, retryCount, batchIndex,
-                        mutatingSerialReasons);
+                runMutatingGroups(runContext, wave.mutating(), steps, retryCount, batchIndex,
+                        wave.serialReasons());
             }
         }
 
@@ -533,40 +455,6 @@ public class AgentOrchestrator {
         return String.join(", ", dependencies.stream()
                 .map(dep -> dep + "=" + getStepStatus(dep, steps))
                 .toList());
-    }
-
-    private List<StepExecutionGroup> collapseExecutableGroups(List<ExecutionStep> executable) {
-        if (executable == null || executable.isEmpty()) {
-            return List.of();
-        }
-        Map<String, List<ExecutionStep>> groups = new LinkedHashMap<>();
-        Map<String, Boolean> mutatingByFingerprint = new LinkedHashMap<>();
-        for (ExecutionStep step : executable) {
-            if (step == null) {
-                continue;
-            }
-            String fingerprint = stepFingerprint(step);
-            groups.computeIfAbsent(fingerprint, ignored -> new ArrayList<>()).add(step);
-            mutatingByFingerprint.putIfAbsent(fingerprint, isMutatingStep(step));
-        }
-
-        List<StepExecutionGroup> collapsed = new ArrayList<>();
-        for (Map.Entry<String, List<ExecutionStep>> entry : groups.entrySet()) {
-            List<ExecutionStep> groupSteps = entry.getValue();
-            if (groupSteps.isEmpty()) {
-                continue;
-            }
-            ExecutionStep leader = groupSteps.get(0);
-            List<ExecutionStep> duplicates = groupSteps.size() <= 1
-                    ? List.of()
-                    : new ArrayList<>(groupSteps.subList(1, groupSteps.size()));
-            collapsed.add(new StepExecutionGroup(
-                    entry.getKey(),
-                    leader,
-                    duplicates,
-                    mutatingByFingerprint.getOrDefault(entry.getKey(), false)));
-        }
-        return List.copyOf(collapsed);
     }
 
     private void runReadOnlyGroupBatch(AgentRunContext runContext, List<StepExecutionGroup> groups,
@@ -768,6 +656,7 @@ public class AgentOrchestrator {
         boolean succeeded = false;
         try {
             ToolRegistry fork = toolRegistry.forkForProject(handle.path());
+            fork.setWriteScope(writeScopeFor(step));
             try (AgentPool.AgentLease workerLease = acquireForStep(step, workerRequirements)) {
                 SubAgent worker = createSubAgent(workerLease.profile(), fork);
                 appendAgentSelected(runContext, childRoleName(worker.getRole()), step, workerLease.profile(),
@@ -801,7 +690,8 @@ public class AgentOrchestrator {
             }
         } catch (IOException e) {
             log.warn("worktree merge failed for step {}: {}", step.id(), e.getMessage());
-            out.println("⚠️ 步骤 [" + step.id() + "] worktree 合并失败：" + e.getMessage() + "\n");
+            out.println("❌ 步骤 [" + step.id() + "] worktree 合并失败：" + e.getMessage() + "\n");
+            updateStep(steps, step.id(), step.withFailed("worktree merge 失败: " + e.getMessage()));
             worktreeManager.dispose(projectRoot, handle);
         }
     }
@@ -831,81 +721,6 @@ public class AgentOrchestrator {
                 .replaceAll("^\\.+", "")
                 .replaceAll("\\.+$", "");
         return sanitized.isBlank() ? "run" : sanitized;
-    }
-
-    private Map<String, String> mutatingSerialReasons(List<StepExecutionGroup> groups) {
-        if (groups == null || groups.isEmpty()) {
-            return Map.of();
-        }
-        List<StepExecutionGroup> mutatingGroups = groups.stream()
-                .filter(StepExecutionGroup::mutating)
-                .toList();
-        if (mutatingGroups.isEmpty()) {
-            return Map.of();
-        }
-        Map<String, String> reasons = new LinkedHashMap<>();
-        for (StepExecutionGroup group : mutatingGroups) {
-            List<String> scope = normalizeScopes(group.leader().writeScope());
-            if (scope.isEmpty()) {
-                reasons.put(group.leader().id(), "写入范围未声明，按顺序执行以避免并发冲突");
-                continue;
-            }
-            for (StepExecutionGroup other : mutatingGroups) {
-                if (group == other) {
-                    continue;
-                }
-                List<String> otherScope = normalizeScopes(other.leader().writeScope());
-                if (otherScope.isEmpty()) {
-                    continue;
-                }
-                if (writeScopesOverlap(scope, otherScope)) {
-                    reasons.put(group.leader().id(), "写入范围重叠，按顺序执行："
-                            + formatScopes(scope) + " 与 " + other.leader().id()
-                            + " 的 " + formatScopes(otherScope));
-                    break;
-                }
-            }
-        }
-        return reasons;
-    }
-
-    private static boolean writeScopesOverlap(List<String> left, List<String> right) {
-        for (String a : normalizeScopes(left)) {
-            for (String b : normalizeScopes(right)) {
-                if (normalizedScopeOverlaps(a, b)) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    private static boolean normalizedScopeOverlaps(String left, String right) {
-        String a = normalizeScopePrefix(left);
-        String b = normalizeScopePrefix(right);
-        if (a.isBlank() || b.isBlank()) {
-            return false;
-        }
-        return a.equals(b)
-                || b.startsWith(a + "/")
-                || a.startsWith(b + "/");
-    }
-
-    private static String normalizeScopePrefix(String value) {
-        if (value == null) {
-            return "";
-        }
-        String normalized = value.trim()
-                .replace('\\', '/')
-                .replaceAll("/+", "/")
-                .toLowerCase(Locale.ROOT);
-        while (normalized.endsWith("/**") || normalized.endsWith("/*")) {
-            normalized = normalized.substring(0, normalized.lastIndexOf('/'));
-        }
-        while (normalized.endsWith("/")) {
-            normalized = normalized.substring(0, normalized.length() - 1);
-        }
-        return normalized;
     }
 
     private void propagateDuplicateResult(StepExecutionGroup group, List<ExecutionStep> steps) {
@@ -940,57 +755,6 @@ public class AgentOrchestrator {
             }
         }
         return null;
-    }
-
-    private String stepFingerprint(ExecutionStep step) {
-        if (step == null) {
-            return "";
-        }
-        return String.join("|",
-                normalizeFingerprintPart(step.type()),
-                normalizeFingerprintPart(step.description()),
-                joinSorted(step.requiredTools()),
-                joinSorted(step.writeScope()),
-                normalizeFingerprintPart(step.preferredAgent()),
-                normalizeFingerprintPart(step.riskLevel()),
-                joinSorted(step.dependencies()));
-    }
-
-    private boolean isMutatingStep(ExecutionStep step) {
-        if (step == null) {
-            return false;
-        }
-        List<String> requiredTools = step.requiredTools() == null ? List.of() : step.requiredTools();
-        if (requiredTools.stream().anyMatch(tool -> "write_file".equalsIgnoreCase(tool)
-                || "create_project".equalsIgnoreCase(tool))) {
-            return true;
-        }
-        boolean usesCommand = requiredTools.stream().anyMatch(tool -> "execute_command".equalsIgnoreCase(tool));
-        if (usesCommand) {
-            String riskLevel = step.riskLevel() == null ? "" : step.riskLevel().trim().toLowerCase(Locale.ROOT);
-            return !"low".equals(riskLevel);
-        }
-        return false;
-    }
-
-    private static String normalizeFingerprintPart(String value) {
-        if (value == null) {
-            return "";
-        }
-        return value.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
-    }
-
-    private static String joinSorted(List<String> values) {
-        if (values == null || values.isEmpty()) {
-            return "";
-        }
-        return values.stream()
-                .filter(value -> value != null && !value.isBlank())
-                .map(String::trim)
-                .map(value -> value.replaceAll("\\s+", " ").toLowerCase(Locale.ROOT))
-                .sorted()
-                .distinct()
-                .collect(java.util.stream.Collectors.joining(","));
     }
 
     /**
@@ -1043,29 +807,6 @@ public class AgentOrchestrator {
             log.error("Failed to parse plan JSON", e);
             return List.of();
         }
-    }
-
-    /**
-     * 获取当前可执行的步骤（依赖已全部完成）
-     */
-    List<ExecutionStep> getExecutableSteps(List<ExecutionStep> steps) {
-        Map<String, StepStatus> statusMap = new HashMap<>();
-        for (ExecutionStep step : steps) {
-            statusMap.put(step.id(), step.status());
-        }
-
-        DependencyGraph<ExecutionStep> graph = DependencyGraph.of(
-                steps,
-                ExecutionStep::id,
-                ExecutionStep::dependencies);
-        return graph.readyNodes(
-                step -> step.status() == StepStatus.PENDING,
-                dependencyId -> {
-                    StepStatus status = statusMap.get(dependencyId);
-                    // COMPLETED（正常）和 SKIPPED（显式降级）可放行；
-                    // FAILED 表示依赖结果不可用，必须阻断下游步骤。
-                    return status == StepStatus.COMPLETED || status == StepStatus.SKIPPED;
-                });
     }
 
     /**
@@ -1254,10 +995,10 @@ public class AgentOrchestrator {
             metadata.put("selectedReason", selectedReason);
         }
         if (writeScope != null && !writeScope.isEmpty()) {
-            metadata.put("writeScope", formatScopes(writeScope));
+            metadata.put("writeScope", WriteScopeRules.formatScopes(writeScope));
         }
         if (forbiddenWriteScope != null && !forbiddenWriteScope.isEmpty()) {
-            metadata.put("forbiddenWriteScope", formatScopes(forbiddenWriteScope));
+            metadata.put("forbiddenWriteScope", WriteScopeRules.formatScopes(forbiddenWriteScope));
         }
         return AgentRunContext.create(parent.mode(), parent.input(), parent.workspace(), metadata);
     }
@@ -1276,10 +1017,10 @@ public class AgentOrchestrator {
         attributes.put("riskLevel", requirements.riskLevel());
         attributes.put("selectedReason", selectedReason);
         if (step.writeScope() != null && !step.writeScope().isEmpty()) {
-            attributes.put("writeScope", formatScopes(step.writeScope()));
+            attributes.put("writeScope", WriteScopeRules.formatScopes(step.writeScope()));
         }
         if (forbiddenWriteScope != null && !forbiddenWriteScope.isEmpty()) {
-            attributes.put("forbiddenWriteScope", formatScopes(forbiddenWriteScope));
+            attributes.put("forbiddenWriteScope", WriteScopeRules.formatScopes(forbiddenWriteScope));
         }
         appendRunEvent(parentContext, AgentRunEventType.AGENT_SELECTED, attributes);
     }
@@ -1457,6 +1198,7 @@ public class AgentOrchestrator {
                                    ToolRegistry registry) {
         AgentTaskRequirements workerRequirements = requirementsFor(step);
         List<String> forbiddenWriteScope = forbiddenWriteScopes(steps, step);
+        registry.setWriteScope(writeScopeFor(step));
         try (AgentPool.AgentLease workerLease = acquireForStep(step, workerRequirements)) {
             SubAgent worker = createSubAgent(workerLease.profile(), registry);
             appendAgentSelected(runContext, childRoleName(worker.getRole()), step, workerLease.profile(),
@@ -1466,6 +1208,8 @@ public class AgentOrchestrator {
         } catch (IllegalStateException e) {
             updateStep(steps, step.id(), step.withFailed("Agent profile 选择失败: " + e.getMessage()));
             out.println("❌ 步骤 [" + step.id() + "] Agent profile 选择失败：" + e.getMessage() + "\n");
+        } finally {
+            registry.setWriteScope(List.of());
         }
     }
 
@@ -1620,10 +1364,10 @@ public class AgentOrchestrator {
 
     private void appendFileOwnershipContext(StringBuilder context, List<ExecutionStep> steps,
                                             ExecutionStep currentStep) {
-        if (context == null || currentStep == null || !isMutatingStep(currentStep)) {
+        if (context == null || currentStep == null || !TeamStepClassifier.isMutating(currentStep)) {
             return;
         }
-        List<String> allowed = normalizeScopes(currentStep.writeScope());
+        List<String> allowed = WriteScopeRules.normalizeScopes(currentStep.writeScope());
         List<String> forbidden = forbiddenWriteScopes(steps, currentStep);
         if (allowed.isEmpty() && forbidden.isEmpty()) {
             return;
@@ -1633,10 +1377,10 @@ public class AgentOrchestrator {
         if (allowed.isEmpty()) {
             context.append("- 允许修改范围：未声明。不要扩大修改范围；如必须写文件，请先说明需要的范围。\n");
         } else {
-            context.append("- 允许修改范围：").append(formatScopes(allowed)).append("\n");
+            context.append("- 允许修改范围：").append(WriteScopeRules.formatScopes(allowed)).append("\n");
         }
         if (!forbidden.isEmpty()) {
-            context.append("- 禁止修改范围：").append(formatScopes(forbidden)).append("\n");
+            context.append("- 禁止修改范围：").append(WriteScopeRules.formatScopes(forbidden)).append("\n");
         }
         context.append("- 如果任务需要越界修改，必须停止并说明原因，不得擅自修改禁止范围。\n\n");
     }
@@ -1647,27 +1391,16 @@ public class AgentOrchestrator {
         }
         Set<String> forbidden = new LinkedHashSet<>();
         for (ExecutionStep step : steps) {
-            if (step == null || step.id().equals(currentStep.id()) || !isMutatingStep(step)) {
+            if (step == null || step.id().equals(currentStep.id()) || !TeamStepClassifier.isMutating(step)) {
                 continue;
             }
-            forbidden.addAll(normalizeScopes(step.writeScope()));
+            forbidden.addAll(WriteScopeRules.normalizeScopes(step.writeScope()));
         }
         return List.copyOf(forbidden);
     }
 
-    private static List<String> normalizeScopes(List<String> scopes) {
-        if (scopes == null || scopes.isEmpty()) {
-            return List.of();
-        }
-        return scopes.stream()
-                .filter(scope -> scope != null && !scope.isBlank())
-                .map(String::trim)
-                .distinct()
-                .toList();
-    }
-
-    private static String formatScopes(List<String> scopes) {
-        return String.join(",", normalizeScopes(scopes));
+    private List<String> writeScopeFor(ExecutionStep step) {
+        return TeamStepClassifier.isMutating(step) ? WriteScopeRules.normalizeScopes(step.writeScope()) : List.of();
     }
 
     private StepStatus getStepStatus(String stepId, List<ExecutionStep> steps) {

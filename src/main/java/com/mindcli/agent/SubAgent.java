@@ -35,6 +35,7 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -63,6 +64,7 @@ public class SubAgent {
     private SkillRegistry skillRegistry;
     private MemoryManager memoryManager;
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
+    private volatile boolean readOnly;
 
     public SubAgent(AgentProfile profile, LlmClient llmClient, ToolRegistry toolRegistry) {
         this.profile = profile;
@@ -434,7 +436,12 @@ public class SubAgent {
                 %s
                 """.formatted(originalTask, executionResult).trim();
         AgentMessage reviewTask = AgentMessage.task("orchestrator", reviewInput);
-        return executeWithRunContext(reviewTask, out, runContext, runStore);
+        readOnly = true;
+        try {
+            return executeWithRunContext(reviewTask, out, runContext, runStore);
+        } finally {
+            readOnly = false;
+        }
     }
 
     private AgentMessage withRuntimeContext(AgentRunContext runContext, RunStore runStore,
@@ -505,16 +512,30 @@ public class SubAgent {
         return profile != null && !profile.tools().isEmpty();
     }
 
+    /** 有副作用的工具（自审 readOnly 阶段需程序级拦截，不依赖 prompt）。 */
+    private static boolean isMutatingTool(String toolName) {
+        if (toolName == null) {
+            return false;
+        }
+        return switch (toolName) {
+            case "write_file", "create_project", "execute_command", "revert_turn", "save_memory" -> true;
+            default -> toolName.startsWith("mcp__");
+        };
+    }
+
     private List<LlmClient.Tool> toolDefinitionsForProfile() {
         if (!shouldUseTools() || llmClient == null || !llmClient.supportsTools()) {
             return null;
         }
         List<LlmClient.Tool> definitions = toolRegistry.getToolDefinitions();
         if (profile.tools().contains("*")) {
-            return definitions;
+            return readOnly
+                    ? definitions.stream().filter(t -> !isMutatingTool(t.name())).toList()
+                    : definitions;
         }
         return definitions.stream()
                 .filter(tool -> AgentToolPolicy.toolAllowed(profile, tool.name()))
+                .filter(tool -> !readOnly || !isMutatingTool(tool.name()))
                 .toList();
     }
 
@@ -530,23 +551,37 @@ public class SubAgent {
 
     private List<ToolExecutionResult> executeToolCalls(List<LlmClient.ToolCall> toolCalls) {
         List<ToolInvocation> invocations = new ArrayList<>();
-        for (LlmClient.ToolCall toolCall : toolCalls) {
+        List<ToolExecutionResult> ordered = new ArrayList<>(Collections.nCopies(toolCalls.size(), null));
+        List<Integer> dispatchIndices = new ArrayList<>();
+
+        for (int i = 0; i < toolCalls.size(); i++) {
+            LlmClient.ToolCall toolCall = toolCalls.get(i);
             String toolName = toolCall.function().name();
             String toolArgs = toolCall.function().arguments();
             log.info("[{}] scheduling tool: {}", name, toolName);
             log.debug("[{}] tool args [{}]: {}", name, toolName, toolArgs);
+            if (readOnly && isMutatingTool(toolName)) {
+                log.info("[{}] readOnly 拦截副作用工具: {}", name, toolName);
+                ordered.set(i, new ToolExecutionResult(toolCall.id(), toolName, toolArgs,
+                        "🛡️ 自审阶段禁止调用有副作用的工具: " + toolName, 0, false, List.of()));
+                continue;
+            }
             invocations.add(new ToolInvocation(toolCall.id(), toolName, toolArgs));
+            dispatchIndices.add(i);
         }
 
-        if (invocations.size() > 1) {
-            log.info("[{}] executing {} tool calls in parallel", name, invocations.size());
+        if (!invocations.isEmpty()) {
+            if (invocations.size() > 1) {
+                log.info("[{}] executing {} tool calls in parallel", name, invocations.size());
+            }
+            AgentRunContext dispatchContext = toolDispatchContext();
+            List<ToolOutcome> outcomes = toolDispatcher.dispatchInvocations(invocations, dispatchContext);
+            appendToolOutcomeEvents(dispatchContext, outcomes);
+            for (int j = 0; j < outcomes.size(); j++) {
+                ordered.set(dispatchIndices.get(j), SubAgent.toLegacyResult(outcomes.get(j)));
+            }
         }
-        AgentRunContext dispatchContext = toolDispatchContext();
-        List<ToolOutcome> outcomes = toolDispatcher.dispatchInvocations(invocations, dispatchContext);
-        appendToolOutcomeEvents(dispatchContext, outcomes);
-        return outcomes.stream()
-                .map(SubAgent::toLegacyResult)
-                .toList();
+        return ordered;
     }
 
     private AgentRunContext toolDispatchContext() {

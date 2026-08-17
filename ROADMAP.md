@@ -94,6 +94,9 @@
 - 冲突解决策略
 - 主从Agent架构
 
+**增强（后续补丁，归在本期叙事下）**：
+- 写入步骤并行化：当多个 Worker 的 `writeScope` 已声明且互不重叠时，通过 git worktree 隔离并行写入，完成后 merge 回主工作区；merge 冲突不静默覆盖，标记步骤失败并上报冲突文件清单；`writeScope` 未声明、范围重叠、非 git 仓库或 worktree 创建失败时回退为串行单步
+
 **核心知识点**：
 - Multi-Agent系统
 - 角色扮演（Role Playing）

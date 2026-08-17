@@ -114,6 +114,63 @@ class SubAgentTest {
     }
 
     @Test
+    void reviewBlocksMutatingToolsAtProgramLevel() {
+        List<String> dispatched = new java.util.ArrayList<>();
+        ToolRegistry registry = new ToolRegistry() {
+            @Override
+            public List<ToolExecutionResult> executeTools(List<ToolInvocation> invocations) {
+                invocations.forEach(i -> dispatched.add(i.name()));
+                return invocations.stream()
+                        .map(i -> new ToolExecutionResult(i.id(), i.name(), i.argumentsJson(),
+                                "ok", 1, false, List.of()))
+                        .toList();
+            }
+        };
+        registry.setProjectPath(tempDir.toString());
+        MultiCallStreamClient llm = new MultiCallStreamClient(List.of(
+                new CallScript(
+                        listener -> {},
+                        new LlmClient.ChatResponse(
+                                "assistant",
+                                "自审中",
+                                null,
+                                List.of(
+                                        new LlmClient.ToolCall("call_w", new LlmClient.ToolCall.Function(
+                                                "write_file", "{\"path\":\"x.txt\",\"content\":\"x\"}")),
+                                        new LlmClient.ToolCall("call_r", new LlmClient.ToolCall.Function(
+                                                "read_file", "{\"path\":\"x.txt\"}"))
+                                ),
+                                10,
+                                5
+                        )
+                ),
+                new CallScript(
+                        listener -> listener.onContentDelta("{\"approved\":true}"),
+                        new LlmClient.ChatResponse(
+                                "assistant",
+                                "{\"approved\":true}",
+                                null,
+                                null,
+                                10,
+                                5
+                        )
+                )
+        ));
+        SubAgent worker = new SubAgent(AgentProfile.builtinWorker("w-review"), llm, registry);
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        PrintStream ps = new PrintStream(baos, true, StandardCharsets.UTF_8);
+        AgentRunContext context = AgentRunContext.create(AgentMode.TEAM, "review", tempDir.toString());
+
+        worker.review("原始任务", "执行结果", ps, context, null);
+
+        assertFalse(dispatched.contains("write_file"),
+                "自审阶段 write_file 应被程序级拦截，不进 ToolRegistry");
+        assertTrue(dispatched.contains("read_file"),
+                "自审阶段只读工具 read_file 应正常执行");
+    }
+
+    @Test
     void shouldRouteLateReasoningToSupplementalSection() {
         // 模拟服务器先下发 content、再追加 reasoning 的情况
         ScriptedStreamClient llm = new ScriptedStreamClient(listener -> {
