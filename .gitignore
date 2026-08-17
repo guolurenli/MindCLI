@@ -29,6 +29,7 @@ docs/*
 !docs/mindcli-team-builtin-agents-codex-alignment-design.md
 !docs/mindcli-custom-subagents-design.md
 !docs/mindcli-teamscheduler-extraction-design.md
+!docs/mindcli-maid-theme-design.md
 
 # Claude Code
 .claude/
