@@ -8,34 +8,27 @@ public final class AnsiStyle {
     private static final String BOLD = "\u001B[1m";
     private static final String DIM = "\u001B[2m";
     private static final String ITALIC = "\u001B[3m";
-    private static final String CYAN = "\u001B[36m";
-    private static final String GREEN = "\u001B[32m";
-    private static final String YELLOW = "\u001B[33m";
-    private static final String RED = "\u001B[31m";
-    private static final String GRAY = "\u001B[90m";
-    private static final String PURPLE = "\u001B[38;5;141m";
-    private static final String BG_PANEL = "\u001B[48;5;236m";
     private AnsiStyle() {
     }
 
     public static String heading(String text) {
-        return wrap(BOLD + CYAN, text);
+        return wrap(BOLD + fg(UiColorRole.PRIMARY), text);
     }
 
     public static String section(String text) {
-        return wrap(BOLD + GREEN, text);
+        return wrap(BOLD + fg(UiColorRole.ACCENT), text);
     }
 
     public static String answerMarker() {
-        return wrap(BOLD + GREEN, "▪");
+        return wrap(BOLD + fg(UiColorRole.ACCENT), "▪");
     }
 
     public static String subtle(String text) {
-        return wrap(DIM + GRAY, text);
+        return wrap(DIM + fg(UiColorRole.MUTED), text);
     }
 
     public static String thinking(String text) {
-        return wrap(ITALIC + GRAY, text);
+        return wrap(ITALIC + fg(UiColorRole.MUTED), text);
     }
 
     public static String userMessageBlock(String text, int columns) {
@@ -61,19 +54,21 @@ public final class AnsiStyle {
         if (!isEnabled()) {
             return line.stripTrailing();
         }
-        return BG_PANEL + PURPLE + prefix + RESET + BG_PANEL + safe + " ".repeat(padding) + RESET;
+        String panelBg = bg(UiColorRole.PANEL_BG);
+        String prefixColor = fg(UiColorRole.ACCENT);
+        return panelBg + prefixColor + prefix + RESET + panelBg + safe + " ".repeat(padding) + RESET;
     }
 
     public static String codeLabel(String text) {
-        return wrap(BOLD + YELLOW, text);
+        return wrap(BOLD + fg(UiColorRole.SECONDARY), text);
     }
 
     public static String error(String text) {
-        return wrap(BOLD + RED, text);
+        return wrap(BOLD + fg(UiColorRole.DANGER), text);
     }
 
     public static String quotePrefix(String text) {
-        return wrap(DIM + CYAN, text);
+        return wrap(DIM + fg(UiColorRole.MUTED), text);
     }
 
     public static String emphasis(String text) {
@@ -82,6 +77,47 @@ public final class AnsiStyle {
 
     public static boolean isEnabled() {
         return determineEnabled();
+    }
+
+    /**
+     * 是否确认真彩：显式开关优先，其次 {@code COLORTERM=truecolor|24bit}。
+     */
+    public static boolean supportsTrueColor() {
+        String property = System.getProperty("mindcli.render.truecolor");
+        if (property != null && !property.isBlank()) {
+            return Boolean.parseBoolean(property);
+        }
+        String env = System.getenv("MINDCLI_TRUECOLOR");
+        if (env != null && !env.isBlank()) {
+            return Boolean.parseBoolean(env);
+        }
+        String colorterm = System.getenv("COLORTERM");
+        return colorterm != null
+                && (colorterm.equalsIgnoreCase("truecolor") || colorterm.equalsIgnoreCase("24bit"));
+    }
+
+    /** 按终端能力返回角色的前景色转义；颜色关闭或 role 为空时返回空串。 */
+    public static String fg(UiColorRole role) {
+        if (!isEnabled() || role == null) {
+            return "";
+        }
+        NekoPalette palette = role.palette();
+        if (supportsTrueColor()) {
+            return "\u001B[38;2;" + palette.r() + ";" + palette.g() + ";" + palette.b() + "m";
+        }
+        return "\u001B[" + palette.ansi16().foreground() + "m";
+    }
+
+    /** 按终端能力返回角色的背景色转义；颜色关闭或 role 为空时返回空串。 */
+    public static String bg(UiColorRole role) {
+        if (!isEnabled() || role == null) {
+            return "";
+        }
+        NekoPalette palette = role.palette();
+        if (supportsTrueColor()) {
+            return "\u001B[48;2;" + palette.r() + ";" + palette.g() + ";" + palette.b() + "m";
+        }
+        return "\u001B[" + palette.ansi16().background() + "m";
     }
 
     private static String wrap(String prefix, String text) {

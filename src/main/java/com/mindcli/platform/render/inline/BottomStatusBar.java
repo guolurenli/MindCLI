@@ -1,7 +1,10 @@
 package com.mindcli.platform.render.inline;
 
 import com.mindcli.platform.render.StatusInfo;
+import com.mindcli.platform.render.terminal.Ansi16;
 import com.mindcli.platform.render.terminal.AnsiStyle;
+import com.mindcli.platform.render.terminal.NekoPalette;
+import com.mindcli.platform.render.terminal.UiColorRole;
 import org.jline.terminal.Terminal;
 import org.jline.utils.InfoCmp;
 import org.jline.utils.AttributedString;
@@ -30,37 +33,21 @@ public final class BottomStatusBar implements AutoCloseable {
     private static final int CONTEXT_BAR_WIDTH = 8;
     private static final Pattern SUMMARY_RATIO = Pattern.compile("(?i)^(?:MCP|Skill)\\s+(\\d+)/(\\d+)$");
     private static final AttributedStyle BASE_STYLE = style(AttributedStyle.DEFAULT.faint());
-    private static final AttributedStyle MODE_YOLO_STYLE = style(AttributedStyle.DEFAULT
-            .foreground(AttributedStyle.YELLOW)
-            .bold());
-    private static final AttributedStyle MODE_HITL_STYLE = style(AttributedStyle.DEFAULT
-            .foreground(AttributedStyle.GREEN)
-            .bold());
-    private static final AttributedStyle MCP_STYLE = style(AttributedStyle.DEFAULT.foreground(AttributedStyle.CYAN));
-    private static final AttributedStyle SKILL_STYLE = style(AttributedStyle.DEFAULT.foreground(AttributedStyle.MAGENTA));
-    private static final AttributedStyle BRAND_STYLE = style(AttributedStyle.DEFAULT
-            .foreground(AttributedStyle.MAGENTA)
-            .bold());
-    private static final AttributedStyle MODEL_STYLE = style(AttributedStyle.DEFAULT
-            .foreground(AttributedStyle.CYAN)
-            .bold());
-    private static final AttributedStyle PHASE_IDLE_STYLE = style(AttributedStyle.DEFAULT.foreground(AttributedStyle.GREEN));
-    private static final AttributedStyle PHASE_ACTIVE_STYLE = style(AttributedStyle.DEFAULT
-            .foreground(AttributedStyle.YELLOW)
-            .bold());
-    private static final AttributedStyle CTX_LABEL_STYLE = style(AttributedStyle.DEFAULT
-            .foreground(AttributedStyle.BLUE)
-            .bold());
-    private static final AttributedStyle CTX_FILL_STYLE = style(AttributedStyle.DEFAULT
-            .foreground(AttributedStyle.GREEN)
-            .bold());
-    private static final AttributedStyle CTX_EMPTY_STYLE = style(AttributedStyle.DEFAULT
-            .foreground(AttributedStyle.BLUE)
-            .faint());
-    private static final AttributedStyle TOKEN_LABEL_STYLE = style(AttributedStyle.DEFAULT.foreground(AttributedStyle.YELLOW));
-    private static final AttributedStyle CACHE_LABEL_STYLE = style(AttributedStyle.DEFAULT.foreground(AttributedStyle.MAGENTA));
-    private static final AttributedStyle ELAPSED_STYLE = style(AttributedStyle.DEFAULT.foreground(AttributedStyle.YELLOW));
-    private static final AttributedStyle CWD_STYLE = style(AttributedStyle.DEFAULT.faint());
+    private static final AttributedStyle MODE_YOLO_STYLE = style(roleStyle(UiColorRole.MUTED).bold());
+    private static final AttributedStyle MODE_HITL_STYLE = style(roleStyle(UiColorRole.ACCENT).bold());
+    private static final AttributedStyle MCP_STYLE = style(roleStyle(UiColorRole.SECONDARY));
+    private static final AttributedStyle SKILL_STYLE = style(roleStyle(UiColorRole.ACCENT));
+    private static final AttributedStyle BRAND_STYLE = style(roleStyle(UiColorRole.ACCENT).bold());
+    private static final AttributedStyle MODEL_STYLE = style(roleStyle(UiColorRole.PRIMARY).bold());
+    private static final AttributedStyle PHASE_IDLE_STYLE = style(roleStyle(UiColorRole.ACCENT));
+    private static final AttributedStyle PHASE_ACTIVE_STYLE = style(roleStyle(UiColorRole.PRIMARY).bold());
+    private static final AttributedStyle CTX_LABEL_STYLE = style(roleStyle(UiColorRole.SECONDARY).bold());
+    private static final AttributedStyle CTX_FILL_STYLE = style(roleStyle(UiColorRole.ACCENT).bold());
+    private static final AttributedStyle CTX_EMPTY_STYLE = style(roleStyle(UiColorRole.MUTED).faint());
+    private static final AttributedStyle TOKEN_LABEL_STYLE = style(roleStyle(UiColorRole.SECONDARY));
+    private static final AttributedStyle CACHE_LABEL_STYLE = style(roleStyle(UiColorRole.ACCENT));
+    private static final AttributedStyle ELAPSED_STYLE = style(roleStyle(UiColorRole.MUTED));
+    private static final AttributedStyle CWD_STYLE = style(roleStyle(UiColorRole.MUTED).faint());
 
     private final Terminal terminal;
     private final PrintStream out;
@@ -356,12 +343,32 @@ public final class BottomStatusBar implements AutoCloseable {
 
     private static AttributedStyle contextPercentStyle(int percent) {
         if (percent >= 90) {
-            return style(AttributedStyle.DEFAULT.foreground(AttributedStyle.RED).bold());
+            return style(roleStyle(UiColorRole.DANGER).bold());
         }
         if (percent >= 70) {
-            return style(AttributedStyle.DEFAULT.foreground(AttributedStyle.YELLOW).bold());
+            return style(roleStyle(UiColorRole.ACCENT).bold());
         }
-        return style(AttributedStyle.DEFAULT.foreground(AttributedStyle.GREEN).bold());
+        return style(roleStyle(UiColorRole.SECONDARY).bold());
+    }
+
+    /** 把语义角色转成 JLine 前景色样式：真彩走 RGB，非真彩走 16 色降级。 */
+    private static AttributedStyle roleStyle(UiColorRole role) {
+        NekoPalette palette = role.palette();
+        if (AnsiStyle.supportsTrueColor()) {
+            return AttributedStyle.DEFAULT.foreground(palette.r(), palette.g(), palette.b());
+        }
+        return AttributedStyle.DEFAULT.foreground(attributed16(palette.ansi16()));
+    }
+
+    private static int attributed16(Ansi16 ansi16) {
+        return switch (ansi16) {
+            case BLACK -> AttributedStyle.BLACK;
+            case RED -> AttributedStyle.RED;
+            case MAGENTA -> AttributedStyle.MAGENTA;
+            case WHITE -> AttributedStyle.WHITE;
+            case BRIGHT_BLACK -> AttributedStyle.BLACK | AttributedStyle.BRIGHT;
+            case BRIGHT_WHITE -> AttributedStyle.WHITE | AttributedStyle.BRIGHT;
+        };
     }
 
     private static AttributedStyle style(AttributedStyle style) {

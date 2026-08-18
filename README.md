@@ -12,6 +12,8 @@ mvn clean package             # 打包，默认 skipTests=true
 java -jar target/mindcli-1.0-SNAPSHOT.jar
 ```
 
+Windows CMD 下可复制 `run-mindcli.template.cmd` 为 `run-mindcli.cmd`，按需填写 Java / chafa 路径后运行。模板会启用 UTF-8、inline 和真彩猫耳助手配色；本机 `run-mindcli.cmd` 已被 `.gitignore` 忽略，避免提交个人路径。
+
 可选入口：
 
 ```bash
