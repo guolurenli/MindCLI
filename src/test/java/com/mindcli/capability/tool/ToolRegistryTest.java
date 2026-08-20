@@ -523,44 +523,6 @@ class ToolRegistryTest {
     }
 
     @Test
-    void writeFileToolEnforcesWriteScope(@TempDir Path tempDir) {
-        ToolRegistry registry = new ToolRegistry();
-        registry.setProjectPath(tempDir.toString());
-        registry.setWriteScope(List.of("src/main/**"));
-
-        String result = registry.executeTool("write_file",
-                "{\"path\":\"src/test/Foo.java\",\"content\":\"x\"}");
-
-        assertTrue(result.contains("策略拒绝"));
-        assertTrue(result.contains("超出 writeScope"));
-    }
-
-    @Test
-    void writeFileToolAllowsWriteWithinScope(@TempDir Path tempDir) throws Exception {
-        ToolRegistry registry = new ToolRegistry();
-        registry.setProjectPath(tempDir.toString());
-        registry.setWriteScope(List.of("src/main/**"));
-
-        String result = registry.executeTool("write_file",
-                "{\"path\":\"src/main/Foo.java\",\"content\":\"class Foo {}\"}");
-
-        assertTrue(result.contains("文件已写入"), "scope 内写入应成功: " + result);
-        assertTrue(Files.exists(tempDir.resolve("src/main/Foo.java")));
-    }
-
-    @Test
-    void executeCommandIsDeniedWhenWriteScopeIsActive(@TempDir Path tempDir) {
-        ToolRegistry registry = new ToolRegistry();
-        registry.setProjectPath(tempDir.toString());
-        registry.setWriteScope(List.of("src/main/**"));
-
-        String result = registry.executeTool("execute_command", "{\"command\":\"mvn test\"}");
-
-        assertTrue(result.contains("策略拒绝"));
-        assertTrue(result.contains("writeScope"));
-    }
-
-    @Test
     void forkForProject_redirectsProjectPathAndCopiesSharedConfig() {
         ToolRegistry registry = new ToolRegistry();
         ContextProfile profile = ContextProfile.custom(16_000, 8_000);

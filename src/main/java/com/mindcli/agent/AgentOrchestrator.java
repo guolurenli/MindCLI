@@ -31,7 +31,6 @@ import com.mindcli.runtime.run.RunStore;
 import com.mindcli.runtime.run.RunStoreFactory;
 import com.mindcli.capability.skill.SkillRegistry;
 import com.mindcli.capability.tool.ToolRegistry;
-import com.mindcli.platform.security.WriteScopeRules;
 import com.mindcli.platform.worktree.GitWorktreeManager;
 import com.mindcli.platform.render.terminal.AnsiStyle;
 import com.mindcli.platform.render.terminal.TerminalMarkdownRenderer;
@@ -206,7 +205,7 @@ public class AgentOrchestrator {
         try {
             return ProjectMemoryLoader.createDefault(Path.of(toolRegistry.getProjectPath())).loadForPrompt();
         } catch (Exception e) {
-            log.warn("Failed to load PAI.md project memory for orchestrator", e);
+            log.warn("Failed to load MIND.md project memory for orchestrator", e);
             return "";
         }
     }
@@ -407,8 +406,7 @@ public class AgentOrchestrator {
             }
             if (!wave.mutating().isEmpty()) {
                 batchIndex++;
-                runMutatingGroups(runContext, wave.mutating(), steps, retryCount, batchIndex,
-                        wave.serialReasons());
+                runMutatingGroups(runContext, wave.mutating(), steps, retryCount, batchIndex);
             }
         }
 
@@ -500,40 +498,25 @@ public class AgentOrchestrator {
     /**
      * 调度一批可同时执行的写入型分组。
      *
-     * 依据 writeScope 是否已声明且互不重叠，将分组拆成「必须串行」与「可 worktree 隔离并行」两类：
-     * 前者走原有 runMutatingGroup（共享主工作区，按序执行）；后者走 runMutatingBatchParallel，
-     * 每个写入 step 在独立 worktree 中写文件，完成后 merge 回主工作区。
+     * 单个写入 step 直接在主工作区执行；同一 ready wave 内的多个无依赖写入 step
+     * 优先走 worktree 隔离并行（runMutatingBatchParallel），完成后 merge 回主工作区。
      */
     private void runMutatingGroups(AgentRunContext runContext, List<StepExecutionGroup> groups,
                                    List<ExecutionStep> steps, Map<String, Integer> retryCount,
-                                   int batchIndex, Map<String, String> mutatingSerialReasons) {
+                                   int batchIndex) {
         if (groups == null || groups.isEmpty()) {
             return;
         }
         if (groups.size() == 1) {
             StepExecutionGroup group = groups.get(0);
-            runMutatingGroup(runContext, group, steps, retryCount, batchIndex, out,
-                    mutatingSerialReasons.getOrDefault(group.leader().id(), ""));
-            return;
-        }
-
-        // 只要有一步需要串行（scope 未声明 / 重叠），整批串行：
-        // 串行 step 直接在主工作区产生未提交变更，若同 wave 混跑 worktree 并行，
-        // 后者的 merge 会撞上脏工作区或未声明 scope 的写入，导致 merge 失败/静默冲突。
-        boolean anySerial = groups.stream()
-                .anyMatch(group -> mutatingSerialReasons.containsKey(group.leader().id()));
-        if (anySerial) {
-            for (StepExecutionGroup group : groups) {
-                runMutatingGroup(runContext, group, steps, retryCount, batchIndex, out,
-                        mutatingSerialReasons.getOrDefault(group.leader().id(), ""));
-            }
+            runMutatingGroup(runContext, group, steps, retryCount, batchIndex, out, "");
             return;
         }
         runMutatingBatchParallel(runContext, groups, steps, retryCount, batchIndex);
     }
 
     /**
-     * worktree 隔离并行执行一批写 scope 互不重叠的写入步骤。
+     * worktree 隔离并行执行一批无依赖的写入步骤。
      *
      * 流程：固化主工作区为 checkpoint commit -> 每步在独立 worktree 中创建 fork 注册表执行
      * -> 成功后 merge 回主工作区；merge 冲突时标记步骤 FAILED 并上报冲突文件，不静默覆盖。
@@ -651,18 +634,16 @@ public class AgentOrchestrator {
                                    Map<String, Integer> retryCount, String context, PrintStream out,
                                    Path projectRoot, GitWorktreeManager.WorktreeHandle handle) {
         AgentTaskRequirements workerRequirements = requirementsFor(step);
-        List<String> forbiddenWriteScope = forbiddenWriteScopes(steps, step);
 
         boolean succeeded = false;
         try {
             ToolRegistry fork = toolRegistry.forkForProject(handle.path());
-            fork.setWriteScope(writeScopeFor(step));
             try (AgentPool.AgentLease workerLease = acquireForStep(step, workerRequirements)) {
                 SubAgent worker = createSubAgent(workerLease.profile(), fork);
                 appendAgentSelected(runContext, childRoleName(worker.getRole()), step, workerLease.profile(),
-                        workerRequirements, workerLease.selectionReason(), forbiddenWriteScope);
+                        workerRequirements, workerLease.selectionReason());
                 runStepWithWorker(runContext, step, steps, retryCount, worker, context, out,
-                        workerRequirements, workerLease.selectionReason(), forbiddenWriteScope);
+                        workerRequirements, workerLease.selectionReason());
             } catch (IllegalStateException e) {
                 updateStep(steps, step.id(), step.withFailed("Agent profile 选择失败: " + e.getMessage()));
                 out.println("❌ 步骤 [" + step.id() + "] Agent profile 选择失败：" + e.getMessage() + "\n");
@@ -779,7 +760,7 @@ public class AgentOrchestrator {
                 String newId = "step_" + stepIndex++;
                 idMapping.put(originalId, newId);
                 steps.add(ExecutionStep.pending(newId, spec.description(), spec.type().name(), new ArrayList<>(),
-                        spec.requiredTools(), spec.preferredAgent(), spec.riskLevel(), spec.writeScope()));
+                        spec.requiredTools(), spec.preferredAgent(), spec.riskLevel()));
             }
 
             // 第二遍：建立依赖
@@ -798,7 +779,7 @@ public class AgentOrchestrator {
                     ExecutionStep old = steps.get(idx);
                     steps.set(idx, new ExecutionStep(old.id(), old.description(), old.type(),
                             deps, old.requiredTools(), old.preferredAgent(), old.riskLevel(),
-                            old.writeScope(), old.result(), old.status()));
+                            old.result(), old.status()));
                 }
             }
 
@@ -963,9 +944,7 @@ public class AgentOrchestrator {
 
     private AgentRunContext childRunContext(AgentRunContext parent, String role, String stepId, int attempt,
                                             AgentProfile profile, AgentTaskRequirements requirements,
-                                            String selectedReason,
-                                            List<String> writeScope,
-                                            List<String> forbiddenWriteScope) {
+                                            String selectedReason) {
         Map<String, String> metadata = new LinkedHashMap<>();
         metadata.put("parentRunId", parent.runId());
         metadata.put("rootRunId", parent.metadata().getOrDefault("rootRunId", parent.runId()));
@@ -994,18 +973,12 @@ public class AgentOrchestrator {
         if (selectedReason != null && !selectedReason.isBlank()) {
             metadata.put("selectedReason", selectedReason);
         }
-        if (writeScope != null && !writeScope.isEmpty()) {
-            metadata.put("writeScope", WriteScopeRules.formatScopes(writeScope));
-        }
-        if (forbiddenWriteScope != null && !forbiddenWriteScope.isEmpty()) {
-            metadata.put("forbiddenWriteScope", WriteScopeRules.formatScopes(forbiddenWriteScope));
-        }
         return AgentRunContext.create(parent.mode(), parent.input(), parent.workspace(), metadata);
     }
 
     private void appendAgentSelected(AgentRunContext parentContext, String role, ExecutionStep step,
                                      AgentProfile profile, AgentTaskRequirements requirements,
-                                     String selectedReason, List<String> forbiddenWriteScope) {
+                                     String selectedReason) {
         Map<String, String> attributes = new LinkedHashMap<>();
         attributes.put("stepId", step.id());
         attributes.put("role", role);
@@ -1016,12 +989,6 @@ public class AgentOrchestrator {
         attributes.put("preferredAgent", requirements.preferredAgent());
         attributes.put("riskLevel", requirements.riskLevel());
         attributes.put("selectedReason", selectedReason);
-        if (step.writeScope() != null && !step.writeScope().isEmpty()) {
-            attributes.put("writeScope", WriteScopeRules.formatScopes(step.writeScope()));
-        }
-        if (forbiddenWriteScope != null && !forbiddenWriteScope.isEmpty()) {
-            attributes.put("forbiddenWriteScope", WriteScopeRules.formatScopes(forbiddenWriteScope));
-        }
         appendRunEvent(parentContext, AgentRunEventType.AGENT_SELECTED, attributes);
     }
 
@@ -1050,10 +1017,9 @@ public class AgentOrchestrator {
                                             SubAgent worker, AgentMessage taskMsg, String context,
                                             PrintStream out, int attempt,
                                             AgentTaskRequirements requirements,
-                                            String selectedReason,
-                                            List<String> forbiddenWriteScope) {
+                                            String selectedReason) {
         AgentRunContext childContext = childRunContext(parentContext, childRoleName(worker.getRole()), step.id(), attempt,
-                worker.getProfile(), requirements, selectedReason, step.writeScope(), forbiddenWriteScope);
+                worker.getProfile(), requirements, selectedReason);
         appendChildRunStarted(childContext, "execute");
         AgentMessage result;
         try {
@@ -1073,10 +1039,9 @@ public class AgentOrchestrator {
                                                      SubAgent agent, String executionResult,
                                                      PrintStream out, int attempt,
                                                      AgentTaskRequirements requirements,
-                                                     String selectedReason,
-                                                     List<String> forbiddenWriteScope) {
+                                                     String selectedReason) {
         AgentRunContext childContext = childRunContext(parentContext, childRoleName(agent.getRole()), step.id(), attempt,
-                agent.getProfile(), requirements, selectedReason, step.writeScope(), forbiddenWriteScope);
+                agent.getProfile(), requirements, selectedReason);
         appendChildRunStarted(childContext, "review");
         AgentMessage result;
         try {
@@ -1197,19 +1162,15 @@ public class AgentOrchestrator {
                                    Map<String, Integer> retryCount, String context, PrintStream out,
                                    ToolRegistry registry) {
         AgentTaskRequirements workerRequirements = requirementsFor(step);
-        List<String> forbiddenWriteScope = forbiddenWriteScopes(steps, step);
-        registry.setWriteScope(writeScopeFor(step));
         try (AgentPool.AgentLease workerLease = acquireForStep(step, workerRequirements)) {
             SubAgent worker = createSubAgent(workerLease.profile(), registry);
             appendAgentSelected(runContext, childRoleName(worker.getRole()), step, workerLease.profile(),
-                    workerRequirements, workerLease.selectionReason(), forbiddenWriteScope);
+                    workerRequirements, workerLease.selectionReason());
             runStepWithWorker(runContext, step, steps, retryCount, worker, context, out,
-                    workerRequirements, workerLease.selectionReason(), forbiddenWriteScope);
+                    workerRequirements, workerLease.selectionReason());
         } catch (IllegalStateException e) {
             updateStep(steps, step.id(), step.withFailed("Agent profile 选择失败: " + e.getMessage()));
             out.println("❌ 步骤 [" + step.id() + "] Agent profile 选择失败：" + e.getMessage() + "\n");
-        } finally {
-            registry.setWriteScope(List.of());
         }
     }
 
@@ -1228,8 +1189,7 @@ public class AgentOrchestrator {
                                    Map<String, Integer> retryCount,
                                    SubAgent worker, String context, PrintStream out,
                                    AgentTaskRequirements workerRequirements,
-                                   String workerSelectionReason,
-                                   List<String> forbiddenWriteScope) {
+                                   String workerSelectionReason) {
         out.println("🛠️ " + worker.getName() + " 执行步骤 [" + step.id() + "]: " + step.description());
         if (CancellationContext.isCancelled()) {
             updateStep(steps, step.id(), step.withFailed("用户取消"));
@@ -1239,7 +1199,7 @@ public class AgentOrchestrator {
 
         AgentMessage taskMsg = AgentMessage.task("orchestrator", step.description());
         AgentMessage result = executeWorkerChild(runContext, step, worker, taskMsg, context, out, 0,
-                workerRequirements, workerSelectionReason, forbiddenWriteScope);
+                workerRequirements, workerSelectionReason);
         if (CancellationContext.isCancelled()) {
             updateStep(steps, step.id(), step.withFailed("用户取消"));
             out.println("⏹️ 步骤 [" + step.id() + "] 已取消\n");
@@ -1259,7 +1219,7 @@ public class AgentOrchestrator {
 
         out.println("🔍 " + worker.getName() + " 正在自审步骤 [" + step.id() + "] 的结果...");
         ReviewChildResult reviewChild = executeSelfReviewChild(runContext, step, worker, result.content(), out, 0,
-                workerRequirements, workerSelectionReason, forbiddenWriteScope);
+                workerRequirements, workerSelectionReason);
         AgentMessage reviewResult = reviewChild.message();
 
         if (reviewResult.type() == AgentMessage.Type.ERROR) {
@@ -1294,7 +1254,7 @@ public class AgentOrchestrator {
 
             String feedbackContext = context + "\n\n之前的执行结果被审查拒绝，原因：\n" + issues;
             AgentMessage retryResult = executeWorkerChild(runContext, step, worker, taskMsg, feedbackContext, out, retries,
-                    workerRequirements, workerSelectionReason, forbiddenWriteScope);
+                    workerRequirements, workerSelectionReason);
             if (retryResult.type() == AgentMessage.Type.ERROR) {
                 log.warn("Step {} retry {} failed at LLM layer: {}", step.id(), retries, retryResult.content());
                 issues = "重试时 LLM 调用失败：" + retryResult.content();
@@ -1311,7 +1271,7 @@ public class AgentOrchestrator {
 
             acceptedResult = retryResult.content();
             ReviewChildResult retryReviewChild = executeSelfReviewChild(runContext, step, worker, acceptedResult, out, retries,
-                    workerRequirements, workerSelectionReason, forbiddenWriteScope);
+                    workerRequirements, workerSelectionReason);
             AgentMessage retryReview = retryReviewChild.message();
 
             if (retryReview.type() == AgentMessage.Type.ERROR) {
@@ -1357,50 +1317,7 @@ public class AgentOrchestrator {
             }
         }
 
-        appendFileOwnershipContext(context, steps, currentStep);
-
         return context.toString();
-    }
-
-    private void appendFileOwnershipContext(StringBuilder context, List<ExecutionStep> steps,
-                                            ExecutionStep currentStep) {
-        if (context == null || currentStep == null || !TeamStepClassifier.isMutating(currentStep)) {
-            return;
-        }
-        List<String> allowed = WriteScopeRules.normalizeScopes(currentStep.writeScope());
-        List<String> forbidden = forbiddenWriteScopes(steps, currentStep);
-        if (allowed.isEmpty() && forbidden.isEmpty()) {
-            return;
-        }
-
-        context.append("文件所有权边界：\n");
-        if (allowed.isEmpty()) {
-            context.append("- 允许修改范围：未声明。不要扩大修改范围；如必须写文件，请先说明需要的范围。\n");
-        } else {
-            context.append("- 允许修改范围：").append(WriteScopeRules.formatScopes(allowed)).append("\n");
-        }
-        if (!forbidden.isEmpty()) {
-            context.append("- 禁止修改范围：").append(WriteScopeRules.formatScopes(forbidden)).append("\n");
-        }
-        context.append("- 如果任务需要越界修改，必须停止并说明原因，不得擅自修改禁止范围。\n\n");
-    }
-
-    private List<String> forbiddenWriteScopes(List<ExecutionStep> steps, ExecutionStep currentStep) {
-        if (steps == null || currentStep == null) {
-            return List.of();
-        }
-        Set<String> forbidden = new LinkedHashSet<>();
-        for (ExecutionStep step : steps) {
-            if (step == null || step.id().equals(currentStep.id()) || !TeamStepClassifier.isMutating(step)) {
-                continue;
-            }
-            forbidden.addAll(WriteScopeRules.normalizeScopes(step.writeScope()));
-        }
-        return List.copyOf(forbidden);
-    }
-
-    private List<String> writeScopeFor(ExecutionStep step) {
-        return TeamStepClassifier.isMutating(step) ? WriteScopeRules.normalizeScopes(step.writeScope()) : List.of();
     }
 
     private StepStatus getStepStatus(String stepId, List<ExecutionStep> steps) {

@@ -1,7 +1,6 @@
 package com.mindcli.agent;
 
 import com.mindcli.agent.plan.DependencyGraph;
-import com.mindcli.platform.security.WriteScopeRules;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -15,7 +14,7 @@ import java.util.stream.Collectors;
  * 团队模式的「调度决策」层（纯逻辑、无状态、零外部依赖）。
  *
  * <p>只吃 {@link List}<{@link ExecutionStep}>，吐出下一波可执行工作
- * （{@link ScheduleWave}）：依赖就绪 -> 指纹去重 -> 读写分区 -> 串行原因。
+ * （{@link ScheduleWave}）：依赖就绪 -> 指纹去重 -> 读写分区。
  * 不碰 Agent 池、LLM、IO。</p>
  */
 final class TeamScheduler {
@@ -30,14 +29,13 @@ final class TeamScheduler {
     ScheduleWave nextWave(List<ExecutionStep> steps) {
         List<ExecutionStep> executable = getExecutableSteps(steps);
         if (executable.isEmpty()) {
-            return new ScheduleWave(List.of(), List.of(), Map.of());
+            return new ScheduleWave(List.of(), List.of());
         }
         List<StepExecutionGroup> groups = collapseExecutableGroups(executable);
         if (groups.isEmpty()) {
-            return new ScheduleWave(List.of(), List.of(), Map.of());
+            return new ScheduleWave(List.of(), List.of());
         }
 
-        Map<String, String> serialReasons = mutatingSerialReasons(groups);
         List<StepExecutionGroup> readOnly = new ArrayList<>();
         List<StepExecutionGroup> mutating = new ArrayList<>();
         for (StepExecutionGroup group : groups) {
@@ -47,7 +45,7 @@ final class TeamScheduler {
                 readOnly.add(group);
             }
         }
-        return new ScheduleWave(readOnly, mutating, serialReasons);
+        return new ScheduleWave(readOnly, mutating);
     }
 
     /**
@@ -107,42 +105,6 @@ final class TeamScheduler {
         return List.copyOf(collapsed);
     }
 
-    private Map<String, String> mutatingSerialReasons(List<StepExecutionGroup> groups) {
-        if (groups == null || groups.isEmpty()) {
-            return Map.of();
-        }
-        List<StepExecutionGroup> mutatingGroups = groups.stream()
-                .filter(StepExecutionGroup::mutating)
-                .toList();
-        if (mutatingGroups.isEmpty()) {
-            return Map.of();
-        }
-        Map<String, String> reasons = new LinkedHashMap<>();
-        for (StepExecutionGroup group : mutatingGroups) {
-            List<String> scope = WriteScopeRules.normalizeScopes(group.leader().writeScope());
-            if (scope.isEmpty()) {
-                reasons.put(group.leader().id(), "写入范围未声明，按顺序执行以避免并发冲突");
-                continue;
-            }
-            for (StepExecutionGroup other : mutatingGroups) {
-                if (group == other) {
-                    continue;
-                }
-                List<String> otherScope = WriteScopeRules.normalizeScopes(other.leader().writeScope());
-                if (otherScope.isEmpty()) {
-                    continue;
-                }
-                if (WriteScopeRules.overlaps(scope, otherScope)) {
-                    reasons.put(group.leader().id(), "写入范围重叠，按顺序执行："
-                            + WriteScopeRules.formatScopes(scope) + " 与 " + other.leader().id()
-                            + " 的 " + WriteScopeRules.formatScopes(otherScope));
-                    break;
-                }
-            }
-        }
-        return reasons;
-    }
-
     private String stepFingerprint(ExecutionStep step) {
         if (step == null) {
             return "";
@@ -151,7 +113,6 @@ final class TeamScheduler {
                 normalizeFingerprintPart(step.type()),
                 normalizeFingerprintPart(step.description()),
                 joinSorted(step.requiredTools()),
-                joinSorted(step.writeScope()),
                 normalizeFingerprintPart(step.preferredAgent()),
                 normalizeFingerprintPart(step.riskLevel()),
                 joinSorted(step.dependencies()));

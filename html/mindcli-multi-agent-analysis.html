@@ -1,0 +1,132 @@
+<!doctype html><meta charset="utf-8"><title>MindCLI /team 多智能体实现</title>
+<style>
+ :root{--bg:#fff;--fg:#14171a;--mut:#5d6b7a;--line:#e3e8ef;--card:#f7f9fb;--accent:#c2410c;--ok:#157f3d;--warn:#b45309}
+ @media (prefers-color-scheme:dark){
+   :root{--bg:#0f1418;--fg:#eef2f6;--mut:#9aa8b6;--line:#243039;--card:#161d23;--accent:#fb923c;--ok:#4ade80;--warn:#fbbf24}}
+ *{box-sizing:border-box}
+ body{margin:0;background:var(--bg);color:var(--fg);padding:40px 32px 90px;
+      font:16px/1.55 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
+ .wrap{max-width:1080px;margin:0 auto}
+ h1{font-size:28px;margin:0 0 8px}
+ .verdict{font-size:17px;color:var(--mut);margin:0 0 6px;max-width:75ch}
+ .tag{display:inline-block;font-size:12px;padding:3px 9px;border-radius:99px;border:1px solid var(--accent);color:var(--accent);margin-right:6px}
+ h2{font-size:20px;margin:44px 0 14px;padding-top:22px;border-top:1px solid var(--line)}
+ .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(250px,1fr))}
+ .card{border:1px solid var(--line);border-radius:12px;background:var(--card);padding:15px 16px}
+ .card h3{margin:0 0 6px;font-size:15px}
+ .card .role{font-size:12px;color:var(--accent);font-weight:600;letter-spacing:.4px;text-transform:uppercase;margin:0 0 8px}
+ .card p{margin:0;font-size:13.5px;color:var(--mut)}
+ .card b{color:var(--fg)}
+ code, .mono{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:12.5px}
+ .pipe{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;margin:6px 0 4px}
+ .stage{flex:1 1 120px;border:1px solid var(--line);border-radius:10px;background:var(--card);padding:11px 12px;position:relative}
+ .stage .k{font-size:12.5px;font-weight:600;color:var(--fg);display:block}
+ .stage .v{font-size:12px;color:var(--mut);display:block;margin-top:2px}
+ .arrow{align-self:center;color:var(--mut);font-size:16px;flex:0 0 auto}
+ .steps{counter-reset:s;display:flex;flex-direction:column;gap:8px}
+ .step{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--line);border-radius:10px;background:var(--card);padding:11px 14px}
+ .step::before{counter-increment:s;content:counter(s);flex:0 0 26px;height:26px;border-radius:7px;background:var(--accent);color:#fff;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center}
+ .step .t{font-size:14px}
+ .step .t b{display:block;font-size:13.5px}
+ .step .t span{color:var(--mut);font-size:13px}
+ table{width:100%;border-collapse:collapse;font-size:13.5px}
+ th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+ th{color:var(--mut);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.4px}
+ td code{white-space:nowrap}
+ .two{display:grid;gap:14px;grid-template-columns:1fr 1fr}
+ @media(max-width:720px){.two{grid-template-columns:1fr}}
+ .pill{display:inline-block;font-size:12px;padding:2px 8px;border-radius:99px;border:1px solid var(--ok);color:var(--ok);margin:2px 3px 0 0}
+ .pill.warn{border-color:var(--warn);color:var(--warn)}
+ .next{margin-top:40px;padding:14px 16px;border:1px solid var(--accent);border-radius:12px;color:var(--accent);font-size:15px}
+ .next b{color:var(--fg)}
+</style>
+<div class="wrap">
+ <h1>MindCLI <code>/team</code> 多智能体实现</h1>
+ <p class="verdict"><b>结论：</b>这是一个 <b>master–slave 编排器</b>架构——<code>AgentOrchestrator</code> 是主控，<code>SubAgent</code> 是执行从节点；调度决策被抽成<b>纯函数</b> <code>TeamScheduler</code>；读任务用固定线程池并行，写任务用 <b>git worktree 隔离并行</b>、冲突即回退串行；全程靠最小权限 + 写范围判定 + 自审兜底。</p>
+ <div><span class="tag">DAG 任务图</span><span class="tag">指纹去重</span><span class="tag">worktree 写隔离</span><span class="tag">最小权限池</span><span class="tag">fail-closed 自审</span></div>
+
+ <h2>1 · 核心组件</h2>
+ <div class="grid">
+  <div class="card"><div class="role">Master</div><h3>AgentOrchestrator</h3><p>规划 → 解析 → 主循环 → 自审重试 → 聚合。持有 <b>SubAgent</b> 从节点，内联调用 LLM 做规划（无独立 PLANNER）。</p></div>
+  <div class="card"><div class="role">纯决策</div><h3>TeamScheduler</h3><p>唯一入口 <code>nextWave(steps)</code>，零依赖、无状态：就绪判定 → 去重 → 读写分区 → 串行原因 → 返回一波 <code>ScheduleWave</code>。</p></div>
+  <div class="card"><div class="role">Worker</div><h3>SubAgent</h3><p>每个实例独立 <b>profile + 历史</b>，共享 <code>LlmClient</code>/<code>ToolRegistry</code>。跑 ReAct 工具循环 + 自审（<code>review</code> 强制 readOnly）。</p></div>
+  <div class="card"><div class="role">资源池</div><h3>AgentPool</h3><p>按 profile 发 <code>Semaphore(maxConcurrency)</code> lease；先 <code>tryAcquire</code> 后阻塞回退；按 <b>privilegeScore 升序</b>选（最小权限优先）。</p></div>
+  <div class="card"><div class="role">图结构</div><h3>DependencyGraph</h3><p>业务中立 DAG。<code>readyNodes</code>/<code>blockedNodes</code>，依赖状态语义由调用方注入（/team 与 /plan 分离）。</p></div>
+  <div class="card"><div class="role">护栏</div><h3>AgentBudget</h3><p>循环退出：token 预算 + 停滞检测（3 轮相同工具签名）+ 硬迭代上限 50。</p></div>
+ </div>
+
+ <h2>2 · 执行流程</h2>
+ <div class="pipe">
+  <div class="stage"><span class="k">/team</span><span class="v">CliCommandParser</span></div><span class="arrow">→</span>
+  <div class="stage"><span class="k">Main</span><span class="v">createTeamAgent()</span></div><span class="arrow">→</span>
+  <div class="stage"><span class="k">AgentRuntime</span><span class="v">run() 写 RUN_STARTED</span></div><span class="arrow">→</span>
+  <div class="stage"><span class="k">TeamModeAdapter</span><span class="v">execute()</span></div><span class="arrow">→</span>
+  <div class="stage"><span class="k">Orchestrator.runTeam</span><span class="v">runInternal()</span></div>
+ </div>
+ <div class="steps" style="margin-top:14px">
+  <div class="step"><div class="t"><b>规划 planWithOrchestrator</b><span>编排器自己以 <code>TEAM_PLANNER</code> 提示词调 LLM，附 <code>buildAgentCatalog()</code> 让 LLM 选 agent。</span></div></div>
+  <div class="step"><div class="t"><b>解析 parsePlan</b><span><code>PlanSchemaParser</code> + <code>Validator</code>，重编号为 <code>step_1..N</code>，映射依赖；解析失败 → <code>RUN_FAILED</code>。</span></div></div>
+  <div class="step"><div class="t"><b>主循环 while(true)</b><span>每轮 <code>teamScheduler.nextWave(steps)</code>；无工作即 break。</span></div></div>
+  <div class="step"><div class="t"><b>分派执行</b><span>读 wave → <code>runReadOnlyGroupBatch</code>；写 wave → <code>runMutatingGroups</code>（有串行原因则整体串行，否则 worktree 并行）。</span></div></div>
+  <div class="step"><div class="t"><b>聚合 buildFinalResult</b><span>汇总每步状态 + 结果预览，发 <code>RUN_FINISHED</code>。</span></div></div>
+ </div>
+
+ <h2>3 · 调度决策 <code>nextWave</code></h2>
+ <div class="steps">
+  <div class="step"><div class="t"><b>依赖就绪</b><span><code>readyNodes</code>：状态 PENDING 且依赖为 COMPLETED/SKIPPED 放行；<b>FAILED 依赖阻塞下游</b>。</span></div></div>
+  <div class="step"><div class="t"><b>指纹去重 collapseExecutableGroups</b><span>按 <code>stepFingerprint</code>（类型|描述|工具|写范围|agent|风险|依赖）聚合，取 leader，重复项结果复制（宁漏勿误）。</span></div></div>
+  <div class="step"><div class="t"><b>读写分区</b><span>readOnly 与 mutating 分开；mutating 判定在 <code>TeamStepClassifier</code>。</span></div></div>
+  <div class="step"><div class="t"><b>写范围重叠判定</b><span>写范围为空或与它组重叠（<code>WriteScopeRules.overlaps</code>）→ 记录 <code>serialReasons</code>。</span></div></div>
+  <div class="step"><div class="t"><b>产出 ScheduleWave</b><span><code>serialReasons</code> 是<b>波级否决</b>——任一写组有串行原因，整波写任务回退串行。</span></div></div>
+ </div>
+
+ <h2>4 · 并行策略</h2>
+ <div class="two">
+  <div class="card"><div class="role">读任务</div><h3>固定线程池并行</h3><p><code>mindcli-multi-agent</code>，<code>Executors.newFixedThreadPool(parallelism)</code>；每步独立 <code>ByteArrayOutputStream</code>，join 后按步骤序 flush，避免终端输出交错。</p></div>
+  <div class="card"><div class="role">写任务</div><h3>git worktree 隔离并行</h3><p><code>mindcli-multi-agent-worktree</code>；<code>commitCheckpoint</code> 定基线 → 预建 worktree → <code>forkForProject</code> 派生 registry → 各写各的 → <code>mergeWorktreeAndDispose</code> 合并；<b>冲突标记 FAILED 并报告文件</b>，绝不静默覆盖。</p></div>
+ </div>
+ <p style="color:var(--mut);font-size:13.5px">无虚拟线程。跨线程工具互斥由 <code>ToolDispatcher</code> 静态 <code>SHARED_LOCK_MANAGER</code> + <code>ResourceLockManager</code>（ReentrantReadWriteLock，排序加锁）承担。</p>
+
+ <h2>5 · 安全分层（自底向上）</h2>
+ <table>
+  <tr><th>层</th><th>机制</th><th>作用</th></tr>
+  <tr><td><code>ToolRegistry</code></td><td>writeScope 硬执行</td><td>每步 set writeScope，越界写直接拦</td></tr>
+  <tr><td><code>WriteScopeRules</code></td><td>路径重叠判定</td><td>「能否并行」与「路径是否允许」永不打架</td></tr>
+  <tr><td><code>AgentPool</code></td><td>privilegeScore 升序</td><td>最小权限优先选 agent</td></tr>
+  <tr><td><code>SubAgent.review</code></td><td>自审强制 readOnly</td><td>fail-closed JSON，拒绝则带 issues 重试（≤2 次）</td></tr>
+  <tr><td><code>AgentBudget</code></td><td>停滞 + 迭代上限</td><td>防失控循环</td></tr>
+ </table>
+
+ <h2>6 · 角色与配置</h2>
+ <div class="grid">
+  <div class="card"><div class="role">EXPLORER</div><h3>只读探索</h3><p><code>@read</code> 工具 + <code>READ_ONLY</code>，内建 explorer#1 / explorer#2。</p></div>
+  <div class="card"><div class="role">WORKER</div><h3>可写执行</h3><p><code>*</code> 工具 + <code>LEGACY_COMPAT</code>，<b>并发 2</b> 以支持 worktree 并行写。</p></div>
+  <div class="card"><div class="role">CUSTOM</div><h3>自定义 agent</h3><p><code>.mindcli/agents/*.toml</code>；<code>sandbox_mode</code>（read-only/workspace-write/danger-full-access）映射工具+权限。</p></div>
+ </div>
+ <p style="color:var(--mut);font-size:13.5px">旧的 PLANNER/REVIEWER 角色已删除（见 <code>mindcli-team-builtin-agents-codex-alignment-design.md</code>）。</p>
+
+ <h2>7 · MCP 集成</h2>
+ <table>
+  <tr><th>点</th><th>行为</th></tr>
+  <tr><td>注册</td><td><code>mcp__{server}__{tool}</code> 进 <code>ToolRegistry.McpToolNamespace</code></td></tr>
+  <tr><td>可见性</td><td><code>toolDefinitionsForProfile</code> 按 <code>AgentToolPolicy</code> 过滤（<code>*</code> 或显式 <code>mcp__</code>）</td></tr>
+  <tr><td>自审</td><td><code>mcp__*</code> 视为副作用工具，readOnly 时<b>剥离</b></td></tr>
+  <tr><td>上下文</td><td><code>externalContextSupplier = mcpServerManager::resourceIndexForPrompt</code> 注入资源索引</td></tr>
+  <tr><td>worktree</td><td>fork 后的 registry <b>不继承 MCP 工具</b>（设计非目标）</td></tr>
+ </table>
+
+ <h2>8 · 关键文件</h2>
+ <table>
+  <tr><th>文件</th><th>职责</th></tr>
+  <tr><td><code>agent/AgentOrchestrator.java</code></td><td>主控编排器（规划/循环/聚合/自审）</td></tr>
+  <tr><td><code>agent/TeamScheduler.java</code></td><td>纯调度决策 <code>nextWave</code></td></tr>
+  <tr><td><code>agent/SubAgent.java</code></td><td>ReAct 执行 + 自审</td></tr>
+  <tr><td><code>agent/profile/AgentPool.java</code></td><td>最小权限 lease 池</td></tr>
+  <tr><td><code>agent/profile/AgentProfile.java</code></td><td>agent 定义 + 内建/自定义工厂</td></tr>
+  <tr><td><code>agent/plan/DependencyGraph.java</code></td><td>中立 DAG</td></tr>
+  <tr><td><code>runtime/run/TeamModeAdapter.java</code></td><td>编排器 → runtime 适配</td></tr>
+  <tr><td><code>platform/security/WriteScopeRules.java</code></td><td>写范围重叠判定</td></tr>
+ </table>
+
+ <div class="next"><b>Next：</b>想看哪一块的源码级细节（比如 worktree 合并冲突处理、或 AgentPool 最小权限选型），我直接拉对应文件和行号展开。</div>
+</div>

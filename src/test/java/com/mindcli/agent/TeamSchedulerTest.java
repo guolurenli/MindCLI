@@ -58,9 +58,9 @@ class TeamSchedulerTest {
     @Test
     void deduplicatesIdenticalReadySteps() {
         ExecutionStep a = ExecutionStep.pending("step_1", "更新 README", "FILE_WRITE", List.of(),
-                List.of("write_file"), "", "low", List.of("src/**"));
+                List.of("write_file"), "", "low");
         ExecutionStep b = ExecutionStep.pending("step_2", "更新 README", "FILE_WRITE", List.of(),
-                List.of("write_file"), "", "low", List.of("src/**"));
+                List.of("write_file"), "", "low");
 
         ScheduleWave wave = new TeamScheduler().nextWave(List.of(a, b));
         assertEquals(1, wave.mutating().size());
@@ -73,56 +73,10 @@ class TeamSchedulerTest {
     void partitionsReadOnlyAndMutatingGroups() {
         ExecutionStep read = ExecutionStep.pending("step_r", "读取", "FILE_READ", List.of());
         ExecutionStep write = ExecutionStep.pending("step_w", "写入", "FILE_WRITE", List.of(),
-                List.of("write_file"), "", "low", List.of("src/**"));
+                List.of("write_file"), "", "low");
 
         ScheduleWave wave = new TeamScheduler().nextWave(List.of(read, write));
         assertEquals(List.of("step_r"), wave.readOnly().stream().map(g -> g.leader().id()).toList());
         assertEquals(List.of("step_w"), wave.mutating().stream().map(g -> g.leader().id()).toList());
-    }
-
-    @Test
-    void overlappingScopesProduceSerialReason() {
-        ExecutionStep a = ExecutionStep.pending("step_a", "写 A", "FILE_WRITE", List.of(),
-                List.of("write_file"), "", "low", List.of("src/a/**"));
-        ExecutionStep b = ExecutionStep.pending("step_b", "写 B", "FILE_WRITE", List.of(),
-                List.of("write_file"), "", "low", List.of("src/a/b/**"));
-
-        ScheduleWave wave = new TeamScheduler().nextWave(List.of(a, b));
-        assertTrue(wave.serialReasons().containsKey("step_a"));
-        assertTrue(wave.serialReasons().get("step_a").contains("写入范围重叠"));
-    }
-
-    @Test
-    void undefinedScopeProducesSerialReason() {
-        ExecutionStep a = ExecutionStep.pending("step_a", "写 A", "FILE_WRITE", List.of(),
-                List.of("write_file"), "", "low", List.of());
-
-        ScheduleWave wave = new TeamScheduler().nextWave(List.of(a));
-        assertTrue(wave.serialReasons().containsKey("step_a"));
-        assertTrue(wave.serialReasons().get("step_a").contains("写入范围未声明"));
-    }
-
-    @Test
-    void nonOverlappingScopesProduceNoSerialReason() {
-        ExecutionStep a = ExecutionStep.pending("step_a", "写 A", "FILE_WRITE", List.of(),
-                List.of("write_file"), "", "low", List.of("src/a/**"));
-        ExecutionStep b = ExecutionStep.pending("step_b", "写 B", "FILE_WRITE", List.of(),
-                List.of("write_file"), "", "low", List.of("src/b/**"));
-
-        ScheduleWave wave = new TeamScheduler().nextWave(List.of(a, b));
-        assertTrue(wave.serialReasons().isEmpty());
-    }
-
-    @Test
-    void serialReasonIsWaveLevelVeto() {
-        ExecutionStep a = ExecutionStep.pending("step_a", "写 A", "FILE_WRITE", List.of(),
-                List.of("write_file"), "", "low", List.of("src/a/**"));
-        ExecutionStep b = ExecutionStep.pending("step_b", "写 B", "FILE_WRITE", List.of(),
-                List.of("write_file"), "", "low", List.of());
-
-        ScheduleWave wave = new TeamScheduler().nextWave(List.of(a, b));
-        // b 未声明 scope 触发串行原因；a 仍在同一波 mutating 中，由 orchestrator 整波串行。
-        assertEquals(2, wave.mutating().size());
-        assertTrue(wave.serialReasons().containsKey("step_b"));
     }
 }

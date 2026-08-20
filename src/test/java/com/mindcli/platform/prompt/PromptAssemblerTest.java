@@ -20,7 +20,7 @@ class PromptAssemblerTest {
         PromptAssembler assembler = PromptAssembler.createDefault();
 
         String prompt = assembler.assemble(PromptMode.AGENT, PromptContext.builder()
-                .projectMemoryContext("## PAI.md 项目记忆\n- 项目规则")
+                .projectMemoryContext("## MIND.md 项目记忆\n- 项目规则")
                 .memoryContext("## 相关记忆\n用户偏好中文。")
                 .externalContext("## MCP Resources\n- demo://resource")
                 .skillIndex("## 可用 Skills\n- web-access")

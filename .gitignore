@@ -3,8 +3,8 @@
 run-mindcli.cmd
 .mindcli/*
 !.mindcli/
-!.mindcli/PAI.md
-PAI.local.md
+!.mindcli/MIND.md
+MIND.local.md
 
 # 编译输出
 target/

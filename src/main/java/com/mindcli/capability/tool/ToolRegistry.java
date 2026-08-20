@@ -20,7 +20,6 @@ import com.mindcli.platform.security.AuditLog;
 import com.mindcli.platform.security.CommandGuard;
 import com.mindcli.platform.security.PathGuard;
 import com.mindcli.platform.security.PolicyException;
-import com.mindcli.platform.security.WriteScopeRules;
 import com.mindcli.runtime.CancellationContext;
 import com.mindcli.platform.snapshot.RestoreResult;
 import com.mindcli.platform.snapshot.SnapshotService;
@@ -116,7 +115,6 @@ public class ToolRegistry {
     private boolean customSnapshotService;
     private volatile String currentProvider = "";
     private volatile String currentModel = "";
-    private volatile List<String> writeScope = List.of();
 
     public ToolRegistry() {
         this(DEFAULT_COMMAND_TIMEOUT_SECONDS, DEFAULT_TOOL_BATCH_TIMEOUT_SECONDS);
@@ -377,14 +375,6 @@ public class ToolRegistry {
         this.writeFileObserver = observer == null ? (p, ba) -> {} : observer;
     }
 
-    /**
-     * 写入范围硬约束（空 = 不限制）。设置后 write_file / create_project 会校验目标路径是否落在
-     * 任一范围内，越界直接拒绝，而不是仅靠 prompt 约束。
-     */
-    public void setWriteScope(List<String> writeScope) {
-        this.writeScope = writeScope == null ? List.of() : List.copyOf(writeScope);
-    }
-
     public void setLspManager(LspManager lspManager) {
         this.lspManager = lspManager == null ? new LspManager(projectPath) : lspManager;
         this.lspManager.setProjectPath(projectPath);
@@ -421,7 +411,6 @@ public class ToolRegistry {
                     + (MAX_WRITE_FILE_BYTES / 1024 / 1024) + "MB 上限");
         }
         Path safe = pathGuard.resolveSafe(path);
-        enforceWriteScope(safe);
         String before = null;
         try {
             if (Files.exists(safe) && Files.isRegularFile(safe)) {
@@ -646,7 +635,6 @@ public class ToolRegistry {
         String name = args.get("name");
         String type = args.get("type");
         Path projectRoot = pathGuard.resolveSafe(name);
-        enforceWriteScope(projectRoot);
         try {
             Files.createDirectories(projectRoot);
 
@@ -1288,72 +1276,11 @@ public class ToolRegistry {
         return AUDIT_TOOLS.contains(name) || (name != null && name.startsWith("mcp__"));
     }
 
-    private void enforceWriteScope(Path safePath) {
-        if (writeScope.isEmpty()) {
-            return;
-        }
-        Path root = pathGuard.getRootPath();
-        if (WriteScopeRules.containsPath(writeScope, root, safePath)) {
-            return;
-        }
-        throw new PolicyException("写入路径超出 writeScope：" + toSlash(root.relativize(safePath.toAbsolutePath().normalize()))
-                + "（允许范围：" + WriteScopeRules.formatScopes(writeScope) + "）");
-    }
-
-    private static String toSlash(Path path) {
-        return path.toString().replace('\\', '/');
-    }
-
-    private void enforceCommandWriteScope(String command) {
-        if (writeScope.isEmpty() || isKnownReadOnlyCommand(command)) {
-            return;
-        }
-        throw new PolicyException("execute_command 在 writeScope 下被拒绝：无法验证命令写入只发生在允许范围 "
-                + WriteScopeRules.formatScopes(writeScope)
-                + " 内；请改用 write_file / create_project，或将该命令拆到无写入范围的串行步骤。");
-    }
-
-    private static boolean isKnownReadOnlyCommand(String command) {
-        if (command == null || command.isBlank()) {
-            return false;
-        }
-        String normalized = command.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
-        if (normalized.contains(">") || normalized.contains(";") || normalized.contains("&&")
-                || normalized.contains("||") || normalized.contains("|")) {
-            return false;
-        }
-        return normalized.equals("git status")
-                || normalized.startsWith("git status ")
-                || isSafeGitDiffCommand(normalized)
-                || normalized.equals("ls")
-                || normalized.startsWith("ls ")
-                || normalized.equals("dir")
-                || normalized.startsWith("dir ")
-                || normalized.equals("get-childitem")
-                || normalized.startsWith("get-childitem ");
-    }
-
-    private static boolean isSafeGitDiffCommand(String normalized) {
-        if (!normalized.equals("git diff") && !normalized.startsWith("git diff ")) {
-            return false;
-        }
-        for (String token : normalized.split(" ")) {
-            if (token.equals("--output")
-                    || token.startsWith("--output=")
-                    || token.equals("--ext-diff")
-                    || token.equals("--textconv")) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     private String executeCommand(String command) {
         String normalized = command == null ? "" : command.trim();
         if (normalized.isEmpty()) {
             return "执行命令失败: 命令不能为空";
         }
-        enforceCommandWriteScope(normalized);
         String denyReason = CommandGuard.check(normalized);
         if (denyReason != null) {
             // 抛 PolicyException 让外层 executeTool 统一写 audit 并格式化拒绝消息，

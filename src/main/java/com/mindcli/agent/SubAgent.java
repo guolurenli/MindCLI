@@ -226,7 +226,7 @@ public class SubAgent {
         try {
             return ProjectMemoryLoader.createDefault(Path.of(toolRegistry.getProjectPath())).loadForPrompt();
         } catch (Exception e) {
-            log.warn("[{}] failed to load PAI.md project memory", name, e);
+            log.warn("[{}] failed to load MIND.md project memory", name, e);
             return "";
         }
     }

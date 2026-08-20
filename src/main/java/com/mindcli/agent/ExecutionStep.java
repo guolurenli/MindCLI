@@ -12,46 +12,38 @@ import java.util.List;
 record ExecutionStep(String id, String description, String type,
                      List<String> dependencies, List<String> requiredTools,
                      String preferredAgent, String riskLevel,
-                     List<String> writeScope,
                      String result, StepStatus status) {
     static ExecutionStep pending(String id, String description, String type, List<String> dependencies) {
-        return pending(id, description, type, dependencies, List.of(), "", "", List.of());
+        return pending(id, description, type, dependencies, List.of(), "", "");
     }
 
     static ExecutionStep pending(String id, String description, String type, List<String> dependencies,
                                  List<String> requiredTools, String preferredAgent, String riskLevel) {
-        return pending(id, description, type, dependencies, requiredTools, preferredAgent, riskLevel, List.of());
-    }
-
-    static ExecutionStep pending(String id, String description, String type, List<String> dependencies,
-                                 List<String> requiredTools, String preferredAgent, String riskLevel,
-                                 List<String> writeScope) {
         return new ExecutionStep(id, description, type, dependencies,
                 requiredTools == null ? List.of() : List.copyOf(requiredTools),
                 preferredAgent == null ? "" : preferredAgent,
                 riskLevel == null || riskLevel.isBlank() ? "low" : riskLevel,
-                writeScope == null ? List.of() : List.copyOf(writeScope),
                 null, StepStatus.PENDING);
     }
 
     ExecutionStep withResult(String result) {
         return new ExecutionStep(id, description, type, dependencies, requiredTools,
-                preferredAgent, riskLevel, writeScope, result, StepStatus.COMPLETED);
+                preferredAgent, riskLevel, result, StepStatus.COMPLETED);
     }
 
     ExecutionStep withFailed(String result) {
         return new ExecutionStep(id, description, type, dependencies, requiredTools,
-                preferredAgent, riskLevel, writeScope, result, StepStatus.FAILED);
+                preferredAgent, riskLevel, result, StepStatus.FAILED);
     }
 
     ExecutionStep withSkipped(String reason) {
         return new ExecutionStep(id, description, type, dependencies,
-                requiredTools, preferredAgent, riskLevel, writeScope,
+                requiredTools, preferredAgent, riskLevel,
                 reason != null ? reason : "步骤被跳过", StepStatus.SKIPPED);
     }
 
     ExecutionStep started() {
         return new ExecutionStep(id, description, type, dependencies, requiredTools,
-                preferredAgent, riskLevel, writeScope, result, StepStatus.RUNNING);
+                preferredAgent, riskLevel, result, StepStatus.RUNNING);
     }
 }

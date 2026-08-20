@@ -766,7 +766,7 @@ public class PlanExecuteAgent {
         try {
             return ProjectMemoryLoader.createDefault(Path.of(toolRegistry.getProjectPath())).loadForPrompt();
         } catch (Exception e) {
-            log.warn("Failed to load PAI.md project memory", e);
+            log.warn("Failed to load MIND.md project memory", e);
             return "";
         }
     }

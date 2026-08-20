@@ -1,4 +1,4 @@
-# PAI.md
+# MIND.md
 
 ## Commands
 

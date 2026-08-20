@@ -4,7 +4,7 @@
 
 ## 信息优先级
 
-1. 代码实际行为 > 2. `AGENTS.md` > 3. `PAI.md` > 4. `README.md` > 5. `ROADMAP.md` > 6. `CLAUDE.md`
+1. 代码实际行为 > 2. `AGENTS.md` > 3. `MIND.md` > 4. `README.md` > 5. `ROADMAP.md` > 6. `CLAUDE.md`
 
 `ROADMAP.md` 代表演进方向，不代表已交付。
 
@@ -13,7 +13,7 @@
 - 项目名：`MindCLI`
 - 定位：面向商业使用的 Java Agent CLI 产品，对标 Claude Code
 - 已交付 23 期 + Agent Runtime 企业级改造 Phase 6 + 记忆治理 Phase 8（ReAct → Plan+DAG → Memory → RAG → Multi-Agent → HITL → 并行工具 → 多模型 → 联网 → MCP 核心 → MCP 高级 → 长上下文 → Chrome DevTools → CDP 会话复用 → Skill → TUI → LSP 诊断 → Side-Git 快照 → Prompt 分层 → Runtime API → 图片输入 → 微信 iLink 通道文本 MVP；Runtime Spine / Dispatcher / Profile 化 Multi-Agent、记忆候选审批、策略裁决与审计导出已落地）
-- `PAI.md` 是 MindCLI 的项目级记忆文件：启动时自动注入 system prompt，适合团队共享的长期稳定规则；个人/会变化的经验继续用 `/save` 长期记忆。
+- `MIND.md` 是 MindCLI 的项目级记忆文件：启动时自动注入 system prompt，适合团队共享的长期稳定规则；个人/会变化的经验继续用 `/save` 长期记忆。
 - 下一步：OAuth / sampling / recovery 作为后续 MCP 增强
 - Banner 版本：`v16.1.0`，Maven 产物：`mindcli-1.0-SNAPSHOT.jar`（两者不一致是正常状态）
 
@@ -36,7 +36,7 @@ mvn test -Pquick          # 常规回归
 mvn test -Pphase16-smoke  # TUI 相关
 mvn test -Dtest=XxxTest -DskipTests=false   # 针对性
 mvn test -DskipTests=false                  # 全量回归
-/init                    # 生成精简项目级记忆 PAI.md；已有文件不覆盖，/init --force 可重写
+/init                    # 生成精简项目级记忆 MIND.md；已有文件不覆盖，/init --force 可重写
 /export                  # 导出当前 ReAct 会话为 Markdown，包含完整 system prompt
 /memory export --audit   # 导出记忆审计证据 Markdown
 /run inspect <runId>     # 检查指定 Agent Runtime run 的状态、snapshot checkpoint 与恢复提示
@@ -86,7 +86,7 @@ src/main/java/com/mindcli/
 
 启动与 inline 渲染当前约定：
 
-- 开屏 Banner 使用无右边框的 cyber-lite 简洁布局，避免 CJK/ANSI 字宽导致右侧竖线错位；默认首屏展示 `MINDCLI // v...`、MODEL/RUNTIME、MCP、SKILLS 与 `COMMAND /`、`CONTEXT @path`、`IMAGE @image:` 操作提示，不再把 MCP server 明细刷成启动日志。启动首屏优先从 `src/main/resources/ui/*.png` 随机选择一张图片，并调用本机 `chafa -s 10x10 --dither ordered` 直接渲染到真实终端，chafa 子进程必须继承真实 stdin/stdout 以保留终端探测能力，文字 Banner 放在图片下方；`MINDCLI_CHAFA_BIN` 可指定 chafa 路径，`MINDCLI_UI_MASCOT=false` 禁用。若 chafa 不存在、超时或渲染失败，必须直接回退纯文字首屏，不再维护 `.ans` 资源兜底。启动路径会先通过 `TerminalEncoding` 探测/配置 JLine 终端编码（优先 `-Dmindcli.terminal.encoding`，其次 `MINDCLI_TERMINAL_ENCODING` / `.env`，再到 JVM `sun.stdout.encoding` / `sun.stderr.encoding` / `sun.stdin.encoding`、`System.console().charset()` 和 JVM 默认编码），并把 `-Dmindcli.terminal.type` / `MINDCLI_TERMINAL_TYPE` / `TERM` 中的非 `dumb` 类型传给 JLine。
+- 开屏 Banner 使用无右边框的 cyber-lite 简洁布局，避免 CJK/ANSI 字宽导致右侧竖线错位；默认首屏展示 `MindCLI // v...`、Model/Runtime、Mcp、Skills 与 `Command /`、`Context @path`、`Image @image:` 操作提示，不再把 MCP server 明细刷成启动日志。启动 Banner 必须显式使用猫耳助手暖色语义分层：品牌/运行态用 `ACCENT`，版本/模型/主要值用 `PRIMARY`，字段标签用 `SECONDARY`，说明性提示用 `MUTED`，避免首屏退化成黑白灰。启动期 MCP 只允许一行后台启动摘要，并且由 Banner note 展示在 logo 与主信息下方；不要在猫耳图渲染前刷多行进度日志。启动首屏优先从 `src/main/resources/ui/*.png` 随机选择一张图片，并调用本机 `chafa -s 10x10 --dither ordered` 直接渲染到真实终端，chafa 子进程必须继承真实 stdin/stdout 以保留终端探测能力，文字 Banner 放在图片下方；`MINDCLI_CHAFA_BIN` 可指定 chafa 路径，`MINDCLI_UI_MASCOT=false` 禁用。若 chafa 不存在、超时或渲染失败，必须直接回退纯文字首屏，不再维护 `.ans` 资源兜底。启动路径会先通过 `TerminalEncoding` 探测/配置 JLine 终端编码（优先 `-Dmindcli.terminal.encoding`，其次 `MINDCLI_TERMINAL_ENCODING` / `.env`，再到 JVM `sun.stdout.encoding` / `sun.stderr.encoding` / `sun.stdin.encoding`、`System.console().charset()` 和 JVM 默认编码），并把 `-Dmindcli.terminal.type` / `MINDCLI_TERMINAL_TYPE` / `TERM` 中的非 `dumb` 类型传给 JLine。
 - inline 模式使用 JLine 4 的 LineReader 编辑能力，默认提示符是 `* `，右提示显示 `message / @path / @image`。
 - 默认 CLI 启动路径先建立 `Terminal -> LineReader -> Renderer`，但 `Renderer.start()` 和底部 dock 初始化必须放在启动猫耳图之后；猫耳图由 native chafa 直接写真实终端，文字 Banner 随后直接打印在图片下方，避免 JLine Status/scroll-region 改变 chafa 的终端探测与显示效果。
 - `BottomStatusBar` 现在是 JLine `Status` 托管的底部 dock：由 JLine 维护滚动区域和状态行位置，不再手写 `\n` / `moveUp` / `CLEAR_TO_EOS` 清屏。输入期会把 LineReader 光标定位到 dock 上方一行，让 `*` 输入行和 Status 同处底部区域；dock 保留两类信息：上层模式 + `MCP n/n | SKILL n/n` 摘要，下层 `MINDCLI // model | phase | CTX [...]` 与 `IN/OUT/CACHE`、cost、elapsed、cwd。关键字段可用 cyber-lite 的 JLine `AttributedString` 彩色样式突出，但纯文本格式和宽度裁剪逻辑要保持稳定。`CTX` 表示当前仍会带入下一轮请求的上下文估算；`IN/OUT/CACHE` 表示最近任务的 LLM 调用统计，二者不要混用。
@@ -103,8 +103,8 @@ src/main/java/com/mindcli/
 - `LineReader` 使用 `app/cli/interaction/MindCliCompleter` 做上下文补全：`/model` provider、`/mcp` 子命令与 server、`/skill` 子命令与 skill name、`/task` / `/browser` / `/snapshot` 子命令、`@image:` 本地路径、本地 `@path` 和 MCP resource `@server:uri` 引用都应从同一个 completer 出口维护。
 - 普通用户输入进入 Agent 前会先展开 MCP resource mention，再由 `LocalPathMentionExpander` 展开本地 `@path`：文件会内联为 `<file>` 块，目录会内联为 `<directory>` 列表；绝对路径或符号链接逃逸项目根时保持原文不展开。
 - `LineReader` 使用 `app/cli/interaction/MindCliHistory` 持久化输入历史到 `~/.mindcli/history/input.history`；如果 `mindcli.history.file` / `MINDCLI_HISTORY_FILE` 指向目录，也会自动使用该目录下的 `input.history`，避免把目录当文件读；默认忽略空白、重复、明显密钥/Bearer、base64 图片和超长输入，用户可用 `/history clear` 清空本机输入历史。
-- 启动期会加载 `~/.mindcli/PAI.md`、项目根 `PAI.md`、项目根 `.mindcli/PAI.md`、`PAI.local.md`、`.mindcli/PAI.local.md`，按此顺序注入 Project Context；`@relative/path.md` 可导入项目根内文件，总注入内容有字符预算，避免项目记忆变成 token 噪音。
-- `/init` 会根据当前项目生成短 `PAI.md`，只放 commands / project positioning / architecture / pitfalls / don'ts；默认不覆盖已有文件。
+- 启动期会加载 `~/.mindcli/MIND.md`、项目根 `MIND.md`、项目根 `.mindcli/MIND.md`、`MIND.local.md`、`.mindcli/MIND.local.md`，按此顺序注入 Project Context；`@relative/path.md` 可导入项目根内文件，总注入内容有字符预算，避免项目记忆变成 token 噪音。
+- `/init` 会根据当前项目生成短 `MIND.md`，只放 commands / project positioning / architecture / pitfalls / don'ts；默认不覆盖已有文件。
 - `/export` 导出当前 ReAct `conversationHistory` 为 Markdown 到 `~/.mindcli/exports/session-*.md`；只支持无参数命令，包含完整 system prompt，便于检查 LLM 实际接收前的指令。
 - `Main.java` 是 CLI 入口 facade，当前包路径为 `app/cli/Main.java`；启动前置配置 helper 由 `CliBootstrap` 承接，启动首屏和状态摘要由 `CliStartupView` 承接；低风险 slash command 的格式化和编排优先沉到 `app/cli/command/*`，当前 `/browser`、`/config`、`/export`、`/memory`、`/save`、`/snapshot`、`/restore`、`/run inspect`、`/wechat` 已由专门 handler 承接。
 - JLine 交互升级计划记录在 `docs/phase-22-jline-interaction-upgrade.md`。
@@ -116,7 +116,7 @@ src/main/java/com/mindcli/
 - 长期记忆只通过 `/save` 或用户明确要求保存；不要自动提取事实
 - 自动长期记忆提取默认关闭；即使显式设置 `mindcli.memory.autoExtract.enabled=true` 或 `MINDCLI_MEMORY_AUTO_EXTRACT=true`，也只能生成 `MemoryProposal` 候选，不得直接写入长期记忆。
 - 候选记忆必须经 `/memory proposals` 查看、`/memory approve <id>` 批准或 `/memory reject <id>` 拒绝；不要绕过候选层直接把自动提取结果写入长期记忆。
-- `PAI.md` 管团队共享的项目规则，长期记忆管个人或项目作用域的稳定事实；不要把一次性协作经验写进 `PAI.md`
+- `MIND.md` 管团队共享的项目规则，长期记忆管个人或项目作用域的稳定事实；不要把一次性协作经验写进 `MIND.md`
 - 长期记忆只保存跨会话稳定事实，不保存临时指令；默认项目级作用域，跨项目通用偏好才用 global
 - 长期记忆注入 prompt 前必须过滤 `status=revoked/deleted/expired` 或 `expiresAt` 已过期的条目；缺失这些治理 metadata 的旧记忆按原兼容规则可见。
 - 长期记忆必须可审计和可删除：`/memory policy` / `/memory list` / `/memory search <关键词>` / `/memory delete <id>` / `/memory clear` / `/memory export --audit`
@@ -160,6 +160,14 @@ src/main/java/com/mindcli/
 
 - system prompt 索引段注入三处提示词，上限 20 个 / 4KB
 - `load_skill` → tool_result 直接返回 SKILL.md 全文 → 同一 turn 内立即生效
+
+### 视觉输出（HTML 交付物）
+
+- 凡是要「看」或「分享」而非「粘贴到外部平台」的交付物（计划、代码评审、方案对比表、报告、看板、会话交接），渲染成**单个自包含 HTML 文件**：内联 CSS、不发起外部请求。
+- HTML 文件统一写到项目根 `html/` 目录（绝对路径 `D:\IntelliJ IDEA 2024.3\IdeaProjects\MindCLI\html`），不要写到系统临时目录。
+- 交付前必须在浏览器真正**查看**渲染结果（Windows `start "" "<路径>"`），并**打印绝对路径**；不要把同样的内容再以整段 Markdown 复述一遍。
+- 保留 Markdown 的内容：要粘贴到外部平台的东西（发帖文案、正文、Notion 页面正文），以及所有核心配置、指令、记忆文件——HTML 会破坏粘贴目标或白白消耗 token。
+- 「给我看看 / show me」→ 渲染成单页 HTML 并打开，而不是输出大段段落。
 
 ## 修改时的硬规则
 

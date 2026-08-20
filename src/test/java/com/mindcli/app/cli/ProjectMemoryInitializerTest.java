@@ -22,9 +22,9 @@ class ProjectMemoryInitializerTest {
 
         ProjectMemoryInitializer.InitResult result = ProjectMemoryInitializer.initialize(tempDir, false);
 
-        String content = Files.readString(tempDir.resolve("PAI.md"));
+        String content = Files.readString(tempDir.resolve("MIND.md"));
         assertTrue(result.written());
-        assertTrue(content.contains("# PAI.md"));
+        assertTrue(content.contains("# MIND.md"));
         assertTrue(content.contains("MindCLI 是面向商业使用的 Java Agent CLI 产品"));
         assertTrue(content.contains("mvn test -Pquick"));
         assertTrue(content.contains("不要为某个模式创建孤立能力"));
@@ -33,22 +33,22 @@ class ProjectMemoryInitializerTest {
 
     @Test
     void doesNotOverwriteExistingFileWithoutForce() throws Exception {
-        Files.writeString(tempDir.resolve("PAI.md"), "existing");
+        Files.writeString(tempDir.resolve("MIND.md"), "existing");
 
         ProjectMemoryInitializer.InitResult result = ProjectMemoryInitializer.initialize(tempDir, false);
 
         assertFalse(result.written());
-        assertTrue(Files.readString(tempDir.resolve("PAI.md")).equals("existing"));
+        assertTrue(Files.readString(tempDir.resolve("MIND.md")).equals("existing"));
     }
 
     @Test
     void forceOverwritesExistingFile() throws Exception {
         Files.writeString(tempDir.resolve("README.md"), "# MindCLI\n");
-        Files.writeString(tempDir.resolve("PAI.md"), "existing");
+        Files.writeString(tempDir.resolve("MIND.md"), "existing");
 
         ProjectMemoryInitializer.InitResult result = ProjectMemoryInitializer.initialize(tempDir, true);
 
         assertTrue(result.written());
-        assertTrue(Files.readString(tempDir.resolve("PAI.md")).contains("# PAI.md"));
+        assertTrue(Files.readString(tempDir.resolve("MIND.md")).contains("# MIND.md"));
     }
 }

@@ -81,8 +81,7 @@ class PlanSchemaParserTest {
                       "dependencies": [],
                       "requiredTools": ["read_file", "write_file"],
                       "preferredAgent": "code-writer",
-                      "riskLevel": "medium",
-                      "writeScope": ["src/main/java/auth/login/**"]
+                      "riskLevel": "medium"
                     }
                   ]
                 }
@@ -93,7 +92,6 @@ class PlanSchemaParserTest {
         assertEquals(List.of("read_file", "write_file"), task.requiredTools());
         assertEquals("code-writer", task.preferredAgent());
         assertEquals("medium", task.riskLevel());
-        assertEquals(List.of("src/main/java/auth/login/**"), task.writeScope());
     }
 
     @Test

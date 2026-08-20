@@ -145,17 +145,38 @@ final class CliStartupView {
                   + (info.skillsSummary().isEmpty() ? "" : " · " + info.skillsSummary());
         List<String> lines = new ArrayList<>(List.of(
                 "",
-                "   " + AnsiStyle.emphasis("MINDCLI // v" + version),
-                "   " + AnsiStyle.subtle("MODEL   " + model + " / " + provider + "        RUNTIME  ReAct"),
-                "   " + AnsiStyle.subtle("MCP     " + mcp),
-                "   " + AnsiStyle.subtle("SKILLS  " + skills),
+                "   " + AnsiStyle.section("MindCLI //") + " " + AnsiStyle.heading("v" + version),
+                startupInfoLine("Model", model + " / " + provider, "Runtime", "ReAct"),
+                startupInfoLine("Mcp", mcp),
+                startupInfoLine("Skills", skills),
                 "",
-                "   " + AnsiStyle.subtle("COMMAND / palette    CONTEXT @path    IMAGE @image:    CTRL+O expand")
+                "   " + startupHint("Command", "/ palette")
+                        + "    " + startupHint("Context", "@path")
+                        + "    " + startupHint("Image", "@image:")
+                        + "    " + startupHint("Ctrl+O", "expand")
         ));
         if (info.note() != null && !info.note().isBlank()) {
             lines.add("");
             lines.add(AnsiStyle.subtle(info.note().replace('\n', ' ')));
         }
         return lines;
+    }
+
+    private static String startupInfoLine(String label, String value) {
+        return "   " + AnsiStyle.codeLabel(padLabel(label)) + " " + AnsiStyle.heading(value);
+    }
+
+    private static String startupInfoLine(String firstLabel, String firstValue, String secondLabel, String secondValue) {
+        return "   " + AnsiStyle.codeLabel(padLabel(firstLabel)) + " " + AnsiStyle.heading(firstValue)
+                + "        " + AnsiStyle.codeLabel(secondLabel) + "  " + AnsiStyle.section(secondValue);
+    }
+
+    private static String startupHint(String label, String value) {
+        return AnsiStyle.codeLabel(label) + " " + AnsiStyle.subtle(value);
+    }
+
+    private static String padLabel(String label) {
+        String safe = label == null ? "" : label;
+        return safe.length() >= 7 ? safe : safe + " ".repeat(7 - safe.length());
     }
 }

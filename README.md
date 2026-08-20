@@ -96,7 +96,7 @@ src/main/java/com/mindcli/
 | 浏览器 | 默认 `chrome-devtools` MCP isolated 模式，`/browser connect` 可复用本机 Chrome 登录态 |
 | Web | `web_search` 支持 zhipu / serpapi / searxng，`web_fetch` 通过 HTTP + Jsoup 提取 Markdown |
 | 安全 | HITL、PathGuard、CommandGuard、BrowserGuard、危险工具 JSONL 审计 |
-| 交互体验 | JLine 4 cyber-lite inline renderer、本机 chafa 10x10 随机猫耳助手启动图、`MINDCLI //` 底部状态栏、Lanterna cyber-lite 三栏 TUI、slash 补全、输入高亮、`@path` 与 MCP resource 展开 |
+| 交互体验 | JLine 4 cyber-lite inline renderer、本机 chafa 10x10 随机猫耳助手启动图、猫耳暖色分层启动 Banner、MCP 启动摘要收敛到首屏 note、`MINDCLI //` 底部状态栏、Lanterna cyber-lite 三栏 TUI、slash 补全、输入高亮、`@path` 与 MCP resource 展开 |
 | 其他入口 | 微信 iLink 通道、后台任务 `/task`、本地 Runtime HTTP API |
 
 ## 内置工具
@@ -130,7 +130,7 @@ src/main/java/com/mindcli/
 | `/clear` | 清空当前对话历史与短期记忆，长期记忆保留 |
 | `/compact` | 手动压缩当前 ReAct conversation history |
 | `/context` / `/ctx` | 查看上下文、记忆与 token 状态 |
-| `/init` / `/init --force` | 生成或强制重写项目级 `PAI.md` |
+| `/init` / `/init --force` | 生成或强制重写项目级 `MIND.md` |
 | `/export` | 导出当前 ReAct 会话为 Markdown |
 | `/history clear` | 清空本机输入历史 |
 | `/exit` / `/quit` | 退出程序 |
@@ -333,7 +333,7 @@ mvn test -DskipTests=false
 | 文档 | 说明 |
 |---|---|
 | `AGENTS.md` | Agent / 新线程首读入口，包含维护硬规则 |
-| `PAI.md` | 项目级记忆，会注入 system prompt |
+| `MIND.md` | 项目级记忆，会注入 system prompt |
 | `docs/mindcli-current-architecture-report.md` | 当前架构分析报告 |
 | `docs/mindcli-agent-runtime-implementation-plan.md` | Agent Runtime 演进实现计划 |
 | `ROADMAP.md` | 后续规划，不能等同于已交付功能 |

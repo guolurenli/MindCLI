@@ -261,7 +261,9 @@ public class Main {
                     startupNote = appendStartupNote(startupNote, bootstrapResult.message());
                 }
                 mcpServerManager.loadConfiguredServers();
-                mcpServerManager.startAll(ui, mcpStartupWait());
+                Duration mcpWait = mcpStartupWait();
+                mcpServerManager.startAll(null, mcpWait);
+                startupNote = appendStartupNote(startupNote, mcpServerManager.startupNotice(mcpWait));
                 Runtime.getRuntime().addShutdownHook(new Thread(mcpServerManager::close, "mindcli-mcp-shutdown"));
             } catch (Exception e) {
                 startupNote = appendStartupNote(startupNote, "MCP 初始化失败: " + e.getMessage());
@@ -445,13 +447,13 @@ public class Main {
                             if (result.written()) {
                                 ui.println("✅ " + result.message());
                                 ui.println("   路径: " + result.path());
-                                ui.println("   这份 PAI.md 会在后续 system prompt 的 Project Context 中注入。\n");
+                                ui.println("   这份 MIND.md 会在后续 system prompt 的 Project Context 中注入。\n");
                             } else {
                                 ui.println("ℹ️ " + result.message());
                                 ui.println("   路径: " + result.path() + "\n");
                             }
                         } catch (IOException e) {
-                            ui.println("❌ 生成 PAI.md 失败: " + e.getMessage() + "\n");
+                            ui.println("❌ 生成 MIND.md 失败: " + e.getMessage() + "\n");
                         }
                         continue;
                     }

@@ -175,7 +175,7 @@ public class Planner {
             String context = projectMemorySupplier.get();
             return context == null ? "" : context.trim();
         } catch (Exception e) {
-            log.warn("Failed to load PAI.md project memory for planner", e);
+            log.warn("Failed to load MIND.md project memory for planner", e);
             return "";
         }
     }

@@ -98,22 +98,10 @@ public class PlanSchemaParser {
         }
         String preferredAgent = node.path("preferredAgent").asText("");
         String riskLevel = node.path("riskLevel").asText("");
-        List<String> writeScope = new ArrayList<>();
-        JsonNode writeScopeNode = node.path("writeScope");
-        if (writeScopeNode.isArray()) {
-            for (JsonNode item : writeScopeNode) {
-                String value = item.asText("");
-                if (!value.isBlank()) {
-                    writeScope.add(value.trim());
-                }
-            }
-        } else if (!writeScopeNode.isMissingNode() && !writeScopeNode.isNull()) {
-            throw new PlanParseException("PLAN_INVALID_WRITE_SCOPE: writeScope");
-        }
 
         return new PlanTaskSpec(id, description, type, List.copyOf(dependencies), critical,
                 maxRetries, degradation, List.copyOf(evidence), List.copyOf(requiredTools),
-                preferredAgent, riskLevel, List.copyOf(writeScope));
+                preferredAgent, riskLevel);
     }
 
     private String text(JsonNode node, String field) throws IOException {

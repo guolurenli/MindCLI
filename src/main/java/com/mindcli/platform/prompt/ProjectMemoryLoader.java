@@ -60,33 +60,33 @@ public class ProjectMemoryLoader {
         if (body.isEmpty()) {
             return "";
         }
-        return "## PAI.md 项目记忆\n\n" + body;
+        return "## MIND.md 项目记忆\n\n" + body;
     }
 
     private List<MemorySource> sources() {
         List<MemorySource> sources = new ArrayList<>();
         if (userConfigDir != null) {
-            sources.add(new MemorySource(userConfigDir.resolve("PAI.md"), userConfigDir));
+            sources.add(new MemorySource(userConfigDir.resolve("MIND.md"), userConfigDir));
         }
-        sources.add(new MemorySource(projectRoot.resolve("PAI.md"), projectRoot));
-        sources.add(new MemorySource(projectRoot.resolve(".mindcli").resolve("PAI.md"), projectRoot));
-        sources.add(new MemorySource(projectRoot.resolve("PAI.local.md"), projectRoot));
-        sources.add(new MemorySource(projectRoot.resolve(".mindcli").resolve("PAI.local.md"), projectRoot));
+        sources.add(new MemorySource(projectRoot.resolve("MIND.md"), projectRoot));
+        sources.add(new MemorySource(projectRoot.resolve(".mindcli").resolve("MIND.md"), projectRoot));
+        sources.add(new MemorySource(projectRoot.resolve("MIND.local.md"), projectRoot));
+        sources.add(new MemorySource(projectRoot.resolve(".mindcli").resolve("MIND.local.md"), projectRoot));
         return sources;
     }
 
     private String readWithImports(Path file, Path importRoot, Set<Path> importStack, int depth) {
         Path normalized = file.toAbsolutePath().normalize();
         if (depth > MAX_IMPORT_DEPTH) {
-            log.warn("Skipping PAI.md import beyond depth {}: {}", MAX_IMPORT_DEPTH, normalized);
+            log.warn("Skipping MIND.md import beyond depth {}: {}", MAX_IMPORT_DEPTH, normalized);
             return "";
         }
         if (!normalized.startsWith(importRoot) || !Files.isRegularFile(normalized)) {
-            log.warn("Skipping PAI.md import outside allowed root or missing file: {}", normalized);
+            log.warn("Skipping MIND.md import outside allowed root or missing file: {}", normalized);
             return "";
         }
         if (!importStack.add(normalized)) {
-            log.warn("Skipping cyclic PAI.md import: {}", normalized);
+            log.warn("Skipping cyclic MIND.md import: {}", normalized);
             return "";
         }
 
@@ -106,7 +106,7 @@ public class ProjectMemoryLoader {
             }
             return out.toString();
         } catch (IOException e) {
-            log.warn("Failed to read PAI.md memory file: {}", normalized, e);
+            log.warn("Failed to read MIND.md memory file: {}", normalized, e);
             return "";
         } finally {
             importStack.remove(normalized);
@@ -128,7 +128,7 @@ public class ProjectMemoryLoader {
     private static String truncateSection(StringBuilder body) {
         int keep = Math.max(0, MAX_TOTAL_CHARS - 80);
         String truncated = body.substring(0, Math.min(body.length(), keep)).stripTrailing();
-        return "## PAI.md 项目记忆\n\n" + truncated + "\n\n[PAI.md 内容已按 " + MAX_TOTAL_CHARS + " 字符预算截断]";
+        return "## MIND.md 项目记忆\n\n" + truncated + "\n\n[MIND.md 内容已按 " + MAX_TOTAL_CHARS + " 字符预算截断]";
     }
 
     private static String label(Path path) {

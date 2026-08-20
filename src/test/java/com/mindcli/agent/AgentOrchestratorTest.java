@@ -112,67 +112,6 @@ class AgentOrchestratorTest {
     }
 
     @Test
-    void shouldParseWriteScopeFromPlanTasks() {
-        AgentOrchestrator orchestrator = new AgentOrchestrator(new GLMClient("test-key"));
-        String planJson = """
-                {
-                    "schemaVersion": 3,
-                    "summary": "迁移认证模块",
-                    "tasks": [
-                        {
-                            "id": "login",
-                            "description": "迁移 LoginService",
-                            "type": "FILE_WRITE",
-                            "dependencies": [],
-                            "writeScope": ["src/main/java/auth/login/**"]
-                        }
-                    ]
-                }
-                """;
-
-        List<ExecutionStep> steps = orchestrator.parsePlan(planJson);
-
-        assertEquals(1, steps.size());
-        assertEquals(List.of("src/main/java/auth/login/**"), steps.get(0).writeScope());
-    }
-
-    @Test
-    void teamWriteScopeDoesNotLeakToSharedRegistryAfterRun(@TempDir Path tempDir) {
-        StubGLMClient llmClient = new StubGLMClient(List.of(
-                response("""
-                        {
-                          "summary": "单步写入",
-                          "steps": [
-                            {
-                              "id": "s1",
-                              "description": "写入限定范围",
-                              "type": "FILE_WRITE",
-                              "dependencies": [],
-                              "writeScope": ["src/main/**"]
-                            }
-                          ]
-                        }
-                        """),
-                response("写入完成"),
-                response("{\"approved\": true, \"summary\": \"通过\", \"issues\": []}")
-        ));
-        ToolRegistry registry = new ToolRegistry();
-        registry.setProjectPath(tempDir.toString());
-        AgentOrchestrator orchestrator = new AgentOrchestrator(
-                llmClient,
-                registry,
-                new NoOpMemoryManager(tempDir.toFile()));
-
-        orchestrator.run("测试 scope 恢复");
-        String result = registry.executeTool("write_file",
-                "{\"path\":\"outside-team.txt\",\"content\":\"ok\"}");
-
-        assertTrue(result.contains("文件已写入"),
-                "team 结束后共享 ToolRegistry 不应残留旧 writeScope: " + result);
-        assertTrue(Files.exists(tempDir.resolve("outside-team.txt")));
-    }
-
-    @Test
     void shouldParsePlanWithMarkdownCodeBlock() {
         AgentOrchestrator orchestrator = new AgentOrchestrator(new GLMClient("test-key"));
         String planJson = """
@@ -459,7 +398,7 @@ class AgentOrchestratorTest {
     }
 
     @Test
-    void disjointWriteScopesFallBackToSerialWhenNotGitRepo(@TempDir Path tempDir) throws Exception {
+    void mutatingStepsFallBackToSerialWhenNotGitRepo(@TempDir Path tempDir) throws Exception {
         CountDownLatch firstWorkerStarted = new CountDownLatch(1);
         CountDownLatch releaseFirstWorker = new CountDownLatch(1);
         CountDownLatch secondWorkerStarted = new CountDownLatch(1);
@@ -474,8 +413,8 @@ class AgentOrchestratorTest {
                           "schemaVersion": 3,
                           "summary": "两步写入",
                           "tasks": [
-                            {"id": "a", "description": "更新 A 文件", "type": "FILE_WRITE", "dependencies": [], "writeScope": ["src/a/**"]},
-                            {"id": "b", "description": "更新 B 文件", "type": "FILE_WRITE", "dependencies": [], "writeScope": ["src/b/**"]}
+                            {"id": "a", "description": "更新 A 文件", "type": "FILE_WRITE", "dependencies": []},
+                            {"id": "b", "description": "更新 B 文件", "type": "FILE_WRITE", "dependencies": []}
                           ]
                         }
                         """);
@@ -528,7 +467,7 @@ class AgentOrchestratorTest {
     }
 
     @Test
-    void disjointWriteScopesRunInParallelViaWorktreeIsolation(@TempDir Path tempDir) throws Exception {
+    void mutatingStepsRunInParallelViaWorktreeIsolation(@TempDir Path tempDir) throws Exception {
         Path project = tempDir.resolve("project");
         initGitRepo(project);
 
@@ -544,8 +483,8 @@ class AgentOrchestratorTest {
                           "schemaVersion": 3,
                           "summary": "两步写入",
                           "tasks": [
-                            {"id": "a", "description": "更新 A 文件", "type": "FILE_WRITE", "dependencies": [], "writeScope": ["src/a/**"]},
-                            {"id": "b", "description": "更新 B 文件", "type": "FILE_WRITE", "dependencies": [], "writeScope": ["src/b/**"]}
+                            {"id": "a", "description": "更新 A 文件", "type": "FILE_WRITE", "dependencies": []},
+                            {"id": "b", "description": "更新 B 文件", "type": "FILE_WRITE", "dependencies": []}
                           ]
                         }
                         """);
@@ -581,68 +520,7 @@ class AgentOrchestratorTest {
 
             String finalResult = runFuture.get(15, TimeUnit.SECONDS);
             assertTrue(finalResult.contains("多 Agent 协作任务完成"), finalResult);
-            assertEquals(2, peakConcurrency.get(), "写 scope 不重叠的写入步骤应通过 worktree 隔离并行执行");
-        } finally {
-            releaseWorkers.countDown();
-            executor.shutdownNow();
-        }
-    }
-
-    @Test
-    void mixedDeclaredAndUndeclaredWriteScopesSerializeWholeBatch(@TempDir Path tempDir) throws Exception {
-        Path project = tempDir.resolve("project");
-        initGitRepo(project);
-
-        CountDownLatch workersReady = new CountDownLatch(2);
-        CountDownLatch releaseWorkers = new CountDownLatch(1);
-        AtomicInteger peakConcurrency = new AtomicInteger();
-        AtomicInteger currentConcurrency = new AtomicInteger();
-
-        Function<String, LlmClient.ChatResponse> dispatcher = body -> {
-            if (body.contains("请为以下任务制定执行计划")) {
-                return response("""
-                        {
-                          "schemaVersion": 3,
-                          "summary": "混合 scope 写入",
-                          "tasks": [
-                            {"id": "a", "description": "更新 A 文件", "type": "FILE_WRITE", "dependencies": [], "writeScope": ["src/a/**"]},
-                            {"id": "b", "description": "更新 B 文件", "type": "FILE_WRITE", "dependencies": []}
-                          ]
-                        }
-                        """);
-            }
-            if (body.contains("原始任务：")) {
-                return response("{\"approved\": true, \"summary\": \"通过\", \"issues\": []}");
-            }
-            if (body.contains("当前任务：更新 A 文件") || body.contains("当前任务：更新 B 文件")) {
-                return waitForReleaseThenReturn(workersReady, releaseWorkers,
-                        currentConcurrency, peakConcurrency, response("done"));
-            }
-            return response("fallback");
-        };
-
-        ToolRegistry registry = new ToolRegistry();
-        registry.setProjectPath(project.toString());
-        AgentOrchestrator orchestrator = new AgentOrchestrator(
-                new DispatchingStubGLMClient(dispatcher),
-                registry,
-                new NoOpMemoryManager(project.toFile()),
-                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
-                new InMemoryRunStore()
-        );
-
-        ExecutorService executor = Executors.newSingleThreadExecutor();
-        try {
-            Future<String> runFuture = executor.submit(() -> orchestrator.run("测试混合 scope 串行"));
-
-            // 存在未声明 scope 的步骤时整批串行：两个 worker 不应同时阻塞在 chat()
-            assertFalse(workersReady.await(1, TimeUnit.SECONDS),
-                    "混合 scope 时写入步骤应整批串行，不应有第二个 worker 并发进入 chat()");
-            releaseWorkers.countDown();
-
-            String finalResult = runFuture.get(15, TimeUnit.SECONDS);
-            assertTrue(finalResult.contains("多 Agent 协作任务完成"), finalResult);
-            assertEquals(1, peakConcurrency.get(), "混合 scope（一条声明一条未声明）应整批串行");
+            assertEquals(2, peakConcurrency.get(), "无依赖的写入步骤应通过 worktree 隔离并行执行");
         } finally {
             releaseWorkers.countDown();
             executor.shutdownNow();
@@ -1071,127 +949,6 @@ class AgentOrchestratorTest {
                 .containsAll(Set.of("execute", "review")));
         assertEquals(4, childStarts.size(), "execute/review for two attempts");
         assertFalse(childStarts.stream().anyMatch(event -> "reviewer".equals(event.attributes().get("role"))));
-    }
-
-    @Test
-    void mutatingStepDelegationIncludesFileOwnershipBoundaries(@TempDir Path tempDir) {
-        List<String> workerPrompts = new ArrayList<>();
-        DispatchingStubGLMClient llmClient = new DispatchingStubGLMClient(lastUserMessage -> {
-            if (lastUserMessage.contains("请为以下任务制定执行计划")) {
-                return response("""
-                        {
-                          "schemaVersion": 3,
-                          "summary": "迁移认证模块",
-                          "tasks": [
-                            {
-                              "id": "login",
-                              "description": "迁移 LoginService",
-                              "type": "FILE_WRITE",
-                              "dependencies": [],
-                              "writeScope": ["src/main/java/auth/login/**"]
-                            },
-                            {
-                              "id": "token",
-                              "description": "迁移 TokenService",
-                              "type": "FILE_WRITE",
-                              "dependencies": [],
-                              "writeScope": ["src/main/java/auth/token/**"]
-                            }
-                          ]
-                        }
-                        """);
-            }
-            if (lastUserMessage.contains("自审阶段")) {
-                return response("{\"approved\": true, \"summary\": \"通过\", \"issues\": []}");
-            }
-            workerPrompts.add(lastUserMessage);
-            if (lastUserMessage.contains("LoginService")) {
-                return response("login migrated");
-            }
-            if (lastUserMessage.contains("TokenService")) {
-                return response("token migrated");
-            }
-            return response("done");
-        });
-        RecordingRunStore runStore = new RecordingRunStore();
-        ToolRegistry registry = new ToolRegistry();
-        registry.setProjectPath(tempDir.toString());
-        AgentOrchestrator orchestrator = new AgentOrchestrator(
-                llmClient,
-                registry,
-                new NoOpMemoryManager(tempDir.toFile()),
-                System.out,
-                runStore
-        );
-
-        orchestrator.run("迁移认证模块");
-
-        assertEquals(2, workerPrompts.size());
-        String loginPrompt = workerPrompts.stream()
-                .filter(prompt -> prompt.contains("LoginService"))
-                .findFirst()
-                .orElseThrow();
-        assertTrue(loginPrompt.contains("允许修改范围"));
-        assertTrue(loginPrompt.contains("src/main/java/auth/login/**"));
-        assertTrue(loginPrompt.contains("禁止修改范围"));
-        assertTrue(loginPrompt.contains("src/main/java/auth/token/**"));
-
-        AgentRunEvent workerStart = runStore.allEvents().stream()
-                .filter(event -> event.type() == AgentRunEventType.RUN_STARTED)
-                .filter(event -> "worker".equals(event.attributes().get("role")))
-                .findFirst()
-                .orElseThrow();
-        assertEquals("src/main/java/auth/login/**", workerStart.attributes().get("writeScope"));
-        assertEquals("src/main/java/auth/token/**", workerStart.attributes().get("forbiddenWriteScope"));
-    }
-
-    @Test
-    void mutatingReadyBatchReportsOverlappingWriteScopeAsSerialReason(@TempDir Path tempDir) {
-        StubGLMClient llmClient = new StubGLMClient(List.of(
-                response("""
-                        {
-                          "schemaVersion": 3,
-                          "summary": "重叠写入范围",
-                          "tasks": [
-                            {
-                              "id": "auth",
-                              "description": "重构 auth 模块",
-                              "type": "FILE_WRITE",
-                              "dependencies": [],
-                              "writeScope": ["src/main/java/auth/**"]
-                            },
-                            {
-                              "id": "login",
-                              "description": "迁移 LoginService",
-                              "type": "FILE_WRITE",
-                              "dependencies": [],
-                              "writeScope": ["src/main/java/auth/login/**"]
-                            }
-                          ]
-                        }
-                        """),
-                response("auth changed"),
-                response("{\"approved\": true, \"summary\": \"通过\", \"issues\": []}"),
-                response("login changed"),
-                response("{\"approved\": true, \"summary\": \"通过\", \"issues\": []}")
-        ));
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        PrintStream out = new PrintStream(output, true, StandardCharsets.UTF_8);
-        ToolRegistry registry = new ToolRegistry();
-        registry.setProjectPath(tempDir.toString());
-        AgentOrchestrator orchestrator = new AgentOrchestrator(
-                llmClient,
-                registry,
-                new NoOpMemoryManager(tempDir.toFile()),
-                out
-        );
-
-        orchestrator.run("测试重叠写入范围");
-
-        String transcript = output.toString(StandardCharsets.UTF_8);
-        assertTrue(transcript.contains("写入范围重叠"), transcript);
-        assertTrue(transcript.contains("src/main/java/auth/**"), transcript);
-        assertTrue(transcript.contains("src/main/java/auth/login/**"), transcript);
     }
 
     @Test

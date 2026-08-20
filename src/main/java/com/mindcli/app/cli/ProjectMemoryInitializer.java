@@ -15,14 +15,14 @@ final class ProjectMemoryInitializer {
     static InitResult initialize(Path projectRoot, boolean force) throws IOException {
         Path root = projectRoot == null ? Path.of(".").toAbsolutePath().normalize()
                 : projectRoot.toAbsolutePath().normalize();
-        Path target = root.resolve("PAI.md");
+        Path target = root.resolve("MIND.md");
         if (Files.exists(target) && !force) {
-            return new InitResult(false, target, "PAI.md 已存在；使用 /init --force 可重写。");
+            return new InitResult(false, target, "MIND.md 已存在；使用 /init --force 可重写。");
         }
         Files.createDirectories(root);
         String content = generate(root);
         Files.writeString(target, content, StandardCharsets.UTF_8);
-        return new InitResult(true, target, "已生成项目级记忆 PAI.md。");
+        return new InitResult(true, target, "已生成项目级记忆 MIND.md。");
     }
 
     static String generate(Path projectRoot) throws IOException {
@@ -30,7 +30,7 @@ final class ProjectMemoryInitializer {
                 : projectRoot.toAbsolutePath().normalize();
         ProjectFacts facts = inspect(root);
         return """
-                # PAI.md
+                # MIND.md
 
                 ## Commands
 
@@ -110,7 +110,7 @@ final class ProjectMemoryInitializer {
             pitfalls.add("生成文件、构建产物、密钥和本地配置不要进入版本控制。");
             pitfalls.add("已有未提交改动默认视为用户改动，除非用户明确要求，不要回退。");
             donts.add("不要提交 `.env`、真实 API Key、构建产物或本地 IDE 配置。");
-            donts.add("不要把临时任务说明写进 `PAI.md`；这份文件只放长期稳定规则。");
+            donts.add("不要把临时任务说明写进 `MIND.md`；这份文件只放长期稳定规则。");
             donts.add("不要写“保持代码整洁”这类无行动指导的空规则。");
         }
 

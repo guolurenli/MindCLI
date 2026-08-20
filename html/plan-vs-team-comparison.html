@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>MindCLI 计划 JSON 对比：/plan vs /team</title>
+<style>
+ :root{
+   --bg:#fbfcfe;--fg:#14171a;--mut:#5d6b7a;--line:#e3e8ef;--card:#ffffff;
+   --code:#f4f6f9;--accent:#c2410c;--plan:#2563eb;--team:#c2410c;--shared:#059669;
+   --badge-key:#c2410c;--badge-trap:#b45309;--badge-ask:#7c3aed;
+ }
+ @media (prefers-color-scheme:dark){
+   :root{--bg:#0f1418;--fg:#eef2f6;--mut:#9aa8b6;--line:#243039;--card:#161d23;
+         --code:#12181e;--accent:#fb923c;--plan:#60a5fa;--team:#fb923c;--shared:#34d399;
+         --badge-key:#fb923c;--badge-trap:#fbbf24;--badge-ask:#c4b5fd}
+ }
+ *{box-sizing:border-box}
+ html{scroll-behavior:smooth}
+ body{margin:0;background:var(--bg);color:var(--fg);
+      font:16px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
+ .wrap{display:flex;justify-content:center;max-width:1320px;margin:0 auto;padding:0 24px}
+ nav.toc{position:sticky;top:0;align-self:flex-start;width:230px;min-width:230px;
+         max-height:100vh;overflow:auto;padding:22px 0;font-size:13.5px}
+ nav.toc a{display:block;color:var(--mut);text-decoration:none;padding:5px 10px;
+           border-left:2px solid transparent}
+ nav.toc a:hover{color:var(--fg);border-left-color:var(--accent)}
+ nav.toc a.on{color:var(--fg);border-left-color:var(--accent);font-weight:600}
+ main{flex:1;min-width:0;max-width:1000px;padding:28px 0 120px}
+ h1{font-size:28px;margin:0 0 6px;line-height:1.3}
+ p.lede{color:var(--mut);margin:0 0 8px;max-width:78ch}
+ .bar{display:flex;gap:8px;margin:14px 0 26px}
+ .bar button{font:inherit;font-size:13px;padding:7px 13px;border-radius:7px;cursor:pointer;
+             border:1px solid var(--line);background:var(--card);color:var(--fg)}
+ .bar button:hover{border-color:var(--accent);color:var(--accent)}
+ section{margin:0 0 34px;border:1px solid var(--line);border-radius:14px;
+         background:var(--card);overflow:hidden}
+ section>h2{margin:0;padding:16px 20px;font-size:19px;border-bottom:1px solid var(--line);
+            cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center}
+ section>h2 .caret{color:var(--mut);font-size:13px;transition:transform .2s}
+ section.closed>h2 .caret{transform:rotate(-90deg)}
+ section .body{padding:20px}
+ section.closed .body{display:none}
+ h3{font-size:15.5px;margin:22px 0 8px}
+ h3.first{margin-top:0}
+ p{margin:8px 0}
+ code{font:13px/1.5 ui-monospace,Consolas,"SF Mono",Menlo,monospace;
+      background:var(--code);padding:1px 6px;border-radius:5px}
+ pre{background:var(--code);border:1px solid var(--line);border-radius:9px;
+     padding:14px 16px;overflow:auto;font:12.5px/1.55 ui-monospace,Consolas,Menlo,monospace}
+ pre .k{color:var(--accent)} pre .s{color:var(--shared)} pre .c{color:var(--mut)}
+ pre .hl{background:rgba(194,65,12,.14);border-radius:3px;display:inline-block}
+ pre .add{color:var(--team);font-weight:700}
+ table{border-collapse:collapse;width:100%;font-size:13.5px;margin:10px 0}
+ th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+ th{background:var(--code);font-weight:600}
+ td code{font-size:12px}
+ .fig{display:block;width:100%;height:auto;margin:14px 0 6px}
+ .figcap{color:var(--mut);font-size:12.5px;margin:0 0 18px}
+ .badge{display:inline-block;font-size:12px;font-weight:600;padding:2px 9px;
+        border-radius:20px;margin-right:5px;vertical-align:1px}
+ .b-key{background:rgba(194,65,12,.12);color:var(--badge-key)}
+ .b-trap{background:rgba(180,83,9,.12);color:var(--badge-trap)}
+ .b-ask{background:rgba(124,58,237,.12);color:var(--badge-ask)}
+ .callout{border-left:3px solid var(--accent);background:var(--code);
+          padding:10px 14px;border-radius:0 8px 8px 0;margin:12px 0;font-size:14px}
+ .kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13.5px;margin:8px 0}
+ .kv b{color:var(--mut);font-weight:600}
+ .two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+ @media(max-width:880px){.two{grid-template-columns:1fr}nav.toc{display:none}}
+ .muted{color:var(--mut)} .mono{font-family:ui-monospace,Consolas,Menlo,monospace}
+ .pill{font-size:11px;padding:1px 8px;border-radius:10px;border:1px solid var(--line);color:var(--mut)}
+ .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin:6px 0 2px}
+ .legend span::before{content:"■";margin-right:5px;font-size:11px}
+ .lg-plan::before{color:var(--plan)} .lg-team::before{color:var(--team)}
+ .lg-shared::before{color:var(--shared)}
+ /* diagram primitives */
+ .dg-box{fill:var(--card);stroke:var(--line);stroke-width:1.5}
+ .dg-box.p{stroke:var(--plan)} .dg-box.t{stroke:var(--team)} .dg-box.s{stroke:var(--shared)}
+ .dg-t{fill:var(--fg);font-size:13px}
+ .dg-m{fill:var(--mut);font-size:11px}
+ .dg-d{fill:var(--card);stroke:var(--mut);stroke-width:1.5}
+ .dg-a{stroke:var(--mut);stroke-width:1.5;fill:none}
+ .dg-l{fill:var(--fg);font-size:11px}
+ .dg-lm{fill:var(--mut);font-size:10.5px}
+ .dg-mask{fill:var(--bg)}
+</style>
+
+<div class="wrap">
+<nav class="toc" id="toc">
+  <a href="#s1">1. 结论与总览</a>
+  <a href="#s2">2. 架构图：两条路径</a>
+  <a href="#s3">3. JSON Schema 对比</a>
+  <a href="#s4">4. 四个新字段的语义</a>
+  <a href="#s5">5. 共用解析层（真相）</a>
+  <a href="#s6">6. 状态流转图</a>
+  <a href="#s7">7. 执行与失败恢复</a>
+  <a href="#s8">8. 面试追问</a>
+</nav>
+
+<main>
+  <h1>MindCLI 计划 JSON 对比：<span class="mono">/plan</span> vs <span class="mono">/team</span></h1>
+  <p class="lede">两个模式都输出同一套「任务 DAG」计划 JSON，共用解析与校验层；真正的区别在
+  <b>prompt（v2/v3）</b>、<b>JSON 字段多寡</b>，以及<b>拿到计划后由谁、怎么执行</b>。</p>
+  <p class="lede muted">所有结论均来自源码，路径引用已标注到具体文件与行号。</p>
+
+  <div class="bar">
+    <button onclick="all(true)">展开全部</button>
+    <button onclick="all(false)">折叠全部</button>
+  </div>
+
+  <div class="legend">
+    <span class="lg-plan">plan 模式（/plan）</span>
+    <span class="lg-team">multi-agent 模式（/team）</span>
+    <span class="lg-shared">共用层</span>
+  </div>
+
+  <!-- 1 -->
+  <section id="s1" class="">
+    <h2 onclick="toggle(this.parentNode)">1 · 结论与总览 <span class="caret">▾</span></h2>
+    <div class="body">
+      <table>
+        <tr><th>维度</th><th>plan 模式</th><th>multi-agent 模式</th></tr>
+        <tr><td>命令</td><td><code>/plan</code></td><td><code>/team</code></td></tr>
+        <tr><td>AgentMode</td><td><code>AgentMode.PLAN</code></td><td><code>AgentMode.TEAM</code></td></tr>
+        <tr><td>执行类</td><td><code>PlanExecuteAgent</code></td><td><code>AgentOrchestrator</code></td></tr>
+        <tr><td>规划入口</td><td><code>Planner.createPlan()</code></td><td><code>AgentOrchestrator.planWithOrchestrator()</code></td></tr>
+        <tr><td>PromptMode / 模板</td><td><code>PLANNER</code> → <code>modes/planner.md</code></td>
+          <td><code>TEAM_PLANNER</code> → <code>modes/team-planner.md</code></td></tr>
+        <tr><td>schemaVersion</td><td><b>2</b></td><td><b>3</b></td></tr>
+        <tr><td>结果模型</td><td><code>ExecutionPlan</code> + <code>Task</code></td>
+          <td><code>List&lt;ExecutionStep&gt;</code>（<code>parsePlan</code> 转换）</td></tr>
+        <tr><td>谁来执行</td><td>单 agent 跑 LLM 工具循环</td><td>编排器委派 <code>SubAgent</code>（explorer/worker）+ 自审</td></tr>
+      </table>
+
+      <div class="callout"><span class="badge b-key">🔑 重点</span>
+      数据结构本身没变——<code>PlanSchema</code> / <code>PlanTaskSpec</code> 是<b>同一套 record</b>。
+      差异只体现在三处：LLM 看到的 prompt、LLM 被引导填的字段、以及解析后由哪条执行路径消费。</div>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section id="s2" class="">
+    <h2 onclick="toggle(this.parentNode)">2 · 架构图：两条执行路径 <span class="caret">▾</span></h2>
+    <div class="body">
+      <svg class="fig" viewBox="0 0 960 560" role="img" aria-label="plan 与 team 两条执行路径架构图">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0L10,5L0,10z" fill="#5d6b7a"/>
+          </marker>
+        </defs>
+
+        <!-- user -->
+        <rect class="dg-box" x="400" y="14" width="160" height="40" rx="8"/>
+        <text class="dg-t" x="480" y="38" text-anchor="middle">用户输入 / 任务</text>
+
+        <!-- plan path -->
+        <text class="dg-m" x="150" y="96" text-anchor="middle" fill="#2563eb">/plan</text>
+        <rect class="dg-box p" x="60" y="108" width="180" height="44" rx="8"/>
+        <text class="dg-t" x="150" y="126" text-anchor="middle">PlanExecuteAgent</text>
+        <text class="dg-m" x="150" y="142" text-anchor="middle">单 agent 自执行</text>
+        <path class="dg-a" d="M480,54 L320,54 L320,130 L242,130" marker-end="url(#ar)"/>
+        <rect class="dg-mask" x="388" y="46" width="52" height="16"/><text class="dg-l" x="414" y="58" text-anchor="middle">/plan</text>
+
+        <!-- team path -->
+        <text class="dg-m" x="830" y="96" text-anchor="middle" fill="#c2410c">/team</text>
+        <rect class="dg-box t" x="720" y="108" width="180" height="44" rx="8"/>
+        <text class="dg-t" x="810" y="126" text-anchor="middle">AgentOrchestrator</text>
+        <text class="dg-m" x="810" y="142" text-anchor="middle">编排器 + 子代理</text>
+        <path class="dg-a" d="M480,54 L660,54 L660,130 L718,130" marker-end="url(#ar)"/>
+        <rect class="dg-mask" x="548" y="46" width="52" height="16"/><text class="dg-l" x="574" y="58" text-anchor="middle">/team</text>
+
+        <!-- planner (plan) -->
+        <rect class="dg-box p" x="60" y="196" width="180" height="44" rx="8"/>
+        <text class="dg-t" x="150" y="214" text-anchor="middle">Planner.createPlan</text>
+        <text class="dg-m" x="150" y="230" text-anchor="middle">有 isSimpleGoal 短路</text>
+        <path class="dg-a" d="M150,152 L150,194" marker-end="url(#ar)"/>
+
+        <!-- planner (team) -->
+        <rect class="dg-box t" x="720" y="196" width="180" height="44" rx="8"/>
+        <text class="dg-t" x="810" y="214" text-anchor="middle">planWithOrchestrator</text>
+        <text class="dg-m" x="810" y="230" text-anchor="middle">内联规划 + agent catalog</text>
+        <path class="dg-a" d="M810,152 L810,194" marker-end="url(#ar)"/>
+
+        <!-- prompt files -->
+        <rect class="dg-box p" x="36" y="282" width="220" height="52" rx="8"/>
+        <text class="dg-t" x="146" y="302" text-anchor="middle">PromptMode.PLANNER</text>
+        <text class="dg-m mono" x="146" y="320" text-anchor="middle">modes/planner.md · v2</text>
+        <path class="dg-a" d="M150,240 L150,280" marker-end="url(#ar)"/>
+
+        <rect class="dg-box t" x="704" y="282" width="220" height="52" rx="8"/>
+        <text class="dg-t" x="814" y="302" text-anchor="middle">PromptMode.TEAM_PLANNER</text>
+        <text class="dg-m mono" x="814" y="320" text-anchor="middle">modes/team-planner.md · v3</text>
+        <path class="dg-a" d="M810,240 L810,280" marker-end="url(#ar)"/>
+
+        <!-- shared layer -->
+        <rect class="dg-box s" x="300" y="374" width="360" height="66" rx="10"/>
+        <text class="dg-t" x="480" y="396" text-anchor="middle">共用解析 + 校验层</text>
+        <text class="dg-m mono" x="480" y="416" text-anchor="middle">PlanSchemaParser · PlanSchemaValidator</text>
+        <text class="dg-m mono" x="480" y="432" text-anchor="middle">PlanSchema · PlanTaskSpec</text>
+        <path class="dg-a" d="M256,308 L256,408 L298,408" marker-end="url(#ar)"/>
+        <path class="dg-a" d="M814,336 L814,408 L662,408" marker-end="url(#ar)"/>
+
+        <!-- results -->
+        <rect class="dg-box p" x="60" y="486" width="210" height="54" rx="8"/>
+        <text class="dg-t" x="165" y="506" text-anchor="middle">ExecutionPlan + Task</text>
+        <text class="dg-m" x="165" y="524" text-anchor="middle">executeTask() 工具循环</text>
+        <path class="dg-a" d="M310,408 L230,408 L230,484 L272,484" marker-end="url(#ar)"/>
+        <rect class="dg-mask" x="240" y="400" width="100" height="16"/><text class="dg-l" x="290" y="412" text-anchor="middle">schema v2</text>
+
+        <rect class="dg-box t" x="690" y="486" width="210" height="54" rx="8"/>
+        <text class="dg-t" x="795" y="506" text-anchor="middle">List&lt;ExecutionStep&gt;</text>
+        <text class="dg-m" x="795" y="524" text-anchor="middle">委派 SubAgent + 自审</text>
+        <path class="dg-a" d="M650,408 L730,408 L730,484 L688,484" marker-end="url(#ar)"/>
+        <rect class="dg-mask" x="620" y="400" width="100" height="16"/><text class="dg-l" x="670" y="412" text-anchor="middle">schema v3</text>
+      </svg>
+      <p class="figcap">两条路径在「解析/校验」处汇聚为同一套 <code>PlanSchema</code>，随后分叉为两种执行范式。</p>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section id="s3" class="">
+    <h2 onclick="toggle(this.parentNode)">3 · JSON Schema 对比（v2 vs v3）<span class="caret">▾</span></h2>
+    <div class="body">
+      <div class="two">
+        <div>
+          <h3 class="first">plan 模式 · <code>planner.md</code> · v2</h3>
+<pre>{
+  "schemaVersion": <span class="k">2</span>,
+  "summary": "任务摘要",
+  "tasks": [
+    {
+      "id": "task_1",
+      "description": "任务描述",
+      "type": "FILE_READ",
+      "dependencies": [],
+      "critical": true,
+      "maxRetries": 3,
+      "degradation": "REPLAN",
+      "expectedEvidence": []
+    }
+  ]
+}</pre>
+        </div>
+        <div>
+          <h3 class="first">multi-agent 模式 · <code>team-planner.md</code> · v3</h3>
+<pre>{
+  "schemaVersion": <span class="k">3</span>,
+  "summary": "任务摘要",
+  "tasks": [
+    {
+      "id": "task_1",
+      "description": "步骤描述",
+      "type": "FILE_WRITE",
+      "dependencies": [],
+      "critical": true,
+      "maxRetries": 3,
+      "degradation": "REPLAN",
+      "expectedEvidence": [],
+      <span class="add">"requiredTools": ["read_file","write_file"],</span>
+      <span class="add">"preferredAgent": "worker",</span>
+      <span class="add">"riskLevel": "medium",</span>
+      <span class="add">"writeScope": ["src/main/java/**"]</span>
+    }
+  ]
+}</pre>
+        </div>
+      </div>
+      <p class="muted">高亮部分是 v3 相对 v2 新增的 <b>4 个调度字段</b>，全部服务于多代理特有的「选人、限权、隔离写」。</p>
+
+      <div class="callout"><span class="badge b-trap">⚠️ 易错</span>
+      <code>schemaVersion</code> 只是<b>提示性</b>字段：<code>PlanSchemaParser.parse()</code> 读取时给默认值 2
+      （<code>PlanSchemaParser.java:25</code>），而 <code>PlanSchemaValidator</code> 从头到尾<b>不校验版本号</b>。
+      版本演进靠 prompt 约束，而非代码硬 gate。</div>
+    </div>
+  </section>
+
+  <!-- 4 -->
+  <section id="s4" class="">
+    <h2 onclick="toggle(this.parentNode)">4 · 四个新字段的语义（multi-agent 才消费）<span class="caret">▾</span></h2>
+    <div class="body">
+      <table>
+        <tr><th>字段</th><th>消费点</th><th>作用</th></tr>
+        <tr><td><code>preferredAgent</code></td>
+          <td><code>acquireForStep()</code><br><span class="muted">AgentOrchestrator.java:1219</span></td>
+          <td>优先按名字租借具名子代理；命中不了再按 role 二分（只读 explorer / 写入 worker）</td></tr>
+        <tr><td><code>requiredTools</code></td>
+          <td><code>requirementsFor()</code> / <code>profileAllowsAll()</code><br><span class="muted">AgentOrchestrator.java:290,278</span></td>
+          <td>工具权限匹配，决定哪个 profile 能接这个 step</td></tr>
+        <tr><td><code>riskLevel</code></td>
+          <td><code>AgentTaskRequirements</code><br><span class="muted">AgentOrchestrator.java:290</span></td>
+          <td>风险等级，配合 profile 审批策略（HITL）</td></tr>
+        <tr><td><code>writeScope</code></td>
+          <td><code>forbiddenWriteScopes()</code> / <code>runMutatingGroups()</code><br><span class="muted">AgentOrchestrator.java:1388,507</span></td>
+          <td>写入隔离：声明允许修改的范围，用于「many readers, one writer」与 worktree 隔离并行</td></tr>
+      </table>
+
+      <div class="callout"><span class="badge b-key">🔑 重点</span>
+      plan 模式<b>也</b>会构建这些字段，但走的是 <code>PlanTaskSpec</code> 构造函数的自动兜底推断，且
+      <code>executeTask()</code> 根本不消费它们——单 agent 串行执行天然不需要「选人/限权/隔离写」。</div>
+
+<pre>// PlanTaskSpec.java:34-39 —— 自动推断兜底
+requiredTools = requiredTools == null || requiredTools.isEmpty()
+        ? inferRequiredTools(type)   <span class="c">// FILE_WRITE → [read_file, write_file]</span>
+        : List.copyOf(requiredTools);
+riskLevel = riskLevel == null || riskLevel.isBlank()
+        ? inferRiskLevel(type)        <span class="c">// FILE_WRITE/COMMAND → "medium"</span>
+        : riskLevel.trim().toLowerCase();</pre>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section id="s5" class="">
+    <h2 onclick="toggle(this.parentNode)">5 · 共用解析层（最容易被忽略的真相）<span class="caret">▾</span></h2>
+    <div class="body">
+      <p>两个模式共用 <b>4 个类</b>，解析出的结果类型也完全一致：</p>
+      <div class="kv">
+        <b>PlanSchema</b><span><code>record PlanSchema(int schemaVersion, String summary, List&lt;PlanTaskSpec&gt; tasks)</code>（PlanSchema.java:5）</span>
+        <b>PlanTaskSpec</b><span>12 个字段的 record，已包含 v3 全部新字段（PlanTaskSpec.java:5-18）</span>
+        <b>PlanSchemaParser</b><span><code>parse(rawJson)</code>，会 strip 代码围栏、读 tasks/steps 两种键（PlanSchemaParser.java:18）</span>
+        <b>PlanSchemaValidator</b><span><code>validate(schema)</code>，校验 id 唯一、type、依赖存在、无自依赖、无环（PlanSchemaValidator.java:12）</span>
+      </div>
+
+      <h3>分叉点：从 <code>PlanTaskSpec</code> 到执行模型</h3>
+      <table>
+        <tr><th>模式</th><th>转换方法</th><th>产物</th></tr>
+        <tr><td>plan</td><td><code>Planner.buildExecutionPlan()</code>（Planner.java:88）</td>
+          <td><code>ExecutionPlan</code>（内部 <code>Map&lt;String,Task&gt;</code>，拓扑排序 <code>executionOrder</code>）</td></tr>
+        <tr><td>team</td><td><code>AgentOrchestrator.parsePlan()</code>（AgentOrchestrator.java:763）</td>
+          <td><code>List&lt;ExecutionStep&gt;</code>（不可变 record，含 <code>StepStatus</code>）</td></tr>
+      </table>
+
+      <div class="callout"><span class="badge b-ask">❓ 面试点</span>
+      「为什么解析层要共用而不是拆两套？」—— 计划本质都是「带依赖的任务 DAG」，schema 只是字段超集。
+      共用能统一兜底（类型推断、循环检测、<code>PlanRepairer</code> 修复），避免两套校验逻辑漂移；
+      版本通过 prompt 而非代码分叉演进。</div>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section id="s6" class="">
+    <h2 onclick="toggle(this.parentNode)">6 · 状态流转图（Task / ExecutionStep 生命周期）<span class="caret">▾</span></h2>
+    <div class="body">
+      <svg class="fig" viewBox="0 0 960 400" role="img" aria-label="任务状态流转图">
+        <defs>
+          <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0L10,5L0,10z" fill="#5d6b7a"/>
+          </marker>
+        </defs>
+
+        <!-- PENDING -->
+        <rect class="dg-box" x="60" y="168" width="150" height="58" rx="10"/>
+        <text class="dg-t" x="135" y="192" text-anchor="middle">PENDING</text>
+        <text class="dg-m" x="135" y="210" text-anchor="middle">等待执行</text>
+
+        <!-- RUNNING -->
+        <rect class="dg-box" x="330" y="168" width="150" height="58" rx="10"/>
+        <text class="dg-t" x="405" y="192" text-anchor="middle">RUNNING</text>
+        <text class="dg-m" x="405" y="210" text-anchor="middle">执行中</text>
+        <path class="dg-a" d="M210,197 L328,197" marker-end="url(#ar2)"/>
+        <rect class="dg-mask" x="234" y="188" width="72" height="16"/><text class="dg-l" x="270" y="200" text-anchor="middle">markStarted</text>
+
+        <!-- COMPLETED -->
+        <rect class="dg-box" x="590" y="70" width="150" height="58" rx="10"/>
+        <text class="dg-t" x="665" y="94" text-anchor="middle">COMPLETED</text>
+        <text class="dg-m" x="665" y="112" text-anchor="middle">成功</text>
+        <path class="dg-a" d="M420,168 L480,128 L588,106" marker-end="url(#ar2)"/>
+        <rect class="dg-mask" x="452" y="136" width="70" height="16"/><text class="dg-l" x="487" y="148" text-anchor="middle">markCompleted</text>
+
+        <!-- FAILED -->
+        <rect class="dg-box" x="590" y="180" width="150" height="58" rx="10"/>
+        <text class="dg-t" x="665" y="204" text-anchor="middle">FAILED</text>
+        <text class="dg-m" x="665" y="222" text-anchor="middle">失败</text>
+        <path class="dg-a" d="M480,197 L588,209" marker-end="url(#ar2)"/>
+        <rect class="dg-mask" x="498" y="188" width="72" height="16"/><text class="dg-l" x="534" y="200" text-anchor="middle">markFailed</text>
+
+        <!-- SKIPPED -->
+        <rect class="dg-box" x="590" y="290" width="150" height="58" rx="10"/>
+        <text class="dg-t" x="665" y="314" text-anchor="middle">SKIPPED</text>
+        <text class="dg-m" x="665" y="332" text-anchor="middle">降级跳过</text>
+        <path class="dg-a" d="M480,197 L560,268 L588,308" marker-end="url(#ar2)"/>
+        <rect class="dg-mask" x="498" y="240" width="72" height="16"/><text class="dg-l" x="534" y="252" text-anchor="middle">markSkipped</text>
+
+        <!-- retry loop -->
+        <path class="dg-a" d="M405,226 L405,300 L135,300 L135,228" marker-end="url(#ar2)"/>
+        <rect class="dg-mask" x="236" y="292" width="130" height="16"/><text class="dg-l" x="300" y="304" text-anchor="middle">瞬态错误 → resetToPending</text>
+
+        <!-- entry -->
+        <rect class="dg-mask" x="96" y="120" width="80" height="16"/><text class="dg-lm" x="136" y="132" text-anchor="middle">初始</text>
+      </svg>
+      <p class="figcap">plan 模式用 <code>Task.TaskStatus</code>，multi-agent 用 <code>StepStatus</code>，
+      两者状态集一致（PENDING / RUNNING / COMPLETED / FAILED / SKIPPED）。虚线回路表示瞬态错误重试。</p>
+
+      <div class="callout"><span class="badge b-trap">⚠️ 易错</span>
+      依赖判定里 <code>COMPLETED</code> 和 <code>SKIPPED</code> 都算「满足依赖」，
+      但 <code>FAILED</code> 不算——下游会一直阻塞，直到重试、重规划或整条计划标记失败
+      （见 <code>Task.isExecutable()</code> Task.java:192 与 <code>ExecutionPlan.getExecutableTasks()</code> ExecutionPlan.java:101）。</div>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section id="s7" class="">
+    <h2 onclick="toggle(this.parentNode)">7 · 执行与失败恢复机制对比 <span class="caret">▾</span></h2>
+    <div class="body">
+      <h3 class="first">plan 模式：三级递进恢复（PlanExecuteAgent.java:394-444）</h3>
+      <svg class="fig" viewBox="0 0 960 300" role="img" aria-label="plan 模式三级恢复流程图">
+        <defs>
+          <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0L10,5L0,10z" fill="#5d6b7a"/>
+          </marker>
+        </defs>
+        <rect class="dg-box" x="40" y="122" width="120" height="56" rx="8"/>
+        <text class="dg-t" x="100" y="146" text-anchor="middle">任务失败</text>
+        <text class="dg-m" x="100" y="162" text-anchor="middle">exception</text>
+
+        <!-- decision 1 -->
+        <polygon class="dg-d" points="250,150 340,110 430,150 340,190"/>
+        <text class="dg-t" x="340" y="147" text-anchor="middle">可重试?</text>
+        <text class="dg-m" x="340" y="162" text-anchor="middle">shouldRetry</text>
+        <path class="dg-a" d="M160,150 L250,150" marker-end="url(#ar3)"/>
+        <rect class="dg-box" x="180" y="40" width="140" height="50" rx="8"/>
+        <text class="dg-t" x="250" y="62" text-anchor="middle">指数退避重试</text>
+        <text class="dg-m" x="250" y="78" text-anchor="middle">resetToPending</text>
+        <path class="dg-a" d="M340,110 L340,92 L322,92" marker-end="url(#ar3)"/>
+        <rect class="dg-mask" x="304" y="72" width="80" height="16"/><text class="dg-l" x="344" y="84" text-anchor="middle">[是]</text>
+
+        <!-- decision 2 -->
+        <polygon class="dg-d" points="530,150 620,110 710,150 620,190"/>
+        <text class="dg-t" x="620" y="143" text-anchor="middle">SKIP 且</text>
+        <text class="dg-t" x="620" y="158" text-anchor="middle">非 critical?</text>
+        <path class="dg-a" d="M430,150 L530,150" marker-end="url(#ar3)"/>
+        <rect class="dg-mask" x="452" y="140" width="60" height="16"/><text class="dg-l" x="482" y="152" text-anchor="middle">[否]</text>
+
+        <rect class="dg-box" x="540" y="40" width="150" height="50" rx="8"/>
+        <text class="dg-t" x="615" y="62" text-anchor="middle">跳过 markSkipped</text>
+        <text class="dg-m" x="615" y="78" text-anchor="middle">下游降级执行</text>
+        <path class="dg-a" d="M620,110 L620,92 L692,92" marker-end="url(#ar3)"/>
+        <rect class="dg-mask" x="588" y="72" width="50" height="16"/><text class="dg-l" x="613" y="84" text-anchor="middle">[是]</text>
+
+        <!-- decision 3 -->
+        <polygon class="dg-d" points="780,150 870,110 960,150 870,190"/>
+        <text class="dg-t" x="870" y="143" text-anchor="middle">BLOCK?</text>
+        <path class="dg-a" d="M710,150 L780,150" marker-end="url(#ar3)"/>
+        <rect class="dg-mask" x="718" y="140" width="50" height="16"/><text class="dg-l" x="743" y="152" text-anchor="middle">[否]</text>
+
+        <rect class="dg-box" x="790" y="40" width="140" height="50" rx="8"/>
+        <text class="dg-t" x="860" y="62" text-anchor="middle">阻断 markFailed</text>
+        <text class="dg-m" x="860" y="78" text-anchor="middle">直接终止</text>
+        <path class="dg-a" d="M870,110 L870,92 L862,92" marker-end="url(#ar3)"/>
+        <rect class="dg-mask" x="832" y="72" width="50" height="16"/><text class="dg-l" x="857" y="84" text-anchor="middle">[是]</text>
+
+        <rect class="dg-box" x="790" y="210" width="150" height="50" rx="8"/>
+        <text class="dg-t" x="865" y="232" text-anchor="middle">局部重规划子树</text>
+        <text class="dg-m" x="865" y="248" text-anchor="middle">replanSubtree</text>
+        <path class="dg-a" d="M870,190 L870,208" marker-end="url(#ar3)"/>
+        <rect class="dg-mask" x="834" y="192" width="56" height="16"/><text class="dg-l" x="862" y="204" text-anchor="middle">[默认]</text>
+      </svg>
+      <p class="figcap">plan 模式的恢复：瞬态错误重试 → 显式 SKIP/BLOCK 降级 → 默认 <code>REPLAN</code> 局部重规划子树。</p>
+
+      <h3>multi-agent 模式：委派 + 自审循环（AgentOrchestrator.java:1227）</h3>
+      <table>
+        <tr><th>阶段</th><th>机制</th><th>关键点</th></tr>
+        <tr><td>选人</td><td><code>acquireForStep</code> → <code>AgentPool.acquire</code></td>
+          <td><code>preferredAgent</code> 优先，否则只读/写入二分</td></tr>
+        <tr><td>执行</td><td><code>executeWorkerChild</code> → <code>SubAgent.executeWithContext</code></td>
+          <td>每个 step 独立 PrintStream 缓冲，批次结束后按 id 顺序 flush</td></tr>
+        <tr><td>自审</td><td><code>executeSelfReviewChild</code> → <code>parseReviewApproval</code></td>
+          <td>执行者自己 review 结果，<code>approved</code> 决定是否放行</td></tr>
+        <tr><td>重试</td><td><code>MAX_RETRIES_PER_STEP = 2</code>（AgentOrchestrator.java:75）</td>
+          <td>不通过则带反馈重执行，超限标 FAILED</td></tr>
+        <tr><td>写隔离</td><td><code>runMutatingBatchParallel</code>（AgentOrchestrator.java:542）</td>
+          <td>git worktree 隔离并行写，merge 冲突标 FAILED 不静默覆盖</td></tr>
+      </table>
+
+      <div class="callout"><span class="badge b-ask">❓ 面试点</span>
+      「为什么 multi-agent 要引入 <code>writeScope</code>？」—— 多代理并行写文件可能互相覆盖；
+      <code>writeScope</code> 让可并行步骤互不重叠（many readers, one writer），重叠时要么串行、要么 worktree 隔离后 merge。
+      plan 模式是单 agent，串行/受控，不需要这个。</div>
+    </div>
+  </section>
+
+  <!-- 8 -->
+  <section id="s8" class="">
+    <h2 onclick="toggle(this.parentNode)">8 · 面试追问方向 <span class="caret">▾</span></h2>
+    <div class="body">
+      <ol>
+        <li><b>「为什么 v3 要引入 <code>writeScope</code>？」</b> —— 多代理并行写隔离，见上。</li>
+        <li><b>「为什么解析层共用而非拆两套？」</b> —— 计划本质是带依赖的任务 DAG，schema 是字段超集；共用统一兜底、避免逻辑漂移。</li>
+        <li><b>「<code>schemaVersion</code> 不校验，怎么保证 LLM 输出 v3？」</b> —— 靠 prompt 约定 + <code>PlanRepairer</code> 解析失败回炉修复；正确性由 validator 的结构校验兜底（id 唯一、无环、依赖存在），这是「软约束」设计。</li>
+      </ol>
+    </div>
+  </section>
+
+</main>
+</div>
+
+<script>
+ function toggle(sec){sec.classList.toggle('closed')}
+ function all(open){document.querySelectorAll('section').forEach(s=>s.classList.toggle('closed',!open))}
+ // highlight active TOC link
+ const links=[...document.querySelectorAll('nav.toc a')];
+ const secs=[...document.querySelectorAll('main section')];
+ const io=new IntersectionObserver(es=>{es.forEach(e=>{if(e.isIntersecting){
+   links.forEach(l=>l.classList.toggle('on',l.getAttribute('href')==='#'+e.target.id))}})},
+   {rootMargin:'-40% 0px -55% 0px'});
+ secs.forEach(s=>io.observe(s));
+</script>
+</html>
