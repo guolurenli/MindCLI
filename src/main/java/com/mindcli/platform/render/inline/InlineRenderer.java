@@ -215,6 +215,18 @@ public final class InlineRenderer implements Renderer {
      * 显示生命周期里处理。
      */
     public void installStartupScreen(List<String> lines) {
+        installDirectStartupScreen(() -> {
+        }, lines);
+    }
+
+    /**
+     * 在 LineReader 第一次进入 readLine 时运行一个直接终端输出动作，再打印文字首屏。
+     *
+     * <p>该入口专门承载 native chafa 等必须直接写入真实终端的输出。动作执行期间不
+     * 经过 {@link LineReader#printAbove(String)}，避免 JLine 把 ANSI 图片当作普通文本
+     * 重新布局；动作完成后，文字 Banner 仍由 JLine 放到图片下方。
+     */
+    public void installDirectStartupScreen(Runnable directRenderer, List<String> lines) {
         LineReader reader = lineReader;
         if (reader == null || lines == null || lines.isEmpty()) {
             return;
@@ -225,6 +237,9 @@ public final class InlineRenderer implements Renderer {
         reader.getWidgets().put(LineReader.CALLBACK_INIT, () -> {
             boolean ok = previous == null || previous.apply();
             if (startupScreenPrinted.compareAndSet(false, true)) {
+                if (directRenderer != null) {
+                    directRenderer.run();
+                }
                 reader.printAbove(joinLines(snapshot));
             }
             return ok;

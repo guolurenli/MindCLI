@@ -16,7 +16,10 @@ import java.io.OutputStreamWriter;
 import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -92,6 +95,48 @@ class InlineRendererTest {
             assertFalse(sink.toString(StandardCharsets.UTF_8).contains("异步通知"));
         } finally {
             renderer.close();
+        }
+    }
+
+    @Test
+    void startupScreenRunsDirectRendererBeforePrintingBannerOnce() {
+        String oldMascot = System.getProperty("mindcli.ui.mascot");
+        try {
+            System.setProperty("mindcli.ui.mascot", "true");
+            Terminal terminal = Mockito.mock(Terminal.class);
+            Mockito.when(terminal.getType()).thenReturn("xterm-256color");
+            Mockito.when(terminal.getSize()).thenReturn(new Size(120, 60));
+            LineReader lineReader = Mockito.mock(LineReader.class);
+            Map<String, org.jline.reader.Widget> widgets = new HashMap<>();
+            Mockito.when(lineReader.getWidgets()).thenReturn(widgets);
+            List<String> events = new ArrayList<>();
+            Mockito.doAnswer(invocation -> {
+                events.add("banner");
+                return null;
+            }).when(lineReader).printAbove(Mockito.anyString());
+
+            InlineRenderer renderer = new InlineRenderer(terminal);
+            try {
+                renderer.bindLineReader(lineReader);
+                renderer.installDirectStartupScreen(
+                        () -> events.add("direct"),
+                        List.of("MINDCLI // v16.1.0"));
+
+                assertTrue(widgets.get(LineReader.CALLBACK_INIT).apply());
+                ArgumentCaptor<String> output = ArgumentCaptor.forClass(String.class);
+                Mockito.verify(lineReader).printAbove(output.capture());
+                String rendered = output.getValue();
+                assertEquals(List.of("direct", "banner"), events);
+                assertTrue(rendered.contains("MINDCLI // v16.1.0"), rendered);
+                assertFalse(rendered.contains("PIXELS"), rendered);
+
+                assertTrue(widgets.get(LineReader.CALLBACK_INIT).apply());
+                assertEquals(List.of("direct", "banner"), events);
+            } finally {
+                renderer.close();
+            }
+        } finally {
+            restoreProperty("mindcli.ui.mascot", oldMascot);
         }
     }
 
@@ -301,6 +346,14 @@ class InlineRendererTest {
 
     private static LlmClient.ToolCall tc(String name, String args) {
         return new LlmClient.ToolCall(name + "-id", new LlmClient.ToolCall.Function(name, args));
+    }
+
+    private static void restoreProperty(String key, String value) {
+        if (value == null) {
+            System.clearProperty(key);
+        } else {
+            System.setProperty(key, value);
+        }
     }
 
     @Test

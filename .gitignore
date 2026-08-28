@@ -1,9 +1,10 @@
 # 环境变量文件（包含敏感信息）
 .env
+run-mindcli.cmd
 .mindcli/*
 !.mindcli/
-!.mindcli/PAI.md
-PAI.local.md
+!.mindcli/MIND.md
+MIND.local.md
 
 # 编译输出
 target/
@@ -26,14 +27,20 @@ docs/*
 !docs/mindcli-agent-orchestrator-parallel-test-stability.md
 !docs/mindcli-package-tree-enterprise-refactor.md
 !docs/mindcli-package-tree-large-module-migration.md
+!docs/mindcli-team-builtin-agents-codex-alignment-design.md
+!docs/mindcli-custom-subagents-design.md
+!docs/mindcli-teamscheduler-extraction-design.md
+!docs/mindcli-maid-theme-design.md
+!docs/mindcli-writescope-removal-design.md
 
 # Claude Code
 .claude/
 
 # IDE
 .idea/
-*.iml
-.vscode/
+.idea.bak
+
+mindcli.iml
 
 # 日志
 *.log

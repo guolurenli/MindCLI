@@ -128,7 +128,12 @@ class McpServerManagerTest {
         assertTrue(elapsedMillis < 1500, "bounded startup should return before initialize timeout");
         assertEquals(McpServerStatus.STARTING, server.status());
         assertFalse(registry.hasTool("mcp__slow__echo"));
-        assertTrue(out.toString(StandardCharsets.UTF_8).contains("后台继续启动"));
+        String progress = out.toString(StandardCharsets.UTF_8);
+        assertTrue(progress.contains("后台继续启动"));
+        assertFalse(progress.contains("启动中"));
+        assertFalse(progress.contains("已等待"));
+        assertEquals(1, progress.lines().count(), progress);
+        assertTrue(manager.startupNotice(Duration.ofMillis(100)).contains("slow"));
     }
 
     @Test

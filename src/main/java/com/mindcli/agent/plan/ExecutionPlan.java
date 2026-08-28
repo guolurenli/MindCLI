@@ -99,9 +99,28 @@ public class ExecutionPlan {
      * 获取可执行的任务（依赖都已完成）
      */
     public List<Task> getExecutableTasks() {
-        return tasks.values().stream()
-                .filter(t -> t.isExecutable(tasks))
-                .toList();
+        return dependencyGraph().readyNodes(
+                task -> task.getStatus() == Task.TaskStatus.PENDING,
+                dependencyId -> {
+                    Task dependency = tasks.get(dependencyId);
+                    return dependency != null
+                            && (dependency.getStatus() == Task.TaskStatus.COMPLETED
+                            || dependency.getStatus() == Task.TaskStatus.SKIPPED);
+                });
+    }
+
+    public List<DependencyGraph.BlockedNode<Task>> getBlockedTasks() {
+        DependencyGraph<Task> graph = dependencyGraph();
+        return graph.blockedNodes(
+                task -> task.getStatus() == Task.TaskStatus.PENDING,
+                dependencyId -> {
+                    Task dependency = tasks.get(dependencyId);
+                    if (dependency == null) {
+                        return "MISSING";
+                    }
+                    return dependency.getStatus().name();
+                },
+                state -> "COMPLETED".equals(state) || "SKIPPED".equals(state));
     }
 
     /**
@@ -109,45 +128,13 @@ public class ExecutionPlan {
      */
     public boolean computeExecutionOrder() {
         executionOrder.clear();
-        Set<String> visited = new HashSet<>();
-        Set<String> visiting = new HashSet<>();
-
-        for (Task task : tasks.values()) {
-            if (!visited.contains(task.getId())) {
-                if (!topologicalSort(task, visited, visiting)) {
-                    return false;  // 有环
-                }
-            }
+        DependencyGraph<Task> graph = dependencyGraph();
+        if (!graph.isValid()) {
+            return false;
         }
-
-        return true;
-    }
-
-    private boolean topologicalSort(Task task, Set<String> visited, Set<String> visiting) {
-        String id = task.getId();
-
-        if (visiting.contains(id)) {
-            return false;  // 有环
-        }
-        if (visited.contains(id)) {
-            return true;
-        }
-
-        visiting.add(id);
-
-        for (String depId : task.getDependencies()) {
-            Task dep = tasks.get(depId);
-            if (dep == null) {
-                return false;
-            }
-            if (!topologicalSort(dep, visited, visiting)) {
-                return false;
-            }
-        }
-
-        visiting.remove(id);
-        visited.add(id);
-        executionOrder.add(id);
+        graph.topologicalOrder().stream()
+                .map(Task::getId)
+                .forEach(executionOrder::add);
         return true;
     }
 
@@ -177,7 +164,8 @@ public class ExecutionPlan {
      */
     public boolean isAllCompleted() {
         return tasks.values().stream()
-                .allMatch(t -> t.getStatus() == Task.TaskStatus.COMPLETED);
+                .allMatch(t -> t.getStatus() == Task.TaskStatus.COMPLETED
+                        || t.getStatus() == Task.TaskStatus.SKIPPED);
     }
 
     /**
@@ -281,32 +269,11 @@ public class ExecutionPlan {
     }
 
     public List<List<Task>> getExecutionBatches() {
-        if (tasks.isEmpty()) {
-            return List.of();
-        }
+        return dependencyGraph().executionBatches();
+    }
 
-        Map<String, Task> remaining = new LinkedHashMap<>(tasks);
-        Set<String> completed = new HashSet<>();
-        List<List<Task>> batches = new ArrayList<>();
-
-        while (!remaining.isEmpty()) {
-            List<Task> batch = remaining.values().stream()
-                    .filter(task -> task.getDependencies().stream()
-                            .allMatch(dep -> completed.contains(dep) && tasks.containsKey(dep)))
-                    .toList();
-
-            if (batch.isEmpty()) {
-                break;
-            }
-
-            batches.add(batch);
-            for (Task task : batch) {
-                remaining.remove(task.getId());
-                completed.add(task.getId());
-            }
-        }
-
-        return batches;
+    private DependencyGraph<Task> dependencyGraph() {
+        return DependencyGraph.of(tasks.values(), Task::getId, Task::getDependencies);
     }
 
     private String compactGoal(String rawGoal, int maxLength) {

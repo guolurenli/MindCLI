@@ -92,13 +92,14 @@ public class McpServerManager implements AutoCloseable {
                     t.setDaemon(true);
                     return t;
                 });
-        Thread progressPrinter = startProgressPrinter(targets, progressOut, STARTUP_PROGRESS_INTERVAL);
+        boolean boundedWait = maxWait != null && !maxWait.isZero() && !maxWait.isNegative();
+        Thread progressPrinter = boundedWait ? null : startProgressPrinter(targets, progressOut, STARTUP_PROGRESS_INTERVAL);
         try {
             List<CompletableFuture<Void>> futures = targets.stream()
                     .map(server -> CompletableFuture.runAsync(() -> start(server), executor))
                     .toList();
             CompletableFuture<Void> all = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
-            if (maxWait == null || maxWait.isZero() || maxWait.isNegative()) {
+            if (!boundedWait) {
                 all.join();
             } else {
                 try {
@@ -124,22 +125,35 @@ public class McpServerManager implements AutoCloseable {
         if (out == null) {
             return;
         }
+        String line = startupNotice(targets, maxWait);
+        if (line.isBlank()) {
+            return;
+        }
+        out.println(line);
+        out.flush();
+    }
+
+    public String startupNotice(Duration maxWait) {
+        return startupNotice(servers.values().stream()
+                .filter(server -> !server.config().isDisabled())
+                .toList(), maxWait);
+    }
+
+    private String startupNotice(List<McpServer> targets, Duration maxWait) {
         List<McpServer> stillStarting = targets.stream()
                 .filter(server -> server.status() == McpServerStatus.STARTING)
                 .sorted(Comparator.comparing(McpServer::name))
                 .toList();
         if (stillStarting.isEmpty()) {
-            return;
+            return "";
         }
         String names = stillStarting.stream()
                 .map(McpServer::name)
                 .reduce((a, b) -> a + ", " + b)
                 .orElse("");
         long displaySeconds = Math.max(1, (long) Math.ceil(maxWait.toMillis() / 1000.0));
-        out.printf("⚠️ MCP 启动超过 %ds，先进入 CLI；后台继续启动: %s%n",
-                displaySeconds, names);
-        out.println("   可用 /mcp 查看最新状态，或 /mcp logs <name> 查看日志。");
-        out.flush();
+        return "Mcp 后台继续启动: " + names + "（超过 " + displaySeconds
+                + "s，可用 /mcp 查看，/mcp logs <name> 看日志）";
     }
 
     private Thread startProgressPrinter(List<McpServer> targets, PrintStream out, Duration interval) {

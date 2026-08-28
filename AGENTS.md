@@ -4,7 +4,7 @@
 
 ## 信息优先级
 
-1. 代码实际行为 > 2. `AGENTS.md` > 3. `PAI.md` > 4. `README.md` > 5. `ROADMAP.md` > 6. `CLAUDE.md`
+1. 代码实际行为 > 2. `AGENTS.md` > 3. `MIND.md` > 4. `README.md` > 5. `ROADMAP.md` > 6. `CLAUDE.md`
 
 `ROADMAP.md` 代表演进方向，不代表已交付。
 
@@ -13,7 +13,7 @@
 - 项目名：`MindCLI`
 - 定位：面向商业使用的 Java Agent CLI 产品，对标 Claude Code
 - 已交付 23 期 + Agent Runtime 企业级改造 Phase 6 + 记忆治理 Phase 8（ReAct → Plan+DAG → Memory → RAG → Multi-Agent → HITL → 并行工具 → 多模型 → 联网 → MCP 核心 → MCP 高级 → 长上下文 → Chrome DevTools → CDP 会话复用 → Skill → TUI → LSP 诊断 → Side-Git 快照 → Prompt 分层 → Runtime API → 图片输入 → 微信 iLink 通道文本 MVP；Runtime Spine / Dispatcher / Profile 化 Multi-Agent、记忆候选审批、策略裁决与审计导出已落地）
-- `PAI.md` 是 MindCLI 的项目级记忆文件：启动时自动注入 system prompt，适合团队共享的长期稳定规则；个人/会变化的经验继续用 `/save` 长期记忆。
+- `MIND.md` 是 MindCLI 的项目级记忆文件：启动时自动注入 system prompt，适合团队共享的长期稳定规则；个人/会变化的经验继续用 `/save` 长期记忆。
 - 下一步：OAuth / sampling / recovery 作为后续 MCP 增强
 - Banner 版本：`v16.1.0`，Maven 产物：`mindcli-1.0-SNAPSHOT.jar`（两者不一致是正常状态）
 
@@ -36,7 +36,7 @@ mvn test -Pquick          # 常规回归
 mvn test -Pphase16-smoke  # TUI 相关
 mvn test -Dtest=XxxTest -DskipTests=false   # 针对性
 mvn test -DskipTests=false                  # 全量回归
-/init                    # 生成精简项目级记忆 PAI.md；已有文件不覆盖，/init --force 可重写
+/init                    # 生成精简项目级记忆 MIND.md；已有文件不覆盖，/init --force 可重写
 /export                  # 导出当前 ReAct 会话为 Markdown，包含完整 system prompt
 /memory export --audit   # 导出记忆审计证据 Markdown
 /run inspect <runId>     # 检查指定 Agent Runtime run 的状态、snapshot checkpoint 与恢复提示
@@ -52,9 +52,11 @@ mvn test -DskipTests=false                  # 全量回归
 | Plan-and-Execute | `PlanExecuteAgent.java` | `/plan` |
 | Multi-Agent | `AgentOrchestrator.java` + `agent/profile/*` | `/team` |
 
-ReAct 的 LLM/tool 循环已委托给 `runtime/run/AgentLoopExecutor.java`；`Agent.java` 继续负责 prompt / memory / renderer / 状态栏等 ReAct 周边体验。三条路径的工具调用都会先经 `runtime/run/ToolDispatcher.java` 进入内部 Hook、资源分类和资源锁，再映射为结构化 `ToolOutcome`；Plan 和 Multi-Agent 暂时仍保留各自 loop，但 `PlanExecuteAgent` / `SubAgent` 的实际工具执行也会写 `TOOL_OUTCOME` 事件，并由 `PlanModeAdapter` / `TeamModeAdapter` 传递 runtime 提供的 `AgentRunContext` 与共享 `RunStore`，避免分裂 runId / store。`/team` 已接入 `AgentProfile` / `AgentPool`：默认使用兼容 profile，项目可通过 `.mindcli/agents.json` 配置 planner / worker / reviewer 的工具 allowlist、命令 allowlist、并发和权限模式；`AgentPool` 按 profile semaphore 原子 `tryAcquire` 分配 lease，避免并行步骤争抢同一个 worker profile 后串行化；child run 与 `TOOL_OUTCOME` 会记录 `profileName`、`permissionMode`、`selectedReason` 和 profile policy 决策。
+`/plan` 与 `/team` 是两个不同执行模式，不合并编排语义；二者只共享 `agent/plan/DependencyGraph.java` 里的中性 DAG 计算（拓扑顺序、就绪节点、批次和阻塞依赖诊断），依赖满足规则仍由各自模式按 Task/Step 状态传入。`/plan` 的失败恢复按任务字段 `critical` / `degradation` 决策：`critical=false + degradation=SKIP` 才可跳过，`BLOCK` 直接失败，其余默认回退为局部重规划。`/team` 的 ready batch 现在会先按 step 指纹去重，重复步骤复用同一执行结果；只读 / 非写入步骤优先路由给 `EXPLORER` profile 执行，只允许 `@read` 工具组；编排器内建规划（无独立 planner 子代理）会为写入型步骤尽量生成 `writeScope`，执行上下文和 child run metadata 会记录允许修改范围与其他写入步骤的禁止范围；写入型步骤（`FILE_WRITE`、`CREATE_PROJECT`、高风险 `execute_command` 等）交给 `WORKER`，`ToolRegistry` 会对 active `writeScope` 硬约束 `write_file` / `create_project` 路径，scoped `execute_command` 只允许明显只读命令，其他命令 fail closed；当多个写入步骤的 `writeScope` 已声明且互不重叠时，编排器为每个 step 创建独立 git worktree 隔离并行写入，完成后 merge 回主工作区（冲突不静默覆盖，标记失败并上报冲突文件清单）；`writeScope` 未声明、范围重叠、非 git 仓库或 worktree 创建失败时回退为串行单步，内置 `worker#1` 默认允许 2 个并发副本配合 worktree 并行；执行者随后进入自己的 review->repair 循环，通过后才关闭步骤，底层 `ToolRegistry` writeScope guard、`ToolDispatcher` / `ResourceLockManager` 仍作为最后一道防线。
 
-Agent Runtime 账本默认通过 `RunStoreFactory` 写到 `~/.mindcli/runs`（可用 `mindcli.runs.dir` / `MINDCLI_RUNS_DIR` 改写），`InMemoryRunStore` 仅保留给测试和降级。JSONL ledger 是 source of truth：每个事件包含 run 内递增 `seq` 和唯一 `eventId`，`run.meta.json` / `run.state.json` 由事件投影生成；读取会忽略尾部坏行，继续 append 前会先截断坏尾，`runId` 只能使用安全路径字符。AgentRuntime 可写 `SNAPSHOT_CREATED`，把 `PRE_RUN` / `POST_RUN` Side-Git checkpoint 与 runId 关联；`/run inspect <runId>` 通过 `RunRecoveryService` 展示状态、checkpoint 和恢复提示。Multi-Agent 的 planner / worker / reviewer 会写入 child run：目录布局为 `parentRun/children/childRun/`，事件 attributes 带 `parentRunId`、`rootRunId`、`role`、`stepId`、`attempt`；parent `run.state.json` 会 materialize child run 摘要。Reviewer 调用失败、输出不可解析、重试后仍拒绝时必须 fail closed，不能把 worker 候选结果标记为完成；reviewer child 摘要要保留 `approved` / `businessStatus`，供恢复和审计判断。
+ReAct 的 LLM/tool 循环已委托给 `runtime/run/AgentLoopExecutor.java`；`Agent.java` 继续负责 prompt / memory / renderer / 状态栏等 ReAct 周边体验。CLI 生产入口中，ReAct、`/plan`、`/team` 都会先经 `AgentModeRouter` 选择 `ReActModeAdapter` / `PlanModeAdapter` / `TeamModeAdapter`，再进入 `AgentRuntime`；runtime 提供的 `AgentRunContext` 与共享 `RunStore` 会向下传递，避免分裂 runId / store。三条路径的工具调用都会先经 `runtime/run/ToolDispatcher.java` 进入内部 Hook、资源分类和资源锁，再映射为结构化 `ToolOutcome`；Plan 和 Multi-Agent 暂时仍保留各自 loop，但 `PlanExecuteAgent` / `SubAgent` 的实际工具执行也会写 `TOOL_OUTCOME` 事件。`/team` 已接入 `AgentProfile` / `AgentPool`：内置 `EXPLORER` / `WORKER` 两个子代理硬编码在源码（`AgentProfile.builtinExplorer` / `builtinWorker`），实例固定为 `explorer#1`、`explorer#2`、`worker#1`；规划职责收编到 orchestrator 内建（直接调 LLM + `TEAM_PLANNER` prompt），不再有独立 planner 子代理，也不再读取 `.mindcli/config.toml` 的 `[team.*]` 或 `.mindcli/agents.json`。Profile 的 `commandAllowlist` 为空时表示不增加 Profile 级命令限制，实际命令仍必须经过全局命令策略、HITL 和路径/工作区防护；`AgentPool` 按 profile semaphore 原子 `tryAcquire` 分配 lease，避免并行步骤争抢同一个 profile 后串行化；child run 与 `TOOL_OUTCOME` 会记录 `profileName`、`permissionMode`、`selectedReason` 和 profile policy 决策。
+
+Agent Runtime 账本默认通过 `RunStoreFactory` 写到 `~/.mindcli/runs`（可用 `mindcli.runs.dir` / `MINDCLI_RUNS_DIR` 改写），`InMemoryRunStore` 仅保留给测试和降级。JSONL ledger 是 source of truth：每个事件包含 run 内递增 `seq` 和唯一 `eventId`，`run.meta.json` / `run.state.json` 由事件投影生成；读取会忽略尾部坏行，继续 append 前会先截断坏尾，`runId` 只能使用安全路径字符。AgentRuntime 可写 `SNAPSHOT_CREATED`，把 `PRE_RUN` / `POST_RUN` Side-Git checkpoint 与 runId 关联；CLI Agent 主路径不再额外套 `SnapshotService.runTurn(...)`，避免同一 run 产生旧 turn snapshot 与 runtime snapshot 两套快照；`/run inspect <runId>` 通过 `RunRecoveryService` 展示状态、checkpoint 和恢复提示。Multi-Agent 的规划阶段由 parent run 直接记录 `LLM_RESPONSE phase=plan`；explorer / worker 的执行与自审会写入 child run，目录布局为 `parentRun/children/childRun/`，事件 attributes 带 `parentRunId`、`rootRunId`、`role`、`stepId`、`attempt`、`phase=execute|review`，写入型 step 还会带 `writeScope` / `forbiddenWriteScope`；parent `run.state.json` 会 materialize child run 摘要。自审调用失败、输出不可解析、重试后仍拒绝时必须 fail closed，不能把执行候选结果标记为完成；review phase 摘要要保留 `approved` / `businessStatus`，供恢复和审计判断。
 
 核心内置工具 11 个：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `create_project` / `search_code` / `web_search` / `web_fetch` / `revert_turn`
 
@@ -75,7 +77,7 @@ DeepSeek SSE 调用默认强制 HTTP/1.1，避免部分网络/网关下 HTTP/2 �
 
 ```
 src/main/java/com/mindcli/
-├── agent/       ReAct / Plan / Multi-Agent 编排；plan/ 放 Planner / ExecutionPlan / Task，profile/ 放 AgentProfile / AgentPool
+├── agent/       ReAct / Plan / Multi-Agent 编排；plan/ 放 Planner / ExecutionPlan / Task / DependencyGraph，profile/ 放 AgentProfile / AgentPool
 ├── app/         用户入口适配：cli/、tui/、wechat/
 ├── capability/  Agent 能力：browser/、image/、lsp/、mcp/、memory/、rag/、skill/、tool/、web/
 ├── platform/    平台支撑：config/、hitl/、llm/、prompt/、render/、security/、snapshot/、text/
@@ -84,10 +86,11 @@ src/main/java/com/mindcli/
 
 启动与 inline 渲染当前约定：
 
-- 开屏 Banner 使用无右边框的简洁布局，避免 CJK/ANSI 字宽导致右侧竖线错位；Phase 22 后默认是 π 主题彩色 logo + Qoder 风格首屏，只展示模型、MCP、Skill、ReAct 状态和三条 getting-started tips，不再把 MCP server 明细刷成启动日志。
+- 开屏 Banner 使用无右边框的 cyber-lite 简洁布局，避免 CJK/ANSI 字宽导致右侧竖线错位；默认首屏展示 `MindCLI // v...`、Model/Runtime、Mcp、Skills 与 `Command /`、`Context @path`、`Image @image:` 操作提示，不再把 MCP server 明细刷成启动日志。启动 Banner 必须显式使用猫耳助手暖色语义分层：品牌/运行态用 `ACCENT`，版本/模型/主要值用 `PRIMARY`，字段标签用 `SECONDARY`，说明性提示用 `MUTED`，避免首屏退化成黑白灰。启动期 MCP 只允许一行后台启动摘要，并且由 Banner note 展示在 logo 与主信息下方；不要在猫耳图渲染前刷多行进度日志。启动首屏优先从 `src/main/resources/ui/*.png` 随机选择一张图片，并调用本机 `chafa -s 10x10 --dither ordered` 直接渲染到真实终端，chafa 子进程必须继承真实 stdin/stdout 以保留终端探测能力，文字 Banner 放在图片下方；`MINDCLI_CHAFA_BIN` 可指定 chafa 路径，`MINDCLI_UI_MASCOT=false` 禁用。若 chafa 不存在、超时或渲染失败，必须直接回退纯文字首屏，不再维护 `.ans` 资源兜底。启动路径会先通过 `TerminalEncoding` 探测/配置 JLine 终端编码（优先 `-Dmindcli.terminal.encoding`，其次 `MINDCLI_TERMINAL_ENCODING` / `.env`，再到 JVM `sun.stdout.encoding` / `sun.stderr.encoding` / `sun.stdin.encoding`、`System.console().charset()` 和 JVM 默认编码），并把 `-Dmindcli.terminal.type` / `MINDCLI_TERMINAL_TYPE` / `TERM` 中的非 `dumb` 类型传给 JLine。
 - inline 模式使用 JLine 4 的 LineReader 编辑能力，默认提示符是 `* `，右提示显示 `message / @path / @image`。
-- 默认 CLI 启动路径应先 `Renderer.start()` 并初始化底部 dock；inline 首屏不要在 `readLine` 前裸写 stdout，而是通过 `InlineRenderer.installStartupScreen(...)` 挂到 `LineReader.CALLBACK_INIT`，首次进入输入时用 `printAbove` 一次性显示完整 Banner + tips，避免 logo 被 LineReader 首次重绘滚出可视区域。
-- `BottomStatusBar` 现在是 JLine `Status` 托管的底部 dock：由 JLine 维护滚动区域和状态行位置，不再手写 `\n` / `moveUp` / `CLEAR_TO_EOS` 清屏。输入期会把 LineReader 光标定位到 dock 上方一行，让 `*` 输入行和 Status 同处底部区域；dock 保留两类信息：上层模式 + MCP/Skill 摘要，下层 Auto Model / model / phase / ctx 百分比与 token / cost / elapsed / cwd。关键字段可用克制的 JLine `AttributedString` 彩色样式突出，但纯文本格式和宽度裁剪逻辑要保持稳定。`ctx` 表示当前仍会带入下一轮请求的上下文估算；`in/out/cache` 表示最近任务的 LLM 调用统计，二者不要混用。
+- 默认 CLI 启动路径先建立 `Terminal -> LineReader -> Renderer`，但 `Renderer.start()` 和底部 dock 初始化必须放在启动猫耳图之后；猫耳图由 native chafa 直接写真实终端，文字 Banner 随后直接打印在图片下方，避免 JLine Status/scroll-region 改变 chafa 的终端探测与显示效果。
+- `BottomStatusBar` 现在是 JLine `Status` 托管的底部 dock：由 JLine 维护滚动区域和状态行位置，不再手写 `\n` / `moveUp` / `CLEAR_TO_EOS` 清屏。输入期会把 LineReader 光标定位到 dock 上方一行，让 `*` 输入行和 Status 同处底部区域；dock 保留两类信息：上层模式 + `MCP n/n | SKILL n/n` 摘要，下层 `MINDCLI // model | phase | CTX [...]` 与 `IN/OUT/CACHE`、cost、elapsed、cwd。关键字段可用 cyber-lite 的 JLine `AttributedString` 彩色样式突出，但纯文本格式和宽度裁剪逻辑要保持稳定。`CTX` 表示当前仍会带入下一轮请求的上下文估算；`IN/OUT/CACHE` 表示最近任务的 LLM 调用统计，二者不要混用。
+- Lanterna TUI 保持三栏结构，但面板标题和消息标签使用同一套 cyber-lite 语言：`PROJECT // FILES`、`COMMS // STREAM`、`SYSTEM // STATUS`、`INPUT // COMMAND`，对话流标签为 `USER //`、`MINDCLI //`、`SYS //`、`TOOL //`、`OUT //`。
 - 普通任务和斜杠命令提交后，`Main` 会把本轮原始输入以暗色整行块写回 transcript：输入态左提示仍是 `* `，提交回显左提示改为 `>`；单行输入只占一行，不额外追加空白行。普通任务随后再展开 MCP resource / 本地 `@path` 并进入 Agent；不要只依赖 JLine 提交行残留，否则 activity 重绘或 dock 刷新可能让用户输入从可见历史里消失。`/clear` 清空 conversationHistory、shortTermMemory，并重建不含上一轮检索记忆的 system prompt；长期记忆保留。`/compact` 会手动压缩当前 ReAct conversationHistory，不等待上下文阈值触发，保留最近 1 个 user 轮次和 tool_call/tool_result 边界。
 - ReAct LLM 调用期间，inline renderer 使用固定高度 live thinking 区动态显示 `Thinking...` 和灰色竖线 reasoning 预览；该区域只能清理自己刚打印的几行，不能用独立 JLine `Display.update()` / `CLEAR_TO_EOS` 向上覆盖 transcript。content 或 tool call 开始前先清掉 live 区，再把完整 reasoning 引用块落到正文区，正文回答用低调标记起始，不再刷强标题。
 - 交互期输出应优先走 `Renderer.stream()`；`Main`、`PlanExecuteAgent`、`Planner`、`AgentOrchestrator` 都支持把输出流接到 inline renderer，避免直接争抢 stdout。`CodeIndex` 的索引进度通过 `ProgressListener` 注入，`/index` 应绑定到当前 renderer 输出流。
@@ -100,8 +103,8 @@ src/main/java/com/mindcli/
 - `LineReader` 使用 `app/cli/interaction/MindCliCompleter` 做上下文补全：`/model` provider、`/mcp` 子命令与 server、`/skill` 子命令与 skill name、`/task` / `/browser` / `/snapshot` 子命令、`@image:` 本地路径、本地 `@path` 和 MCP resource `@server:uri` 引用都应从同一个 completer 出口维护。
 - 普通用户输入进入 Agent 前会先展开 MCP resource mention，再由 `LocalPathMentionExpander` 展开本地 `@path`：文件会内联为 `<file>` 块，目录会内联为 `<directory>` 列表；绝对路径或符号链接逃逸项目根时保持原文不展开。
 - `LineReader` 使用 `app/cli/interaction/MindCliHistory` 持久化输入历史到 `~/.mindcli/history/input.history`；如果 `mindcli.history.file` / `MINDCLI_HISTORY_FILE` 指向目录，也会自动使用该目录下的 `input.history`，避免把目录当文件读；默认忽略空白、重复、明显密钥/Bearer、base64 图片和超长输入，用户可用 `/history clear` 清空本机输入历史。
-- 启动期会加载 `~/.mindcli/PAI.md`、项目根 `PAI.md`、项目根 `.mindcli/PAI.md`、`PAI.local.md`、`.mindcli/PAI.local.md`，按此顺序注入 Project Context；`@relative/path.md` 可导入项目根内文件，总注入内容有字符预算，避免项目记忆变成 token 噪音。
-- `/init` 会根据当前项目生成短 `PAI.md`，只放 commands / project positioning / architecture / pitfalls / don'ts；默认不覆盖已有文件。
+- 启动期会加载 `~/.mindcli/MIND.md`、项目根 `MIND.md`、项目根 `.mindcli/MIND.md`、`MIND.local.md`、`.mindcli/MIND.local.md`，按此顺序注入 Project Context；`@relative/path.md` 可导入项目根内文件，总注入内容有字符预算，避免项目记忆变成 token 噪音。
+- `/init` 会根据当前项目生成短 `MIND.md`，只放 commands / project positioning / architecture / pitfalls / don'ts；默认不覆盖已有文件。
 - `/export` 导出当前 ReAct `conversationHistory` 为 Markdown 到 `~/.mindcli/exports/session-*.md`；只支持无参数命令，包含完整 system prompt，便于检查 LLM 实际接收前的指令。
 - `Main.java` 是 CLI 入口 facade，当前包路径为 `app/cli/Main.java`；启动前置配置 helper 由 `CliBootstrap` 承接，启动首屏和状态摘要由 `CliStartupView` 承接；低风险 slash command 的格式化和编排优先沉到 `app/cli/command/*`，当前 `/browser`、`/config`、`/export`、`/memory`、`/save`、`/snapshot`、`/restore`、`/run inspect`、`/wechat` 已由专门 handler 承接。
 - JLine 交互升级计划记录在 `docs/phase-22-jline-interaction-upgrade.md`。
@@ -113,7 +116,7 @@ src/main/java/com/mindcli/
 - 长期记忆只通过 `/save` 或用户明确要求保存；不要自动提取事实
 - 自动长期记忆提取默认关闭；即使显式设置 `mindcli.memory.autoExtract.enabled=true` 或 `MINDCLI_MEMORY_AUTO_EXTRACT=true`，也只能生成 `MemoryProposal` 候选，不得直接写入长期记忆。
 - 候选记忆必须经 `/memory proposals` 查看、`/memory approve <id>` 批准或 `/memory reject <id>` 拒绝；不要绕过候选层直接把自动提取结果写入长期记忆。
-- `PAI.md` 管团队共享的项目规则，长期记忆管个人或项目作用域的稳定事实；不要把一次性协作经验写进 `PAI.md`
+- `MIND.md` 管团队共享的项目规则，长期记忆管个人或项目作用域的稳定事实；不要把一次性协作经验写进 `MIND.md`
 - 长期记忆只保存跨会话稳定事实，不保存临时指令；默认项目级作用域，跨项目通用偏好才用 global
 - 长期记忆注入 prompt 前必须过滤 `status=revoked/deleted/expired` 或 `expiresAt` 已过期的条目；缺失这些治理 metadata 的旧记忆按原兼容规则可见。
 - 长期记忆必须可审计和可删除：`/memory policy` / `/memory list` / `/memory search <关键词>` / `/memory delete <id>` / `/memory clear` / `/memory export --audit`
@@ -157,6 +160,14 @@ src/main/java/com/mindcli/
 
 - system prompt 索引段注入三处提示词，上限 20 个 / 4KB
 - `load_skill` → tool_result 直接返回 SKILL.md 全文 → 同一 turn 内立即生效
+
+### 视觉输出（HTML 交付物）
+
+- 凡是要「看」或「分享」而非「粘贴到外部平台」的交付物（计划、代码评审、方案对比表、报告、看板、会话交接），渲染成**单个自包含 HTML 文件**：内联 CSS、不发起外部请求。
+- HTML 文件统一写到项目根 `html/` 目录（绝对路径 `D:\IntelliJ IDEA 2024.3\IdeaProjects\MindCLI\html`），不要写到系统临时目录。
+- 交付前必须在浏览器真正**查看**渲染结果（Windows `start "" "<路径>"`），并**打印绝对路径**；不要把同样的内容再以整段 Markdown 复述一遍。
+- 保留 Markdown 的内容：要粘贴到外部平台的东西（发帖文案、正文、Notion 页面正文），以及所有核心配置、指令、记忆文件——HTML 会破坏粘贴目标或白白消耗 token。
+- 「给我看看 / show me」→ 渲染成单页 HTML 并打开，而不是输出大段段落。
 
 ## 修改时的硬规则
 
@@ -203,7 +214,7 @@ src/main/java/com/mindcli/
 | 代码搜索工具 | `mvn test -Dtest=ToolRegistryTest,CodeSearchGoldenSetTest,ApprovalPolicyTest` |
 | 命令解析 | `mvn test -Dtest=CliCommandParserTest,PlanReviewInputParserTest,MainInputNormalizationTest,MainCliBootstrapRefactorTest,MainCliStartupViewRefactorTest,MainMemoryCommandHandlerRefactorTest,MainCommandHandlerRefactorTest,MainConfigCommandHandlerRefactorTest,MainWechatCommandHandlerRefactorTest` |
 | DAG/Plan | `mvn test -Dtest=ExecutionPlanTest` |
-| Multi-Agent | `mvn test -Dtest=AgentRoleTest,AgentMessageTest,AgentOrchestratorTest` |
+| Multi-Agent | `mvn test -Dtest=AgentRoleTest,AgentMessageTest,SubAgentTest,AgentProfileLoaderTest,AgentOrchestratorTest` |
 | TUI/终端 | `mvn test -Pphase16-smoke` |
 | RAG | `mvn test -Dtest=CodeChunkerTest,CodeAnalyzerTest,VectorStoreTest,CodeIndexTest` |
 | 常规回归 | `mvn test -Pquick` |
@@ -221,7 +232,7 @@ src/main/java/com/mindcli/
 | 代码搜索 | capability/tool/builtin/FileToolRegistrar.java + ToolRegistry.java (`glob_files` / `grep_code` / `read_file`) |
 | 模型/API | platform/llm/*Client.java + LlmClientFactory.java |
 | RAG 语义辅助 | capability/rag/CodeRetriever.java + CodeIndex.java + VectorStore.java |
-| Multi-Agent | AgentOrchestrator.java + SubAgent.java |
+| Multi-Agent | AgentOrchestrator.java + SubAgent.java + agent/profile/* |
 | MCP | capability/mcp/McpServerManager.java + McpClient.java |
 | TUI/渲染 | app/tui/* + platform/render/Renderer.java + RendererFactory.java |
 

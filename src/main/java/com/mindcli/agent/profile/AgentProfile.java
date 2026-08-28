@@ -18,7 +18,9 @@ public record AgentProfile(
         int maxConcurrency,
         String permissionMode,
         String memoryScope,
-        String contextMode
+        String contextMode,
+        String developerInstructions,
+        String approvalPolicy
 ) {
     public AgentProfile {
         name = normalizeRequired(name, "name");
@@ -32,22 +34,56 @@ public record AgentProfile(
         permissionMode = blankToDefault(permissionMode, "LEGACY_COMPAT").toUpperCase(Locale.ROOT);
         memoryScope = blankToDefault(memoryScope, "PARENT_SUMMARY").toUpperCase(Locale.ROOT);
         contextMode = blankToDefault(contextMode, "balanced").toLowerCase(Locale.ROOT);
+        developerInstructions = developerInstructions == null ? "" : developerInstructions.trim();
+        approvalPolicy = blankToDefault(approvalPolicy, "on-request").toLowerCase(Locale.ROOT);
     }
 
-    public static AgentProfile legacy(String name, AgentRole role) {
-        List<String> tools = switch (role) {
-            case PLANNER -> List.of();
-            case WORKER -> List.of("*");
-            case REVIEWER -> List.of("read_file", "list_dir", "glob_files", "grep_code", "execute_command");
-        };
-        String permissionMode = role == AgentRole.WORKER ? "LEGACY_COMPAT" : "READ_ONLY";
-        return new AgentProfile(name, role, role.getDescription(), tools, List.of(),
-                defaultCommandAllowlist(role), "auto", 1, permissionMode, "PARENT_SUMMARY", "balanced");
+    public static AgentProfile builtinExplorer(String name) {
+        return new AgentProfile(name, AgentRole.EXPLORER, AgentRole.EXPLORER.getDescription(),
+                List.of("@read"), List.of(), List.of(),
+                "auto", 1, "READ_ONLY", "PARENT_SUMMARY", "balanced", "", "on-request");
+    }
+
+    public static AgentProfile builtinWorker(String name) {
+        return builtinWorker(name, 1);
+    }
+
+    public static AgentProfile builtinWorker(String name, int maxConcurrency) {
+        return new AgentProfile(name, AgentRole.WORKER, AgentRole.WORKER.getDescription(),
+                List.of("*"), List.of(), List.of(),
+                "auto", maxConcurrency, "LEGACY_COMPAT", "PARENT_SUMMARY", "balanced", "", "on-request");
     }
 
     public static AgentProfile worker(String name, List<String> tools, int maxConcurrency) {
         return new AgentProfile(name, AgentRole.WORKER, "", tools, List.of(), List.of(),
-                "auto", maxConcurrency, "CUSTOM", "PARENT_SUMMARY", "balanced");
+                "auto", maxConcurrency, "CUSTOM", "PARENT_SUMMARY", "balanced", "", "on-request");
+    }
+
+    /**
+     * 自定义子代理工厂：将 Codex 的 sandbox_mode 映射为内部的 tools + permissionMode。
+     */
+    public static AgentProfile custom(String name, String description, String developerInstructions,
+                                      String sandboxMode, String approvalPolicy, String model) {
+        String mode = sandboxMode == null ? "workspace-write" : sandboxMode.trim().toLowerCase(Locale.ROOT);
+        List<String> tools;
+        String permissionMode;
+        switch (mode) {
+            case "read-only" -> {
+                tools = List.of("@read");
+                permissionMode = "READ_ONLY";
+            }
+            case "danger-full-access" -> {
+                tools = List.of("*");
+                permissionMode = "DANGER_FULL_ACCESS";
+            }
+            default -> { // workspace-write
+                tools = List.of("*");
+                permissionMode = "LEGACY_COMPAT";
+            }
+        }
+        return new AgentProfile(name, AgentRole.CUSTOM, description, tools, List.of(), List.of(),
+                model, 1, permissionMode, "PARENT_SUMMARY", "balanced",
+                developerInstructions, approvalPolicy);
     }
 
     public boolean allowsTool(String toolName) {
@@ -72,13 +108,6 @@ public record AgentProfile(
             }
         }
         return score;
-    }
-
-    private static List<String> defaultCommandAllowlist(AgentRole role) {
-        if (role != AgentRole.REVIEWER) {
-            return List.of();
-        }
-        return List.of("git status --short", "git diff --stat");
     }
 
     private static String normalizeRequired(String value, String field) {

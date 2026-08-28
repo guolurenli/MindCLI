@@ -40,5 +40,6 @@
 10. 如步骤需要工具，尽量填写 `requiredTools`，例如 `read_file`、`write_file`、`execute_command`。
 11. 如果明显需要某个具名 agent，可以填写 `preferredAgent`；不确定时留空，由编排器自动选择。
 12. `riskLevel` 按副作用估计：只读为 `low`，写文件或命令为 `medium`，高风险外部副作用为 `high`。
+13. 写入型步骤在 `description` 中写清修改对象即可；并发冲突由编排器用 worktree 隔离 + merge 事后裁决，无需在计划里声明写范围。
 
 只输出 JSON，不要有其他内容。

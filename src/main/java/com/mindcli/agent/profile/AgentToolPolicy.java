@@ -61,7 +61,9 @@ public final class AgentToolPolicy {
                 1,
                 data.getOrDefault("permissionMode", "CUSTOM"),
                 data.getOrDefault("memoryScope", "PARENT_SUMMARY"),
-                data.getOrDefault("contextMode", "balanced"));
+                data.getOrDefault("contextMode", "balanced"),
+                "",
+                data.getOrDefault("approvalPolicy", "on-request"));
         return evaluate(profile, invocation);
     }
 
@@ -108,8 +110,13 @@ public final class AgentToolPolicy {
     }
 
     private static boolean commandAllowed(AgentProfile profile, String argumentsJson) {
+        // Empty profile allowlist means no additional profile-level restriction;
+        // global command policy, HITL and path/workspace guards still apply.
+        if (profile.commandAllowlist().isEmpty()) {
+            return true;
+        }
         String command = command(argumentsJson);
-        if (command.isBlank() || profile.commandAllowlist().isEmpty()) {
+        if (command.isBlank()) {
             return false;
         }
         for (String allowed : profile.commandAllowlist()) {

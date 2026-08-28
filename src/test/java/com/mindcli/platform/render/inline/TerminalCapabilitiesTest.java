@@ -7,6 +7,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
+import java.util.Properties;
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -38,7 +41,36 @@ class TerminalCapabilitiesTest {
     void dumbTerminalIsNotAnsiCapable() {
         Terminal terminal = Mockito.mock(Terminal.class);
         Mockito.when(terminal.getType()).thenReturn("dumb");
-        assertFalse(TerminalCapabilities.supportsAnsi(terminal));
+        assertFalse(TerminalCapabilities.supportsAnsi(terminal, Map.of()));
+    }
+
+    @Test
+    void windowsTerminalEnvironmentCanOverrideDumbTerminalType() {
+        Terminal terminal = Mockito.mock(Terminal.class);
+        Mockito.when(terminal.getType()).thenReturn("dumb");
+
+        assertTrue(TerminalCapabilities.supportsAnsi(terminal, new Properties(), Map.of(
+                "WT_SESSION", "f0c51f06-4bf5-4db6-8d24-7a2d8f1d8201",
+                "TERM", "xterm-256color")));
+    }
+
+    @Test
+    void dumbTermEnvironmentStillDisablesAnsi() {
+        Terminal terminal = Mockito.mock(Terminal.class);
+        Mockito.when(terminal.getType()).thenReturn("xterm-256color");
+
+        assertFalse(TerminalCapabilities.supportsAnsi(terminal, new Properties(), Map.of("TERM", "dumb")));
+    }
+
+    @Test
+    void explicitTerminalTypePropertyOverridesDumbTerminal() {
+        Terminal terminal = Mockito.mock(Terminal.class);
+        Mockito.when(terminal.getType()).thenReturn("dumb");
+
+        Properties props = new Properties();
+        props.setProperty("mindcli.terminal.type", "xterm-256color");
+
+        assertTrue(TerminalCapabilities.supportsAnsi(terminal, props, Map.of("TERM", "dumb")));
     }
 
     @Test

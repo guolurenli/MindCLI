@@ -14,9 +14,9 @@ class AgentRoleTest {
 
     @Test
     void shouldHaveCorrectDisplayNames() {
-        assertEquals("规划者", AgentRole.PLANNER.getDisplayName());
+        assertEquals("探索者", AgentRole.EXPLORER.getDisplayName());
         assertEquals("执行者", AgentRole.WORKER.getDisplayName());
-        assertEquals("检查者", AgentRole.REVIEWER.getDisplayName());
+        assertEquals("自定义", AgentRole.CUSTOM.getDisplayName());
     }
 
     @Test
@@ -29,8 +29,7 @@ class AgentRoleTest {
 
     @Test
     void shouldValueOfByName() {
-        assertSame(AgentRole.PLANNER, AgentRole.valueOf("PLANNER"));
+        assertSame(AgentRole.EXPLORER, AgentRole.valueOf("EXPLORER"));
         assertSame(AgentRole.WORKER, AgentRole.valueOf("WORKER"));
-        assertSame(AgentRole.REVIEWER, AgentRole.valueOf("REVIEWER"));
     }
 }

@@ -70,8 +70,9 @@ class MainInputNormalizationTest {
     void startupBannerUsesOpenLayoutWithoutRightBorder() {
         List<String> lines = Main.startupBannerLines();
 
-        assertTrue(lines.stream().anyMatch(line -> line.contains("MindCLI") && line.contains("v16.1.0")));
-        assertTrue(lines.stream().anyMatch(line -> line.contains("Tips for getting started")));
+        assertTrue(lines.stream().anyMatch(line -> line.contains("MindCLI // v16.1.0")));
+        assertTrue(lines.stream().anyMatch(line -> line.contains("Command /")));
+        assertTrue(lines.stream().anyMatch(line -> line.contains("Context @path")));
         assertTrue(lines.stream().anyMatch(line -> line.contains("@path")));
         assertTrue(lines.stream().noneMatch(line -> line.contains("for shortcuts")));
         assertTrue(lines.stream().noneMatch(line -> line.contains("────────────────")));

@@ -3,6 +3,11 @@ package com.mindcli.platform.render.inline;
 import org.jline.terminal.Size;
 import org.jline.terminal.Terminal;
 
+import java.nio.charset.Charset;
+import java.nio.charset.CharsetEncoder;
+import java.util.Map;
+import java.util.Properties;
+
 /**
  * 终端能力探测：决定 inline 渲染器的各项特性是否可启用。
  *
@@ -15,19 +20,51 @@ public final class TerminalCapabilities {
 
     /** 终端是否能渲染 ANSI 转义序列（颜色、光标控制、inline status 等）。 */
     public static boolean supportsAnsi(Terminal terminal) {
+        return supportsAnsi(terminal, System.getProperties(), System.getenv());
+    }
+
+    static boolean supportsAnsi(Terminal terminal, Map<String, String> env) {
+        return supportsAnsi(terminal, new Properties(), env);
+    }
+
+    static boolean supportsAnsi(Terminal terminal, Properties properties, Map<String, String> env) {
         if (terminal == null) {
             return false;
         }
+        String configuredType = firstNonBlank(
+                properties == null ? null : properties.getProperty("mindcli.terminal.type"),
+                env == null ? null : env.get("MINDCLI_TERMINAL_TYPE"));
+        if (configuredType != null && !configuredType.isBlank()) {
+            return !"dumb".equalsIgnoreCase(configuredType.trim());
+        }
         String type = terminal.getType();
         if (type != null && type.equalsIgnoreCase("dumb")) {
-            return false;
+            return windowsTerminalSupportsAnsi(env);
         }
-        if (System.getenv("NO_COLOR") != null) {
+        if (env != null && env.get("NO_COLOR") != null) {
             // NO_COLOR 只影响样式，不影响光标控制——保留 true，颜色由 AnsiStyle 自己关
             return true;
         }
-        String envTerm = System.getenv("TERM");
+        String envTerm = env == null ? null : env.get("TERM");
         return envTerm == null || !envTerm.equalsIgnoreCase("dumb");
+    }
+
+    private static boolean windowsTerminalSupportsAnsi(Map<String, String> env) {
+        if (env == null || env.get("WT_SESSION") == null) {
+            return false;
+        }
+        String envTerm = env.get("TERM");
+        return envTerm != null && !envTerm.isBlank() && !envTerm.equalsIgnoreCase("dumb");
+    }
+
+    private static String firstNonBlank(String first, String second) {
+        if (first != null && !first.isBlank()) {
+            return first;
+        }
+        if (second != null && !second.isBlank()) {
+            return second;
+        }
+        return null;
     }
 
     /**
@@ -63,6 +100,34 @@ public final class TerminalCapabilities {
             return s;
         } catch (Exception e) {
             return new Size(80, 24);
+        }
+    }
+
+    public static boolean supportsUnicodeGlyphs(Terminal terminal, String glyphs) {
+        if (terminal == null || glyphs == null || glyphs.isEmpty()) {
+            return false;
+        }
+        Charset charset = safeOutputEncoding(terminal);
+        if (charset == null) {
+            return true;
+        }
+        CharsetEncoder encoder = charset.newEncoder();
+        return encoder.canEncode(glyphs);
+    }
+
+    private static Charset safeOutputEncoding(Terminal terminal) {
+        try {
+            Charset output = terminal.outputEncoding();
+            if (output != null) {
+                return output;
+            }
+        } catch (RuntimeException ignored) {
+            // Fall through to the older aggregate encoding.
+        }
+        try {
+            return terminal.encoding();
+        } catch (RuntimeException ignored) {
+            return null;
         }
     }
 }

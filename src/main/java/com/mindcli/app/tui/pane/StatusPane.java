@@ -39,10 +39,10 @@ public class StatusPane extends Panel {
         setLayoutManager(new LinearLayout(Direction.VERTICAL));
 
         // 模型信息
-        this.modelLabel = new Label("🤖 " + (llmClient != null ? llmClient.getModelName() : "?"));
-        this.tokenLabel = new Label("💡 --");
-        this.modeLabel = new Label("🔄 ReAct");
-        this.timeLabel = new Label("⏱ --");
+        this.modelLabel = new Label("MODEL // " + (llmClient != null ? llmClient.getModelName() : "?"));
+        this.tokenLabel = new Label("CTX // --");
+        this.modeLabel = new Label("MODE // ReAct");
+        this.timeLabel = new Label("TIME // --");
 
         addComponent(modelLabel);
         addComponent(tokenLabel);
@@ -58,9 +58,9 @@ public class StatusPane extends Panel {
      * @param cached  缓存的 token
      */
     public void updateTokenUsage(long used, long budget, long cached) {
-        tokenLabel.setText(String.format("💡 %d/%d", used, budget));
+        tokenLabel.setText(String.format("CTX // %d/%d", used, budget));
         if (cached > 0) {
-            tokenLabel.setText(tokenLabel.getText() + String.format(" (cached: %d)", cached));
+            tokenLabel.setText(tokenLabel.getText() + String.format(" CACHE %d", cached));
         }
     }
 
@@ -70,7 +70,7 @@ public class StatusPane extends Panel {
      * @param mode 模式（ReAct / Plan / Team）
      */
     public void updateMode(String mode) {
-        modeLabel.setText("🔄 " + (mode != null ? mode : "ReAct"));
+        modeLabel.setText("MODE // " + (mode != null ? mode : "ReAct"));
     }
 
     /**
@@ -86,7 +86,7 @@ public class StatusPane extends Panel {
     public void stopTimer() {
         if (taskStartTime.get() > 0) {
             long elapsedMs = System.currentTimeMillis() - taskStartTime.get();
-            timeLabel.setText(String.format("⏱ %.1fs", elapsedMs / 1000.0));
+            timeLabel.setText(String.format("TIME // %.1fs", elapsedMs / 1000.0));
             taskStartTime.set(0);
         }
     }

@@ -137,29 +137,46 @@ final class CliStartupView {
         String model = info.model() == null || info.model().isBlank() ? "auto" : info.model();
         String provider = info.provider() == null || info.provider().isBlank() ? "model" : info.provider();
         String mcp = info.mcpTotal() <= 0
-                ? "MCP not configured"
-                : "MCP " + info.mcpReady() + "/" + info.mcpTotal() + " · " + info.mcpTools() + " tools";
+                ? "0/0 offline"
+                : info.mcpReady() + "/" + info.mcpTotal() + " online · " + info.mcpTools() + " tools";
         String skills = info.skillsTotal() <= 0
-                ? "0 skills"
-                : info.skillsEnabled() + "/" + info.skillsTotal() + " skills"
-                  + (info.skillsSummary().isEmpty() ? "" : "/" + info.skillsSummary());
-        String ready = "Model " + model + " (" + provider + ")";
-        String state = mcp + " · " + skills + " · ReAct";
+                ? "0/0 idle"
+                : info.skillsEnabled() + "/" + info.skillsTotal() + " armed"
+                  + (info.skillsSummary().isEmpty() ? "" : " · " + info.skillsSummary());
         List<String> lines = new ArrayList<>(List.of(
                 "",
-                "   " + AnsiStyle.emphasis("MindCLI") + "  " + AnsiStyle.subtle("v" + version),
-                "   " + AnsiStyle.subtle(ready),
-                "   " + AnsiStyle.subtle(state),
+                "   " + AnsiStyle.section("MindCLI //") + " " + AnsiStyle.heading("v" + version),
+                startupInfoLine("Model", model + " / " + provider, "Runtime", "ReAct"),
+                startupInfoLine("Mcp", mcp),
+                startupInfoLine("Skills", skills),
                 "",
-                "Tips for getting started:",
-                "1. Type " + AnsiStyle.emphasis("/") + " for commands and Tab completion",
-                "2. Ask coding questions, edit code or run commands",
-                "3. Attach context with " + AnsiStyle.emphasis("@path") + " or " + AnsiStyle.emphasis("@image:")
+                "   " + startupHint("Command", "/ palette")
+                        + "    " + startupHint("Context", "@path")
+                        + "    " + startupHint("Image", "@image:")
+                        + "    " + startupHint("Ctrl+O", "expand")
         ));
         if (info.note() != null && !info.note().isBlank()) {
             lines.add("");
             lines.add(AnsiStyle.subtle(info.note().replace('\n', ' ')));
         }
         return lines;
+    }
+
+    private static String startupInfoLine(String label, String value) {
+        return "   " + AnsiStyle.codeLabel(padLabel(label)) + " " + AnsiStyle.heading(value);
+    }
+
+    private static String startupInfoLine(String firstLabel, String firstValue, String secondLabel, String secondValue) {
+        return "   " + AnsiStyle.codeLabel(padLabel(firstLabel)) + " " + AnsiStyle.heading(firstValue)
+                + "        " + AnsiStyle.codeLabel(secondLabel) + "  " + AnsiStyle.section(secondValue);
+    }
+
+    private static String startupHint(String label, String value) {
+        return AnsiStyle.codeLabel(label) + " " + AnsiStyle.subtle(value);
+    }
+
+    private static String padLabel(String label) {
+        String safe = label == null ? "" : label;
+        return safe.length() >= 7 ? safe : safe + " ".repeat(7 - safe.length());
     }
 }

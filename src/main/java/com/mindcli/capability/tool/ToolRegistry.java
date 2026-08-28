@@ -287,6 +287,30 @@ public class ToolRegistry {
         return projectPath;
     }
 
+    /**
+     * 创建一个指向指定项目目录的独立 ToolRegistry 副本（用于 worktree 隔离）。
+     *
+     * 复制与路径无关的共享配置（上下文画像、模型、skill、浏览器、写文件观察者），
+     * 并把项目路径重定向到 worktree 目录。不复制 memory writer（worktree worker 不写记忆，
+     * 避免污染主 MemoryManager 的 project 键）与 MCP 工具（v1 能力降级）。
+     */
+    public ToolRegistry forkForProject(Path projectPath) {
+        ToolRegistry fork = newInstance();
+        fork.setProjectPath(projectPath.toString());
+        fork.setContextProfile(this.contextProfile);
+        fork.setCurrentModel(this.currentProvider, this.currentModel);
+        fork.setSkillRegistry(this.skillRegistry);
+        fork.setBrowserGuard(this.browserGuard);
+        fork.setBrowserConnector(this.browserConnector);
+        fork.setWriteFileObserver(this.writeFileObserver);
+        return fork;
+    }
+
+    /** 创建同类型的新注册表实例，供 {@link #forkForProject(Path)} 复用。 */
+    protected ToolRegistry newInstance() {
+        return new ToolRegistry();
+    }
+
     public void setContextProfile(ContextProfile contextProfile) {
         if (contextProfile != null) {
             this.contextProfile = contextProfile;

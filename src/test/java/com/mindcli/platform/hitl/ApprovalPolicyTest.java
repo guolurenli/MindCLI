@@ -135,4 +135,47 @@ class ApprovalPolicyTest {
         assertEquals(4, ApprovalPolicy.getDangerousTools().size());
         assertFalse(ApprovalPolicy.getDangerousTools().contains("mcp__demo__tool"));
     }
+
+    @Test
+    void neverPolicyBypassesApprovalForAllTools() {
+        assertFalse(ApprovalPolicy.requiresApproval("write_file", "never"));
+        assertFalse(ApprovalPolicy.requiresApproval("execute_command", "never"));
+        assertFalse(ApprovalPolicy.requiresApproval("read_file", "never"));
+    }
+
+    @Test
+    void untrustedPolicyApprovesEverything() {
+        assertTrue(ApprovalPolicy.requiresApproval("write_file", "untrusted"));
+        assertTrue(ApprovalPolicy.requiresApproval("read_file", "untrusted"));
+        assertTrue(ApprovalPolicy.requiresApproval("list_dir", "untrusted"));
+    }
+
+    @Test
+    void onRequestPolicyKeepsDefaultBehavior() {
+        assertTrue(ApprovalPolicy.requiresApproval("write_file", "on-request"));
+        assertFalse(ApprovalPolicy.requiresApproval("read_file", "on-request"));
+        assertTrue(ApprovalPolicy.requiresApproval("mcp__demo__tool", "on-request"));
+    }
+
+    @Test
+    void nullOrBlankPolicyFallsBackToOnRequest() {
+        assertTrue(ApprovalPolicy.requiresApproval("write_file", null));
+        assertFalse(ApprovalPolicy.requiresApproval("read_file", ""));
+        assertFalse(ApprovalPolicy.requiresApproval("read_file", "   "));
+    }
+
+    @Test
+    void requiresApprovalReadsThreadLocalPolicy() {
+        try {
+            ApprovalPolicy.applyApprovalPolicy("never");
+            assertFalse(ApprovalPolicy.requiresApproval("write_file"));
+            ApprovalPolicy.applyApprovalPolicy("untrusted");
+            assertTrue(ApprovalPolicy.requiresApproval("read_file"));
+        } finally {
+            ApprovalPolicy.clearApprovalPolicy();
+        }
+        // 清除后回退 on-request
+        assertTrue(ApprovalPolicy.requiresApproval("write_file"));
+        assertFalse(ApprovalPolicy.requiresApproval("read_file"));
+    }
 }

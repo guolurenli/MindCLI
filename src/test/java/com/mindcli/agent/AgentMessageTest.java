@@ -25,30 +25,6 @@ class AgentMessageTest {
     }
 
     @Test
-    void shouldCreateFeedbackMessage() {
-        AgentMessage msg = AgentMessage.feedback("reviewer", "缺少错误处理");
-        assertEquals("reviewer", msg.fromAgent());
-        assertEquals(AgentRole.REVIEWER, msg.fromRole());
-        assertEquals("缺少错误处理", msg.content());
-        assertEquals(AgentMessage.Type.FEEDBACK, msg.type());
-    }
-
-    @Test
-    void shouldCreateApprovalMessage() {
-        AgentMessage msg = AgentMessage.approval("reviewer", "质量达标");
-        assertEquals(AgentMessage.Type.APPROVAL, msg.type());
-        assertEquals(AgentRole.REVIEWER, msg.fromRole());
-    }
-
-    @Test
-    void shouldCreateRejectionMessage() {
-        AgentMessage msg = AgentMessage.rejection("reviewer", "存在严重问题");
-        assertEquals(AgentMessage.Type.REJECTION, msg.type());
-        assertEquals(AgentRole.REVIEWER, msg.fromRole());
-        assertEquals("存在严重问题", msg.content());
-    }
-
-    @Test
     void shouldCreateErrorMessage() {
         AgentMessage msg = AgentMessage.error("worker-1", AgentRole.WORKER, "LLM 调用失败: 500");
         assertEquals("worker-1", msg.fromAgent());
@@ -58,18 +34,15 @@ class AgentMessageTest {
     }
 
     @Test
-    void shouldHaveSixMessageTypes() {
+    void shouldHaveThreeMessageTypes() {
         AgentMessage.Type[] types = AgentMessage.Type.values();
-        assertEquals(6, types.length);
+        assertEquals(3, types.length);
     }
 
     @Test
     void shouldValueOfTypeByName() {
         assertSame(AgentMessage.Type.TASK, AgentMessage.Type.valueOf("TASK"));
         assertSame(AgentMessage.Type.RESULT, AgentMessage.Type.valueOf("RESULT"));
-        assertSame(AgentMessage.Type.FEEDBACK, AgentMessage.Type.valueOf("FEEDBACK"));
-        assertSame(AgentMessage.Type.APPROVAL, AgentMessage.Type.valueOf("APPROVAL"));
-        assertSame(AgentMessage.Type.REJECTION, AgentMessage.Type.valueOf("REJECTION"));
         assertSame(AgentMessage.Type.ERROR, AgentMessage.Type.valueOf("ERROR"));
     }
 }

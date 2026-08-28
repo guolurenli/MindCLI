@@ -27,6 +27,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -39,12 +40,10 @@ class SubAgentTest {
     Path tempDir;
 
     @Test
-    void shouldOnlyEnableToolsForWorker() throws Exception {
-        assertFalse(invokeShouldUseTools(new SubAgent("planner", AgentRole.PLANNER,
+    void shouldEnableToolsForBuiltinExplorerAndWorker() throws Exception {
+        assertTrue(invokeShouldUseTools(new SubAgent(AgentProfile.builtinExplorer("explorer#1"),
                 new GLMClient("test-key"), new ToolRegistry())));
-        assertTrue(invokeShouldUseTools(new SubAgent("worker", AgentRole.WORKER,
-                new GLMClient("test-key"), new ToolRegistry())));
-        assertTrue(invokeShouldUseTools(new SubAgent("reviewer", AgentRole.REVIEWER,
+        assertTrue(invokeShouldUseTools(new SubAgent(AgentProfile.builtinWorker("worker#1"),
                 new GLMClient("test-key"), new ToolRegistry())));
     }
 
@@ -89,7 +88,9 @@ class SubAgentTest {
                 1,
                 "READ_ONLY",
                 "PARENT_SUMMARY",
-                "balanced");
+                "balanced",
+                "",
+                "on-request");
         ToolRegistry registry = new ToolRegistry();
         registry.setProjectPath(tempDir.toString());
         SubAgent worker = new SubAgent(reader, llm, registry);
@@ -113,13 +114,70 @@ class SubAgentTest {
     }
 
     @Test
+    void reviewBlocksMutatingToolsAtProgramLevel() {
+        List<String> dispatched = new java.util.ArrayList<>();
+        ToolRegistry registry = new ToolRegistry() {
+            @Override
+            public List<ToolExecutionResult> executeTools(List<ToolInvocation> invocations) {
+                invocations.forEach(i -> dispatched.add(i.name()));
+                return invocations.stream()
+                        .map(i -> new ToolExecutionResult(i.id(), i.name(), i.argumentsJson(),
+                                "ok", 1, false, List.of()))
+                        .toList();
+            }
+        };
+        registry.setProjectPath(tempDir.toString());
+        MultiCallStreamClient llm = new MultiCallStreamClient(List.of(
+                new CallScript(
+                        listener -> {},
+                        new LlmClient.ChatResponse(
+                                "assistant",
+                                "自审中",
+                                null,
+                                List.of(
+                                        new LlmClient.ToolCall("call_w", new LlmClient.ToolCall.Function(
+                                                "write_file", "{\"path\":\"x.txt\",\"content\":\"x\"}")),
+                                        new LlmClient.ToolCall("call_r", new LlmClient.ToolCall.Function(
+                                                "read_file", "{\"path\":\"x.txt\"}"))
+                                ),
+                                10,
+                                5
+                        )
+                ),
+                new CallScript(
+                        listener -> listener.onContentDelta("{\"approved\":true}"),
+                        new LlmClient.ChatResponse(
+                                "assistant",
+                                "{\"approved\":true}",
+                                null,
+                                null,
+                                10,
+                                5
+                        )
+                )
+        ));
+        SubAgent worker = new SubAgent(AgentProfile.builtinWorker("w-review"), llm, registry);
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        PrintStream ps = new PrintStream(baos, true, StandardCharsets.UTF_8);
+        AgentRunContext context = AgentRunContext.create(AgentMode.TEAM, "review", tempDir.toString());
+
+        worker.review("原始任务", "执行结果", ps, context, null);
+
+        assertFalse(dispatched.contains("write_file"),
+                "自审阶段 write_file 应被程序级拦截，不进 ToolRegistry");
+        assertTrue(dispatched.contains("read_file"),
+                "自审阶段只读工具 read_file 应正常执行");
+    }
+
+    @Test
     void shouldRouteLateReasoningToSupplementalSection() {
         // 模拟服务器先下发 content、再追加 reasoning 的情况
         ScriptedStreamClient llm = new ScriptedStreamClient(listener -> {
             listener.onContentDelta("最终答案内容");
             listener.onReasoningDelta("这段思考在答案之后才到");
         });
-        SubAgent worker = new SubAgent("test-worker", AgentRole.WORKER, llm, new ToolRegistry());
+        SubAgent worker = new SubAgent(AgentProfile.builtinWorker("test-worker"), llm, new ToolRegistry());
 
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         PrintStream ps = new PrintStream(baos, true, StandardCharsets.UTF_8);
@@ -177,7 +235,7 @@ class SubAgentTest {
                         )
                 )
         ));
-        SubAgent worker = new SubAgent("w1", AgentRole.WORKER, llm, new ToolRegistry());
+        SubAgent worker = new SubAgent(AgentProfile.builtinWorker("w1"), llm, new ToolRegistry());
 
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         PrintStream ps = new PrintStream(baos, true, StandardCharsets.UTF_8);
@@ -208,7 +266,7 @@ class SubAgentTest {
             listener.onReasoningDelta("\n");
             listener.onContentDelta("答案");
         });
-        SubAgent worker = new SubAgent("test-worker", AgentRole.WORKER, llm, new ToolRegistry());
+        SubAgent worker = new SubAgent(AgentProfile.builtinWorker("test-worker"), llm, new ToolRegistry());
 
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         PrintStream ps = new PrintStream(baos, true, StandardCharsets.UTF_8);
@@ -227,12 +285,20 @@ class SubAgentTest {
         CountDownLatch lockEntered = new CountDownLatch(1);
         CountDownLatch releaseLock = new CountDownLatch(1);
         CountDownLatch workerToolStarted = new CountDownLatch(1);
+        CountDownLatch toolCallResponseDelivered = new CountDownLatch(1);
+        AtomicBoolean workerToolStartedBeforeRelease = new AtomicBoolean(false);
         ToolDispatcher lockHolder = new ToolDispatcher(new LockHoldingToolRegistry(lockEntered, releaseLock));
-        RecordingToolRegistry registry = new RecordingToolRegistry(workerToolStarted);
+        RecordingToolRegistry registry = new RecordingToolRegistry(
+                workerToolStarted,
+                releaseLock,
+                workerToolStartedBeforeRelease);
         registry.setProjectPath(tempDir.toString());
         MultiCallStreamClient llm = new MultiCallStreamClient(List.of(
                 new CallScript(
-                        listener -> listener.onContentDelta("准备写入"),
+                        listener -> {
+                            listener.onContentDelta("准备写入");
+                            toolCallResponseDelivered.countDown();
+                        },
                         new LlmClient.ChatResponse(
                                 "assistant",
                                 "准备写入",
@@ -258,7 +324,7 @@ class SubAgentTest {
                         )
                 )
         ));
-        SubAgent worker = new SubAgent("w-lock", AgentRole.WORKER, llm, registry);
+        SubAgent worker = new SubAgent(AgentProfile.builtinWorker("w-lock"), llm, registry);
         AgentRunContext lockContext = AgentRunContext.create(AgentMode.TEAM, "lock", tempDir.toString());
         ExecutorService executor = Executors.newFixedThreadPool(2);
 
@@ -267,7 +333,7 @@ class SubAgentTest {
                     new LlmClient.ToolCall("call_lock", new LlmClient.ToolCall.Function(
                             "write_file", "{\"path\":\"shared.txt\",\"content\":\"lock\"}"))
             ), lockContext));
-            assertTrue(lockEntered.await(1, TimeUnit.SECONDS));
+            assertTrue(lockEntered.await(5, TimeUnit.SECONDS));
 
             Future<AgentMessage> workerFuture = executor.submit(() -> {
                 ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -275,14 +341,17 @@ class SubAgentTest {
                 return worker.execute(AgentMessage.task("orchestrator", "写入 shared.txt"), ps);
             });
 
-            assertFalse(workerToolStarted.await(1, TimeUnit.SECONDS),
+            assertTrue(toolCallResponseDelivered.await(5, TimeUnit.SECONDS));
+            assertFalse(workerToolStarted.await(250, TimeUnit.MILLISECONDS),
                     "SubAgent worker tool execution must wait for the shared dispatcher lock");
             releaseLock.countDown();
 
-            AgentMessage result = workerFuture.get(2, TimeUnit.SECONDS);
+            AgentMessage result = workerFuture.get(10, TimeUnit.SECONDS);
             assertEquals(AgentMessage.Type.RESULT, result.type());
-            lockFuture.get(1, TimeUnit.SECONDS);
-            assertTrue(workerToolStarted.await(1, TimeUnit.SECONDS));
+            lockFuture.get(5, TimeUnit.SECONDS);
+            assertTrue(workerToolStarted.await(5, TimeUnit.SECONDS));
+            assertFalse(workerToolStartedBeforeRelease.get(),
+                    "SubAgent worker tool execution must not enter ToolRegistry before the shared lock is released");
         } finally {
             releaseLock.countDown();
             executor.shutdownNow();
@@ -317,13 +386,26 @@ class SubAgentTest {
 
     private static final class RecordingToolRegistry extends ToolRegistry {
         private final CountDownLatch toolStarted;
+        private final CountDownLatch releaseLock;
+        private final AtomicBoolean toolStartedBeforeRelease;
 
         private RecordingToolRegistry(CountDownLatch toolStarted) {
+            this(toolStarted, null, null);
+        }
+
+        private RecordingToolRegistry(CountDownLatch toolStarted,
+                                      CountDownLatch releaseLock,
+                                      AtomicBoolean toolStartedBeforeRelease) {
             this.toolStarted = toolStarted;
+            this.releaseLock = releaseLock;
+            this.toolStartedBeforeRelease = toolStartedBeforeRelease;
         }
 
         @Override
         public String executeTool(String name, String argumentsJson) {
+            if (releaseLock != null && releaseLock.getCount() > 0 && toolStartedBeforeRelease != null) {
+                toolStartedBeforeRelease.set(true);
+            }
             toolStarted.countDown();
             return "文件已写入: shared.txt";
         }
@@ -342,7 +424,7 @@ class SubAgentTest {
         public List<ToolExecutionResult> executeTools(List<ToolInvocation> invocations) {
             lockEntered.countDown();
             try {
-                assertTrue(releaseLock.await(2, TimeUnit.SECONDS));
+                releaseLock.await(30, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }

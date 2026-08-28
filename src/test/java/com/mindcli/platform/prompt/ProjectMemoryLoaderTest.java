@@ -20,14 +20,14 @@ class ProjectMemoryLoaderTest {
         Path projectRoot = tempDir.resolve("project");
         Files.createDirectories(userDir);
         Files.createDirectories(projectRoot.resolve(".mindcli"));
-        Files.writeString(userDir.resolve("PAI.md"), "- user rule");
-        Files.writeString(projectRoot.resolve("PAI.md"), "- project rule");
-        Files.writeString(projectRoot.resolve(".mindcli").resolve("PAI.md"), "- dot project rule");
-        Files.writeString(projectRoot.resolve("PAI.local.md"), "- local rule");
+        Files.writeString(userDir.resolve("MIND.md"), "- user rule");
+        Files.writeString(projectRoot.resolve("MIND.md"), "- project rule");
+        Files.writeString(projectRoot.resolve(".mindcli").resolve("MIND.md"), "- dot project rule");
+        Files.writeString(projectRoot.resolve("MIND.local.md"), "- local rule");
 
         String context = new ProjectMemoryLoader(userDir, projectRoot).loadForPrompt();
 
-        assertTrue(context.contains("## PAI.md 项目记忆"));
+        assertTrue(context.contains("## MIND.md 项目记忆"));
         assertTrue(context.indexOf("user rule") < context.indexOf("project rule"));
         assertTrue(context.indexOf("project rule") < context.indexOf("dot project rule"));
         assertTrue(context.indexOf("dot project rule") < context.indexOf("local rule"));
@@ -40,7 +40,7 @@ class ProjectMemoryLoaderTest {
         Files.createDirectories(userDir);
         Files.createDirectories(projectRoot.resolve("docs"));
         Files.writeString(projectRoot.resolve("docs").resolve("rules.md"), "- imported rule");
-        Files.writeString(projectRoot.resolve("PAI.md"), """
+        Files.writeString(projectRoot.resolve("MIND.md"), """
                 @docs/rules.md
                 @../outside.md
                 - root rule

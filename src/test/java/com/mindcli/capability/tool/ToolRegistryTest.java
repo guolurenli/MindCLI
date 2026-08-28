@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.capability.browser.BrowserConnector;
 import com.mindcli.capability.memory.MemoryWriteResult;
 import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
+import com.mindcli.capability.skill.SkillRegistry;
+import com.mindcli.platform.llm.context.ContextProfile;
 import com.mindcli.capability.tool.builtin.BrowserToolRegistrar;
 import com.mindcli.capability.tool.builtin.CodeToolRegistrar;
 import com.mindcli.capability.tool.builtin.FileToolRegistrar;
@@ -32,8 +34,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
 
 class ToolRegistryTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -515,6 +520,37 @@ class ToolRegistryTest {
                 "{\"fact\":\"API_KEY=sk-1234567890abcdefghijklmnopqrst\"}");
 
         assertEquals("保存长期记忆被策略拒绝: memory.sensitive - 检测到敏感信息，拒绝写入长期记忆", result);
+    }
+
+    @Test
+    void forkForProject_redirectsProjectPathAndCopiesSharedConfig() {
+        ToolRegistry registry = new ToolRegistry();
+        ContextProfile profile = ContextProfile.custom(16_000, 8_000);
+        registry.setContextProfile(profile);
+        SkillRegistry skills = mock(SkillRegistry.class);
+        registry.setSkillRegistry(skills);
+
+        Path worktree = Path.of("target", "worktree-fork-test").toAbsolutePath();
+        ToolRegistry fork = registry.forkForProject(worktree);
+
+        assertNotSame(registry, fork, "fork 应是独立实例");
+        assertEquals(worktree.toString(), fork.getProjectPath(), "fork 的项目路径应重定向到 worktree");
+        assertNotSame(registry.getProjectPath(), fork.getProjectPath());
+        assertSame(profile, fork.getContextProfile(), "fork 应共享同一个 ContextProfile 引用");
+        assertSame(skills, fork.getSkillRegistry(), "fork 应共享同一个 SkillRegistry 引用");
+    }
+
+    @Test
+    void forkForProject_doesNotLeakMemoryWriterToFork(@TempDir Path tempDir) {
+        ToolRegistry registry = new ToolRegistry();
+        List<String> saved = new ArrayList<>();
+        registry.setMemorySaver(saved::add);
+
+        ToolRegistry fork = registry.forkForProject(tempDir);
+
+        // fork 未复制 memory saver，save_memory 在 fork 上不应写入主注册表的 saver
+        fork.executeTool("save_memory", "{\"fact\":\"来自 worktree 的事实\"}");
+        assertTrue(saved.isEmpty(), "worktree fork 不应污染主注册表记忆写入");
     }
 
     private static void restoreSystemProperty(String key, String previous) {

@@ -20,7 +20,20 @@ public class PromptAssembler {
     public String assemble(PromptMode mode, PromptContext context) {
         Objects.requireNonNull(mode, "mode");
         PromptContext ctx = context == null ? PromptContext.empty() : context;
+        String roleSection = applyVariables(repository.loadRequired(mode.resourcePath()), ctx);
+        return assembleWithRoleSection(roleSection, ctx);
+    }
 
+    /**
+     * 自定义子代理：用 developer_instructions 取代 mode 的静态 resource，其余通用协议保持不变。
+     */
+    public String assembleCustom(String developerInstructions, PromptContext context) {
+        PromptContext ctx = context == null ? PromptContext.empty() : context;
+        String roleSection = developerInstructions == null ? "" : developerInstructions.trim();
+        return assembleWithRoleSection(roleSection, ctx);
+    }
+
+    private String assembleWithRoleSection(String roleSection, PromptContext ctx) {
         String base = repository.loadRequired("base.md");
         if (!ctx.toolsEnabled()) {
             base = stripToolSections(base);
@@ -33,7 +46,7 @@ public class PromptAssembler {
             append(prompt, noToolsSection());
         }
         append(prompt, repository.loadRequired("personalities/calm.md"));
-        append(prompt, applyVariables(repository.loadRequired(mode.resourcePath()), ctx));
+        append(prompt, roleSection);
         append(prompt, repository.loadRequired("approvals/" + approvalMode(ctx) + ".md"));
         append(prompt, runtimeContext());
         append(prompt, dynamicSection("Project Context", ctx.projectMemoryContext(), ctx.memoryContext(),

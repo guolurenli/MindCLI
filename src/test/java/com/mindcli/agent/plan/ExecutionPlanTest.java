@@ -144,4 +144,23 @@ class ExecutionPlanTest {
         assertFalse(plan.getExecutableTasks().contains(task));
         assertFalse(task.isExecutable(Map.of("task_1", task)));
     }
+
+    @Test
+    void missingDependencyDoesNotBlockIndependentExecutableTasks() {
+        ExecutionPlan plan = new ExecutionPlan("plan_9", "demo");
+        Task independent = new Task("task_1", "read pom", Task.TaskType.FILE_READ);
+        Task blocked = new Task("task_2", "verify", Task.TaskType.VERIFICATION, List.of("task_missing"));
+
+        plan.addTask(independent);
+        plan.addTask(blocked);
+
+        assertFalse(plan.computeExecutionOrder());
+        assertEquals(List.of(independent), plan.getExecutableTasks());
+        assertEquals(List.of("task_missing=MISSING"),
+                plan.getBlockedTasks().stream()
+                        .filter(item -> item.node().getId().equals("task_2"))
+                        .flatMap(item -> item.blockingDependencies().stream())
+                        .map(dep -> dep.dependencyId() + "=" + dep.state())
+                        .toList());
+    }
 }

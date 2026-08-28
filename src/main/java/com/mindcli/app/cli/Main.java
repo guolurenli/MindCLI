@@ -3,11 +3,15 @@ package com.mindcli.app.cli;
 import com.mindcli.agent.Agent;
 import com.mindcli.agent.AgentOrchestrator;
 import com.mindcli.agent.PlanExecuteAgent;
+import com.mindcli.agent.SubAgent;
+import com.mindcli.agent.profile.AgentProfile;
+import com.mindcli.agent.profile.AgentProfileLoader;
 import com.mindcli.capability.browser.BrowserAuditMetadata;
 import com.mindcli.capability.browser.BrowserConnectivityCheck;
 import com.mindcli.capability.browser.BrowserGuard;
 import com.mindcli.capability.browser.BrowserSession;
 import com.mindcli.capability.browser.SensitivePagePolicy;
+import com.mindcli.app.cli.command.AgentCommandHandler;
 import com.mindcli.app.cli.command.BrowserCommandHandler;
 import com.mindcli.app.cli.command.ConfigCommandHandler;
 import com.mindcli.app.cli.command.ExportCommandHandler;
@@ -33,6 +37,7 @@ import com.mindcli.platform.render.Renderer;
 import com.mindcli.platform.render.RendererFactory;
 import com.mindcli.platform.render.StatusInfo;
 import com.mindcli.platform.render.inline.InlineRenderer;
+import com.mindcli.platform.render.inline.TerminalMascotRenderer;
 import com.mindcli.capability.image.ClipboardImage;
 import com.mindcli.capability.mcp.McpServerManager;
 import com.mindcli.capability.mcp.mention.AtMentionExpander;
@@ -45,7 +50,17 @@ import com.mindcli.capability.rag.CodeRelation;
 import com.mindcli.capability.rag.SearchResultFormatter;
 import com.mindcli.runtime.CancellationContext;
 import com.mindcli.runtime.CancellationToken;
+import com.mindcli.runtime.run.AgentMode;
+import com.mindcli.runtime.run.AgentModeRouter;
+import com.mindcli.runtime.run.AgentRuntime;
+import com.mindcli.runtime.run.AgentRunResult;
+import com.mindcli.runtime.run.AgentRunStatus;
+import com.mindcli.runtime.run.ModeAdapter;
+import com.mindcli.runtime.run.PlanModeAdapter;
+import com.mindcli.runtime.run.ReActModeAdapter;
 import com.mindcli.runtime.run.RunStore;
+import com.mindcli.runtime.run.SingleAgentAdapter;
+import com.mindcli.runtime.run.TeamModeAdapter;
 import com.mindcli.runtime.api.RuntimeApiServer;
 import com.mindcli.runtime.api.RuntimeThreadStore;
 import com.mindcli.runtime.task.DurableTaskManager;
@@ -170,6 +185,8 @@ public class Main {
         }
 
         configureLogging();
+        TerminalEncoding.Plan terminalEncoding = TerminalEncoding.detect();
+        TerminalEncoding.configureStandardStreams(terminalEncoding);
 
         MindCliConfig config = MindCliConfig.load();
         LlmClient llmClient = LlmClientFactory.createFromConfig(config);
@@ -180,7 +197,9 @@ public class Main {
         }
         AtomicReference<LlmClient> llmClientRef = new AtomicReference<>(llmClient);
 
-        try (Terminal terminal = TerminalBuilder.builder().system(true).dumb(true).build()) {
+        try (Terminal terminal = TerminalEncoding.applyTo(
+                TerminalBuilder.builder().system(true).dumb(true),
+                terminalEncoding).build()) {
             refreshTerminalColumns(terminal);
             TerminalHitlHandler terminalHitlHandler = new TerminalHitlHandler(false);
             SwitchableHitlHandler hitlHandler = new SwitchableHitlHandler(terminalHitlHandler);
@@ -224,8 +243,9 @@ public class Main {
             configureSlashCommandHint(lineReader);
             configureJLineInteractiveWidgets(lineReader);
 
-            // JLine-first：启动输出、命令输出、Agent 流式内容都走同一条 Renderer.stream() 通道。
-            // inline 首屏要挂到 LineReader 首次初始化回调里，避免在 readLine 接管屏幕前用裸输出抢光标。
+            // JLine-first：命令输出、Agent 流式内容都走同一条 Renderer.stream() 通道。
+            // 启动猫耳图由 native chafa 直接写真实终端；状态栏必须在它之后启动，
+            // 避免 JLine Status/scroll-region 改变 chafa 的终端探测与显示效果。
             Renderer renderer = RendererFactory.create(RendererFactory.resolveMode(), terminal);
             RendererHitlHandler rendererHitl = new RendererHitlHandler(renderer, hitlHandler.isEnabled());
             hitlHandler.setDelegate(rendererHitl);
@@ -233,20 +253,20 @@ public class Main {
                 inline.bindLineReader(lineReader);
             }
             PrintStream ui = renderer.stream();
-            renderer.start();
-            renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, null));
 
-            String startupNote = "";
+            String startupNote = terminalEncoding.startupNote();
             try {
                 McpConfigBootstrapResult bootstrapResult = ensureDefaultMcpConfig(Path.of(System.getProperty("user.home")));
                 if (!bootstrapResult.message().isBlank()) {
-                    startupNote = bootstrapResult.message();
+                    startupNote = appendStartupNote(startupNote, bootstrapResult.message());
                 }
                 mcpServerManager.loadConfiguredServers();
-                mcpServerManager.startAll(ui, mcpStartupWait());
+                Duration mcpWait = mcpStartupWait();
+                mcpServerManager.startAll(null, mcpWait);
+                startupNote = appendStartupNote(startupNote, mcpServerManager.startupNotice(mcpWait));
                 Runtime.getRuntime().addShutdownHook(new Thread(mcpServerManager::close, "mindcli-mcp-shutdown"));
             } catch (Exception e) {
-                startupNote = "MCP 初始化失败: " + e.getMessage();
+                startupNote = appendStartupNote(startupNote, "MCP 初始化失败: " + e.getMessage());
             }
             AtMentionExpander mentionExpander = new AtMentionExpander(mcpServerManager);
             LocalPathMentionExpander localPathMentionExpander = new LocalPathMentionExpander(Path.of("."));
@@ -277,14 +297,13 @@ public class Main {
             WechatCliCommandHandler.WechatRuntimeController wechatRuntime =
                     new WechatCliCommandHandler.WechatRuntimeController(renderer);
             Runtime.getRuntime().addShutdownHook(new Thread(wechatRuntime::stop, "mindcli-wechat-shutdown"));
-            renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
             CliStartupView.StartupScreenInfo startupScreenInfo =
                     startupScreenInfo(llmClient, mcpServerManager, skillRegistry, startupNote);
-            if (renderer instanceof InlineRenderer inline) {
-                inline.installStartupScreen(startupScreenLines(startupScreenInfo));
-            } else {
-                printStartupScreen(ui, startupScreenInfo);
-            }
+            List<String> startupBannerLines = startupScreenLines(startupScreenInfo);
+            TerminalMascotRenderer.renderStartupMascot(terminal);
+            printStartupScreen(ui, startupBannerLines);
+            renderer.start();
+            renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
             boolean nextTaskUsePlanMode = false;
             boolean nextTaskUseTeamMode = false;
 
@@ -428,13 +447,13 @@ public class Main {
                             if (result.written()) {
                                 ui.println("✅ " + result.message());
                                 ui.println("   路径: " + result.path());
-                                ui.println("   这份 PAI.md 会在后续 system prompt 的 Project Context 中注入。\n");
+                                ui.println("   这份 MIND.md 会在后续 system prompt 的 Project Context 中注入。\n");
                             } else {
                                 ui.println("ℹ️ " + result.message());
                                 ui.println("   路径: " + result.path() + "\n");
                             }
                         } catch (IOException e) {
-                            ui.println("❌ 生成 PAI.md 失败: " + e.getMessage() + "\n");
+                            ui.println("❌ 生成 MIND.md 失败: " + e.getMessage() + "\n");
                         }
                         continue;
                     }
@@ -567,6 +586,51 @@ public class Main {
                         } else {
                             ui.println(handleConfigCommand(config, command.payload()));
                             renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
+                        }
+                        continue;
+                    }
+                    case AGENT -> {
+                        String projectPath = reactAgent.getToolRegistry().getProjectPath();
+                        AgentCommandHandler.AgentCommandTarget target =
+                                AgentCommandHandler.parse(command.payload());
+                        if (target.create()) {
+                            ui.println(AgentCommandHandler.create(Path.of(projectPath), lineReader));
+                            continue;
+                        }
+                        List<AgentProfile> profiles = AgentProfileLoader.load(Path.of(projectPath));
+                        if (target.name() == null) {
+                            ui.println(AgentCommandHandler.list(profiles));
+                            continue;
+                        }
+                        if (target.task() == null) {
+                            ui.println(AgentCommandHandler.detail(profiles, target.name()));
+                            continue;
+                        }
+                        AgentProfile profile = AgentCommandHandler.find(profiles, target.name());
+                        if (profile == null) {
+                            ui.println("❌ 未找到子代理: " + target.name() + "（用 /agent 查看列表）\n");
+                            continue;
+                        }
+                        SnapshotService agentSnapshotService = reactAgent.getToolRegistry().getSnapshotService();
+                        RunStore agentRunStore = reactAgent.runStore();
+                        String agentTask = target.task();
+                        LlmClient activeClient = llmClient;
+                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "agent"));
+                        String agentResponse = runWithCancelSupport(terminal, ui, () -> {
+                            SubAgent subAgent = createSingleAgent(profile, activeClient, reactAgent,
+                                    mcpServerManager, skillRegistry);
+                            return runModeWithRuntime(
+                                    AgentMode.TEAM,
+                                    agentTask,
+                                    projectPath,
+                                    agentRunStore,
+                                    agentSnapshotService,
+                                    new SingleAgentAdapter(subAgent, ui));
+                        });
+                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
+                        if (agentResponse != null && !agentResponse.isBlank()) {
+                            ui.println(agentResponse);
+                            ui.println();
                         }
                         continue;
                     }
@@ -763,7 +827,13 @@ public class Main {
                         PlanExecuteAgent planAgent = createPlanAgent(activeClient, reactAgent, terminal, lineReader, ui);
                         planAgent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
                         planAgent.setSkillRegistry(skillRegistry);
-                        return planAgent.run(taskInput);
+                        return runModeWithRuntime(
+                                AgentMode.PLAN,
+                                taskInput,
+                                reactAgent.getToolRegistry().getProjectPath(),
+                                reactAgent.runStore(),
+                                reactAgent.getToolRegistry().getSnapshotService(),
+                                new PlanModeAdapter(planAgent));
                     };
                 } else if (nextTaskUseTeamMode || command.type() == CliCommandParser.CommandType.SWITCH_TEAM) {
                     snapshotMode = "team";
@@ -772,17 +842,28 @@ public class Main {
                         AgentOrchestrator orchestrator = createTeamAgent(activeClient, reactAgent, ui);
                         orchestrator.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
                         orchestrator.setSkillSystem(skillRegistry);
-                        return orchestrator.run(taskInput);
+                        return runModeWithRuntime(
+                                AgentMode.TEAM,
+                                taskInput,
+                                reactAgent.getToolRegistry().getProjectPath(),
+                                reactAgent.runStore(),
+                                reactAgent.getToolRegistry().getSnapshotService(),
+                                new TeamModeAdapter(orchestrator));
                     };
                 } else {
                     snapshotMode = "react";
-                    runTask = () -> reactAgent.run(taskInput);
+                    runTask = () -> runReactModeWithRuntime(
+                            taskInput,
+                            reactAgent.getToolRegistry().getProjectPath(),
+                            reactAgent.runStore(),
+                            reactAgent.getToolRegistry().getSnapshotService(),
+                            new ReActModeAdapter(reactAgent));
                 }
                 SnapshotService snapshotService = reactAgent.getToolRegistry().getSnapshotService();
                 renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, snapshotMode));
                 String response = runWithCancelSupport(terminal,
                         ui,
-                        () -> snapshotService.runTurn(snapshotMode, taskInput, runTask::call));
+                        () -> runAgentTask(snapshotMode, taskInput, snapshotService, runTask));
                 if (!"react".equals(snapshotMode)) {
                     renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
                 }
@@ -906,6 +987,49 @@ public class Main {
     private static AgentOrchestrator createTeamAgent(LlmClient llmClient, Agent reactAgent, PrintStream out) {
         out.println("👥 使用 Multi-Agent 协作模式\n");
         return new AgentOrchestrator(llmClient, reactAgent.getToolRegistry(), reactAgent.getMemoryManager(), out);
+    }
+
+    private static SubAgent createSingleAgent(AgentProfile profile, LlmClient llmClient, Agent reactAgent,
+                                              McpServerManager mcpServerManager,
+                                              SkillRegistry skillRegistry) {
+        SubAgent agent = new SubAgent(profile, llmClient, reactAgent.getToolRegistry());
+        agent.setMemoryManager(reactAgent.getMemoryManager());
+        agent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
+        agent.setSkillRegistry(skillRegistry);
+        return agent;
+    }
+
+    static String runModeWithRuntime(AgentMode mode, String input, String workspace,
+                                     RunStore runStore, SnapshotService snapshotService,
+                                     ModeAdapter adapter) {
+        AgentRuntime runtime = new AgentRuntime(runStore, snapshotService);
+        AgentModeRouter router = new AgentModeRouter(runtime, List.of(adapter), workspace);
+        AgentRunResult result = router.submit(input, mode);
+        return runtimeUserFacingContent(result);
+    }
+
+    static String runReactModeWithRuntime(String input, String workspace,
+                                          RunStore runStore, SnapshotService snapshotService,
+                                          ModeAdapter adapter) {
+        return runModeWithRuntime(AgentMode.REACT, input, workspace, runStore, snapshotService, adapter);
+    }
+
+    static String runAgentTask(String mode, String input, SnapshotService snapshotService,
+                               Callable<String> task) throws Exception {
+        return task.call();
+    }
+
+    private static String runtimeUserFacingContent(AgentRunResult result) {
+        if (result == null) {
+            return "";
+        }
+        if (result.isSuccess() || result.status() == AgentRunStatus.CANCELLED) {
+            return result.content();
+        }
+        if (result.errorMessage() != null && !result.errorMessage().isBlank()) {
+            return result.errorMessage();
+        }
+        return result.content();
     }
 
     private static String runWithCancelSupport(Terminal terminal, PrintStream out, Callable<String> task) {
@@ -1710,6 +1834,12 @@ public class Main {
 
     private static void printStartupScreen(PrintStream out, CliStartupView.StartupScreenInfo info) {
         CliStartupView.printStartupScreen(out, VERSION, info);
+    }
+
+    private static void printStartupScreen(PrintStream out, List<String> lines) {
+        for (String line : lines) {
+            out.println(line);
+        }
     }
 
     static List<String> startupScreenLines(CliStartupView.StartupScreenInfo info) {

@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MindCLI Multi-Agent 模式实现分析</title>
+<style>
+  :root {
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --ink:#e6e8ee; --muted:#9aa0ae;
+    --line:#2a2f3a; --accent:#4f8cff; --amber:#d29922; --green:#3fb27f; --red:#e5534b;
+    --purple:#a371f7; --cyan:#39c5cf;
+    --mono:"Cascadia Code",Consolas,monospace; --sans:"Segoe UI","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.65}
+  .topbar{position:sticky;top:0;z-index:50;background:rgba(15,17,21,.94);backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line);padding:14px 28px;display:flex;align-items:center;gap:14px}
+  .topbar .title{font-size:17px;font-weight:700}
+  .topbar .spacer{flex:1}
+  .topbar button{font:inherit;font-size:12.5px;padding:6px 12px;border-radius:7px;background:var(--panel2);
+    color:var(--ink);border:1px solid var(--line);cursor:pointer}
+  .topbar button:hover{border-color:var(--accent);color:var(--accent)}
+  .layout{display:flex;align-items:flex-start;justify-content:center;max-width:1320px;margin:0 auto}
+  .toc{position:sticky;top:58px;width:240px;flex-shrink:0;padding:24px 16px;max-height:calc(100vh - 58px);overflow-y:auto}
+  .toc .toc-title{font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:12px}
+  .toc a{display:block;text-decoration:none;color:var(--muted);font-size:13.5px;padding:6px 10px;border-radius:6px;margin-bottom:2px;border-left:2px solid transparent}
+  .toc a:hover{color:var(--ink);background:var(--panel)}
+  .toc a.active{color:var(--accent);border-left-color:var(--accent);background:var(--panel)}
+  main{flex:1;max-width:1000px;min-width:0;padding:36px 48px 120px}
+  @media(max-width:900px){.toc{display:none}main{padding:24px 18px 90px}}
+  h1{font-size:30px;letter-spacing:-.5px;margin-bottom:10px}
+  .lede{color:var(--muted);font-size:14.5px;margin-bottom:8px}
+  section{margin-top:48px;scroll-margin-top:70px}
+  section>h2{font-size:21px;padding-bottom:10px;margin-bottom:4px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+  section>h2 .num{font-family:var(--mono);font-size:13px;color:var(--accent);background:rgba(79,140,255,.1);padding:2px 8px;border-radius:6px}
+  .sec-desc{color:var(--muted);font-size:13.5px;margin:8px 0 18px}
+  details{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin:12px 0;overflow:hidden}
+  summary{cursor:pointer;list-style:none;padding:14px 18px;font-weight:600;font-size:15px;display:flex;align-items:center;gap:10px;user-select:none}
+  summary::-webkit-details-marker{display:none}
+  summary::before{content:"▸";color:var(--accent);transition:transform .15s;font-size:13px}
+  details[open] summary::before{transform:rotate(90deg)}
+  summary .hint{font-weight:400;font-size:12px;color:var(--muted);margin-left:auto}
+  .dbody{padding:4px 18px 18px;border-top:1px solid var(--line)}
+  .dbody h4{font-size:14px;margin:16px 0 6px;color:#d7dbe4}
+  .dbody p{color:#c6cbd6;font-size:14px}
+  .b{display:inline-block;font-size:11.5px;font-weight:600;padding:1px 8px;border-radius:5px;vertical-align:middle}
+  .b.key{color:#ffd479;background:rgba(210,153,34,.15);border:1px solid rgba(210,153,34,.4)}
+  .b.trap{color:#ff8b85;background:rgba(229,83,75,.15);border:1px solid rgba(229,83,75,.4)}
+  .b.ask{color:#c9a6ff;background:rgba(163,113,247,.15);border:1px solid rgba(163,113,247,.4)}
+  .callout{border-left:3px solid var(--accent);background:var(--panel);border-radius:0 8px 8px 0;padding:12px 16px;margin:12px 0;font-size:13.5px;color:#c6cbd6}
+  .callout.key{border-left-color:var(--amber)}.callout.trap{border-left-color:var(--red)}.callout.ask{border-left-color:var(--purple)}
+  .callout b{color:var(--ink)}
+  .mono{font-family:var(--mono);font-size:12.5px;color:var(--accent)}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13px}
+  th,td{text-align:left;padding:8px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px}
+  tr:hover td{background:var(--panel)}
+  td .mono{color:var(--accent)}
+  pre{background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:13px 16px;overflow-x:auto;margin:12px 0;font-family:var(--mono);font-size:12px;line-height:1.6;color:#c9d1d9}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:720px){.cols{grid-template-columns:1fr}}
+  ul.plain{list-style:none;margin:8px 0}
+  ul.plain li{padding:5px 0 5px 20px;position:relative;font-size:13.5px;color:#c6cbd6}
+  ul.plain li::before{content:"▸";position:absolute;left:2px;color:var(--accent)}
+  figure{margin:18px 0}
+  figure figcaption{font-size:12px;color:var(--muted);margin-top:8px;text-align:center}
+  .svgwrap{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:24px;overflow-x:auto}
+  .svgwrap svg{display:block;width:100%;height:auto}
+  footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="title">MindCLI Multi-Agent 实现分析</span>
+  <span style="font-size:12px;color:var(--muted)" class="mono">/team · AgentOrchestrator · TeamScheduler · SubAgent</span>
+  <span class="spacer"></span>
+  <button onclick="setAll(true)">展开全部</button>
+  <button onclick="setAll(false)">折叠全部</button>
+</div>
+
+<div class="layout">
+  <nav class="toc">
+    <div class="toc-title">目录</div>
+    <a href="#overview"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent);margin-right:7px"></span>架构总览 + 架构图</a>
+    <a href="#flow"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:7px"></span>执行链路 + 流程图/时序图</a>
+    <a href="#sched"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--amber);margin-right:7px"></span>调度与并发</a>
+    <a href="#classes"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--purple);margin-right:7px"></span>核心抽象</a>
+    <a href="#state"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--cyan);margin-right:7px"></span>状态与数据流 + 状态图</a>
+    <a href="#mcp"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--cyan);margin-right:7px"></span>MCP 集成</a>
+    <a href="#config"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--purple);margin-right:7px"></span>代理配置</a>
+    <a href="#design"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--red);margin-right:7px"></span>设计要点与安全</a>
+  </nav>
+
+  <main>
+    <h1>MindCLI Multi-Agent 模式实现分析</h1>
+    <p class="lede">从 <span class="mono">/team</span> 入口到 git worktree 并行写入的完整链路，含 4 张图（架构图 / 流程图 / 时序图 / 状态流转图）。</p>
+    <p class="lede" style="font-size:13px">图例：<span class="b key">🔑 重点</span> 设计核心 · <span class="b trap">⚠️ 易错</span> 易踩坑 · <span class="b ask">❓ 面试点</span> 追问方向</p>
+
+    <!-- ============ OVERVIEW ============ -->
+    <section id="overview">
+      <h2><span class="num">01</span>架构总览</h2>
+      <p class="sec-desc">Master-Slave 主从架构：主控编排器负责规划/调度/聚合，从属子代理负责执行。</p>
+
+      <details open>
+        <summary>架构图 <span class="hint">主调用链 + 决策/隔离组件</span></summary>
+        <div class="dbody">
+          <figure>
+            <div class="svgwrap">
+<svg viewBox="40 0 760 560" role="img" aria-labelledby="arch-title arch-desc" xmlns="http://www.w3.org/2000/svg">
+  <title id="arch-title">Multi-Agent 架构图</title>
+  <desc id="arch-desc">主调用链从 CLI 入口经运行时、编排器、调度器到执行层与基础设施，右侧为决策、MCP、worktree 隔离组件。</desc>
+  <defs>
+    <marker id="ar-arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#9aa0ae"/></marker>
+    <marker id="ar-arrA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#d29922"/></marker>
+    <marker id="ar-arrD" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#9aa0ae"/></marker>
+  </defs>
+
+  <!-- 左侧主调用链 -->
+  <!-- Main -->
+  <rect x="120" y="16" width="180" height="56" rx="8" fill="#1e222b" stroke="#3a4150"/>
+  <text x="210" y="40" fill="#e6e8ee" font-size="13" font-weight="600" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">Main</text>
+  <text x="210" y="58" fill="#9aa0ae" font-size="9" text-anchor="middle" font-family="Consolas,monospace">/team → createTeamAgent</text>
+
+  <!-- AgentRuntime -->
+  <rect x="120" y="104" width="180" height="56" rx="8" fill="#1e222b" stroke="#3a4150"/>
+  <text x="210" y="128" fill="#e6e8ee" font-size="13" font-weight="600" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">AgentRuntime</text>
+  <text x="210" y="146" fill="#9aa0ae" font-size="9" text-anchor="middle" font-family="Consolas,monospace">ModeRouter·TeamModeAdapter</text>
+
+  <!-- AgentOrchestrator (focal) -->
+  <rect x="120" y="192" width="180" height="56" rx="8" fill="#2a241a" stroke="#d29922" stroke-width="1.4"/>
+  <text x="210" y="216" fill="#ffd479" font-size="13" font-weight="600" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">AgentOrchestrator</text>
+  <text x="210" y="234" fill="#c9a35a" font-size="9" text-anchor="middle" font-family="Consolas,monospace">Master · runTeam()</text>
+
+  <!-- AgentPool -->
+  <rect x="120" y="280" width="180" height="56" rx="8" fill="#1e222b" stroke="#3a4150"/>
+  <text x="210" y="304" fill="#e6e8ee" font-size="13" font-weight="600" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">AgentPool</text>
+  <text x="210" y="322" fill="#9aa0ae" font-size="9" text-anchor="middle" font-family="Consolas,monospace">最少权限租借</text>
+
+  <!-- SubAgent -->
+  <rect x="120" y="368" width="180" height="56" rx="8" fill="#1e222b" stroke="#3a4150"/>
+  <text x="210" y="392" fill="#e6e8ee" font-size="13" font-weight="600" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">SubAgent</text>
+  <text x="210" y="410" fill="#9aa0ae" font-size="9" text-anchor="middle" font-family="Consolas,monospace">explorer / worker / custom</text>
+
+  <!-- ToolRegistry -->
+  <rect x="120" y="456" width="180" height="56" rx="8" fill="#1e222b" stroke="#3a4150"/>
+  <text x="210" y="480" fill="#e6e8ee" font-size="13" font-weight="600" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">ToolRegistry</text>
+  <text x="210" y="498" fill="#9aa0ae" font-size="9" text-anchor="middle" font-family="Consolas,monospace">writeScope 强制</text>
+
+  <!-- 右侧组件 -->
+  <rect x="520" y="192" width="200" height="56" rx="8" fill="#1e222b" stroke="#3a4150" stroke-dasharray="4,3"/>
+  <text x="620" y="216" fill="#e6e8ee" font-size="13" font-weight="600" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">TeamScheduler</text>
+  <text x="620" y="234" fill="#9aa0ae" font-size="9" text-anchor="middle" font-family="Consolas,monospace">纯函数 · nextWave</text>
+
+  <rect x="520" y="368" width="200" height="56" rx="8" fill="#1e222b" stroke="#3a4150" stroke-dasharray="4,3"/>
+  <text x="620" y="392" fill="#e6e8ee" font-size="13" font-weight="600" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">McpServerManager</text>
+  <text x="620" y="410" fill="#9aa0ae" font-size="9" text-anchor="middle" font-family="Consolas,monospace">mcp__{server}__{tool}</text>
+
+  <rect x="520" y="456" width="200" height="56" rx="8" fill="#1e222b" stroke="#3a4150" stroke-dasharray="4,3"/>
+  <text x="620" y="480" fill="#e6e8ee" font-size="13" font-weight="600" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">GitWorktreeManager</text>
+  <text x="620" y="498" fill="#9aa0ae" font-size="9" text-anchor="middle" font-family="Consolas,monospace">并行写隔离</text>
+
+  <!-- 主链垂直连接 -->
+  <line x1="210" y1="72" x2="210" y2="104" stroke="#9aa0ae" marker-end="url(#ar-arr)"/>
+  <line x1="210" y1="160" x2="210" y2="192" stroke="#9aa0ae" marker-end="url(#ar-arr)"/>
+  <line x1="210" y1="248" x2="210" y2="280" stroke="#9aa0ae" marker-end="url(#ar-arr)"/>
+  <line x1="210" y1="336" x2="210" y2="368" stroke="#9aa0ae" marker-end="url(#ar-arr)"/>
+  <line x1="210" y1="424" x2="210" y2="456" stroke="#9aa0ae" marker-end="url(#ar-arr)"/>
+
+  <!-- 横向关系 -->
+  <line x1="300" y1="220" x2="520" y2="220" stroke="#d29922" marker-end="url(#ar-arrA)"/>
+  <rect x="340" y="206" width="92" height="14" rx="2" fill="#1e222b"/>
+  <text x="386" y="217" fill="#c9a35a" font-size="9" text-anchor="middle" font-family="Consolas,monospace">nextWave 决策</text>
+
+  <line x1="300" y1="396" x2="520" y2="396" stroke="#9aa0ae" marker-end="url(#ar-arr)"/>
+  <rect x="340" y="382" width="72" height="14" rx="2" fill="#1e222b"/>
+  <text x="376" y="393" fill="#9aa0ae" font-size="9" text-anchor="middle" font-family="Consolas,monospace">mcp__ 工具</text>
+
+  <line x1="300" y1="484" x2="520" y2="484" stroke="#9aa0ae" marker-end="url(#ar-arr)"/>
+  <rect x="340" y="470" width="72" height="14" rx="2" fill="#1e222b"/>
+  <text x="376" y="481" fill="#9aa0ae" font-size="9" text-anchor="middle" font-family="Consolas,monospace">fork 隔离</text>
+
+  <!-- legend -->
+  <line x1="120" y1="540" x2="720" y2="540" stroke="#2a2f3a"/>
+  <text x="120" y="554" fill="#9aa0ae" font-size="8" font-family="Consolas,monospace" letter-spacing="1">LEGEND</text>
+  <rect x="180" y="547" width="12" height="12" rx="2" fill="#1e222b" stroke="#3a4150"/><text x="198" y="557" fill="#9aa0ae" font-size="9">主流程</text>
+  <rect x="256" y="547" width="12" height="12" rx="2" fill="#2a241a" stroke="#d29922"/><text x="274" y="557" fill="#9aa0ae" font-size="9">主控(焦点)</text>
+  <rect x="360" y="547" width="12" height="12" rx="2" fill="none" stroke="#3a4150" stroke-dasharray="3,2"/><text x="378" y="557" fill="#9aa0ae" font-size="9">决策/隔离</text>
+</svg>
+            </div>
+            <figcaption>图 1 · 架构图：左侧为主调用链，右侧为决策（TeamScheduler）、MCP、worktree 三个横向协作组件</figcaption>
+          </figure>
+
+          <div class="callout key">
+            <b>🔑 核心</b>：<span class="mono">AgentOrchestrator</span> 是 Master（只做规划/调度/聚合），<span class="mono">SubAgent</span> 是 Slave（执行）。<span class="mono">AgentOrchestrator.java:50-71</span> 明确写了 master-slave 架构。
+          </div>
+          <div class="callout trap">
+            <b>⚠️ 易错</b>：旧的 <span class="mono">PLANNER</span> / <span class="mono">REVIEWER</span> 角色已移除——规划改为<b>编排器内联</b>，评审改为<b>子代理自审</b>。旧文档里出现这两个角色是过时信息。
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <!-- ============ FLOW ============ -->
+    <section id="flow">
+      <h2><span class="num">02</span>执行链路</h2>
+      <p class="sec-desc">用户输入 → 运行时 → 编排器 → 子代理，含顶层流程图与单步时序图。</p>
+
+      <details open>
+        <summary>顶层流程图 <span class="hint">runTeam 五阶段 + 两个决策点</span></summary>
+        <div class="dbody">
+          <figure>
+            <div class="svgwrap">
+<svg viewBox="0 0 720 720" role="img" aria-labelledby="flow-title flow-desc" xmlns="http://www.w3.org/2000/svg">
+  <title id="flow-title">runTeam 顶层流程图</title>
+  <desc id="flow-desc">runTeam 的顶层控制流：规划、解析、解析成功判断、循环取波、有工作判断、聚合，失败时终止。</desc>
+  <defs>
+    <marker id="fl-arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#9aa0ae"/></marker>
+    <marker id="fl-arrR" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#e5534b"/></marker>
+  </defs>
+
+  <!-- 开始 -->
+  <rect x="312" y="12" width="96" height="40" rx="20" fill="#1e222b" stroke="#3fb27f"/>
+  <text x="360" y="37" fill="#e6e8ee" font-size="13" font-weight="600" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">开始</text>
+
+  <!-- 规划 -->
+  <rect x="232" y="80" width="256" height="48" rx="8" fill="#1e222b" stroke="#3a4150"/>
+  <text x="360" y="110" fill="#e6e8ee" font-size="13" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">planWithOrchestrator 规划</text>
+
+  <!-- 解析 -->
+  <rect x="232" y="152" width="256" height="48" rx="8" fill="#1e222b" stroke="#3a4150"/>
+  <text x="360" y="182" fill="#e6e8ee" font-size="13" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">parsePlan 解析</text>
+
+  <!-- 解析成功? 菱形 -->
+  <polygon points="360,216 440,256 360,296 280,256" fill="#1e222b" stroke="#d29922"/>
+  <text x="360" y="261" fill="#e6e8ee" font-size="12" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">解析成功?</text>
+
+  <!-- FAILED 终端 -->
+  <rect x="500" y="236" width="120" height="40" rx="8" fill="#2a1a1a" stroke="#e5534b"/>
+  <rect x="506" y="242" width="108" height="28" rx="6" fill="none" stroke="#e5534b" stroke-width="0.7"/>
+  <text x="560" y="261" fill="#ff8b85" font-size="12" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">RUN_FAILED</text>
+
+  <!-- 循环 -->
+  <rect x="260" y="336" width="200" height="48" rx="8" fill="#1e222b" stroke="#3a4150"/>
+  <text x="360" y="366" fill="#e6e8ee" font-size="13" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">nextWave 取一波</text>
+
+  <!-- 有工作? 菱形 -->
+  <polygon points="360,408 440,448 360,488 280,448" fill="#1e222b" stroke="#d29922"/>
+  <text x="360" y="453" fill="#e6e8ee" font-size="12" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">有工作?</text>
+
+  <!-- 聚合 -->
+  <rect x="232" y="552" width="256" height="48" rx="8" fill="#1e222b" stroke="#3a4150"/>
+  <text x="360" y="582" fill="#e6e8ee" font-size="13" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">buildFinalResult 聚合</text>
+
+  <!-- 结束 -->
+  <rect x="312" y="632" width="96" height="40" rx="20" fill="#1e222b" stroke="#3fb27f"/>
+  <text x="360" y="657" fill="#e6e8ee" font-size="13" font-weight="600" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">结束</text>
+
+  <!-- 连接 -->
+  <line x1="360" y1="52" x2="360" y2="80" stroke="#9aa0ae" marker-end="url(#fl-arr)"/>
+  <line x1="360" y1="128" x2="360" y2="152" stroke="#9aa0ae" marker-end="url(#fl-arr)"/>
+  <line x1="360" y1="200" x2="360" y2="216" stroke="#9aa0ae" marker-end="url(#fl-arr)"/>
+
+  <!-- 解析成功? no -->
+  <line x1="440" y1="256" x2="500" y2="256" stroke="#e5534b" marker-end="url(#fl-arrR)"/>
+  <text x="470" y="247" fill="#ff8b85" font-size="10" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">否</text>
+
+  <!-- 解析成功? yes -->
+  <line x1="360" y1="296" x2="360" y2="336" stroke="#9aa0ae" marker-end="url(#fl-arr)"/>
+  <rect x="328" y="310" width="20" height="14" rx="2" fill="#1e222b"/>
+  <text x="338" y="321" fill="#9aa0ae" font-size="10" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">是</text>
+
+  <!-- 循环 → 有工作? -->
+  <line x1="360" y1="384" x2="360" y2="408" stroke="#9aa0ae" marker-end="url(#fl-arr)"/>
+
+  <!-- 有工作? no → 聚合 -->
+  <line x1="360" y1="488" x2="360" y2="552" stroke="#9aa0ae" marker-end="url(#fl-arr)"/>
+  <rect x="328" y="512" width="20" height="14" rx="2" fill="#1e222b"/>
+  <text x="338" y="523" fill="#9aa0ae" font-size="10" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">否</text>
+
+  <!-- 有工作? yes → 循环回边 (dashed) -->
+  <path d="M280 448 L120 448 L120 360 L260 360" fill="none" stroke="#9aa0ae" stroke-dasharray="5,4" marker-end="url(#fl-arr)"/>
+  <rect x="128" y="396" width="92" height="14" rx="2" fill="#1e222b"/>
+  <text x="174" y="407" fill="#9aa0ae" font-size="9" text-anchor="middle" font-family="Consolas,monospace">是·下一波</text>
+
+  <!-- 聚合 → 结束 -->
+  <line x1="360" y1="600" x2="360" y2="632" stroke="#9aa0ae" marker-end="url(#fl-arr)"/>
+
+  <!-- legend -->
+  <line x1="232" y1="688" x2="520" y2="688" stroke="#2a2f3a"/>
+  <polygon points="240,692 252,698 240,704 228,698" fill="none" stroke="#d29922"/><text x="260" y="702" fill="#9aa0ae" font-size="9">决策</text>
+  <rect x="312" y="692" width="18" height="12" rx="6" fill="none" stroke="#3fb27f"/><text x="336" y="702" fill="#9aa0ae" font-size="9">起止</text>
+  <rect x="384" y="692" width="18" height="12" rx="3" fill="none" stroke="#3a4150"/><text x="408" y="702" fill="#9aa0ae" font-size="9">处理</text>
+  <line x1="452" y1="698" x2="476" y2="698" stroke="#9aa0ae" stroke-dasharray="4,3"/><text x="482" y="702" fill="#9aa0ae" font-size="9">循环回边</text>
+</svg>
+            </div>
+            <figcaption>图 2 · runTeam 顶层流程图：解析失败→RUN_FAILED；循环取波直到无工作，再聚合</figcaption>
+          </figure>
+
+          <div class="callout key">
+            <b>🔑 重点</b>：规划阶段没有独立 PLANNER 子代理，是<b>编排器内联</b>完成（<span class="mono">PromptMode.TEAM_PLANNER</span> + <span class="mono">buildAgentCatalog() :196</span>）。这是 2026-08-16 Codex 对齐重构的产物。
+          </div>
+        </div>
+      </details>
+
+      <details open>
+        <summary>单步执行时序图 <span class="hint">编排器 → 池 → 子代理 → 分发器 → 自审</span></summary>
+        <div class="dbody">
+          <figure>
+            <div class="svgwrap">
+<svg viewBox="0 0 720 360" role="img" aria-labelledby="seq-title seq-desc" xmlns="http://www.w3.org/2000/svg">
+  <title id="seq-title">单步执行时序图</title>
+  <desc id="seq-desc">编排器向代理池租借、向子代理下发任务、子代理分发工具调用并自审后返回结果。</desc>
+  <defs>
+    <marker id="sq-arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#9aa0ae"/></marker>
+  </defs>
+
+  <!-- actor boxes -->
+  <rect x="30" y="16" width="100" height="36" rx="6" fill="#1e222b" stroke="#3a4150"/>
+  <text x="80" y="39" fill="#e6e8ee" font-size="12" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">Orchestrator</text>
+
+  <rect x="215" y="16" width="90" height="36" rx="6" fill="#1e222b" stroke="#3a4150"/>
+  <text x="260" y="39" fill="#e6e8ee" font-size="12" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">AgentPool</text>
+
+  <rect x="402" y="16" width="80" height="36" rx="6" fill="#1e222b" stroke="#3a4150"/>
+  <text x="442" y="39" fill="#e6e8ee" font-size="12" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">SubAgent</text>
+
+  <rect x="578" y="16" width="96" height="36" rx="6" fill="#1e222b" stroke="#3a4150"/>
+  <text x="626" y="39" fill="#e6e8ee" font-size="12" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">ToolDispatcher</text>
+
+  <!-- lifelines -->
+  <line x1="80" y1="52" x2="80" y2="320" stroke="#3a4150" stroke-dasharray="4,3"/>
+  <line x1="260" y1="52" x2="260" y2="320" stroke="#3a4150" stroke-dasharray="4,3"/>
+  <line x1="442" y1="52" x2="442" y2="320" stroke="#3a4150" stroke-dasharray="4,3"/>
+  <line x1="626" y1="52" x2="626" y2="320" stroke="#3a4150" stroke-dasharray="4,3"/>
+
+  <!-- activation bars -->
+  <rect x="76" y="84" width="8" height="196" fill="#4f8cff" opacity="0.25"/>
+  <rect x="256" y="84" width="8" height="40" fill="#4f8cff" opacity="0.25"/>
+  <rect x="438" y="136" width="8" height="140" fill="#4f8cff" opacity="0.25"/>
+  <rect x="622" y="168" width="8" height="32" fill="#4f8cff" opacity="0.25"/>
+
+  <!-- messages -->
+  <line x1="80" y1="92" x2="260" y2="92" stroke="#9aa0ae" marker-end="url(#sq-arr)"/>
+  <rect x="118" y="80" width="150" height="13" rx="2" fill="#1e222b"/>
+  <text x="193" y="90" fill="#c6cbd6" font-size="9" text-anchor="middle" font-family="Consolas,monospace">acquireForStep(lease)</text>
+
+  <line x1="260" y1="112" x2="80" y2="112" stroke="#9aa0ae" stroke-dasharray="4,3" marker-end="url(#sq-arr)"/>
+  <text x="170" y="106" fill="#9aa0ae" font-size="9" text-anchor="middle" font-family="Consolas,monospace">lease 返回</text>
+
+  <line x1="80" y1="144" x2="442" y2="144" stroke="#9aa0ae" marker-end="url(#sq-arr)"/>
+  <rect x="176" y="132" width="190" height="13" rx="2" fill="#1e222b"/>
+  <text x="271" y="142" fill="#c6cbd6" font-size="9" text-anchor="middle" font-family="Consolas,monospace">executeWithContext(task)</text>
+
+  <line x1="442" y1="176" x2="626" y2="176" stroke="#9aa0ae" marker-end="url(#sq-arr)"/>
+  <text x="534" y="170" fill="#9aa0ae" font-size="9" text-anchor="middle" font-family="Consolas,monospace">dispatchInvocations()</text>
+
+  <line x1="626" y1="196" x2="442" y2="196" stroke="#9aa0ae" stroke-dasharray="4,3" marker-end="url(#sq-arr)"/>
+  <text x="534" y="212" fill="#9aa0ae" font-size="9" text-anchor="middle" font-family="Consolas,monospace">tool results</text>
+
+  <!-- self message -->
+  <path d="M450 232 L520 232 L520 248 L450 248" fill="none" stroke="#9aa0ae" marker-end="url(#sq-arr)"/>
+  <text x="536" y="245" fill="#d29922" font-size="9" text-anchor="middle" font-family="Consolas,monospace">review() [readOnly]</text>
+
+  <line x1="442" y1="272" x2="80" y2="272" stroke="#9aa0ae" stroke-dasharray="4,3" marker-end="url(#sq-arr)"/>
+  <text x="261" y="266" fill="#9aa0ae" font-size="9" text-anchor="middle" font-family="Consolas,monospace">result / status</text>
+</svg>
+            </div>
+            <figcaption>图 3 · 单步执行时序图：自审阶段 readOnly，结果/状态回传编排器</figcaption>
+          </figure>
+
+          <div class="callout trap">
+            <b>⚠️ 易错</b>：自审 <span class="mono">review()</span> 强制 <span class="mono">readOnly=true</span>，会连带过滤 <span class="mono">mcp__*</span> 工具（SubAgent :520-539）——<b>自审时子代理无法调用任何 MCP 工具</b>。
+          </div>
+          <div class="callout ask">
+            <b>❓ 面试点</b>：为什么自审要强制只读 + fail-closed？<br>
+            <b>答</b>：自审是「用自己的标准复查自己的产物」，允许写会用新写掩盖旧错；fail-closed 是宁可多审，不放行「看起来像通过」的坏结果。
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <!-- ============ SCHED ============ -->
+    <section id="sched">
+      <h2><span class="num">03</span>调度与并发</h2>
+      <p class="sec-desc">TeamScheduler 决策逻辑、并行策略、worktree 隔离与 AgentPool 租借。</p>
+
+      <details open>
+        <summary>nextWave 四步决策</summary>
+        <div class="dbody">
+          <table>
+            <tr><th>步</th><th>方法</th><th>细节</th></tr>
+            <tr><td>① 依赖就绪</td><td class="mono">getExecutableSteps :56</td><td><span class="mono">DependencyGraph.of()</span>，就绪=「依赖 COMPLETED|SKIPPED」；<b>FAILED 阻断下游</b></td></tr>
+            <tr><td>② 指纹去重</td><td class="mono">collapseExecutableGroups :76</td><td>按 <span class="mono">stepFingerprint :146</span> 分组，leader 执行、duplicate 复制结果（propagateDuplicateResult :726）</td></tr>
+            <tr><td>③ 读写分区</td><td class="mono">—</td><td>读步骤与写步骤拆成不同 wave</td></tr>
+            <tr><td>④ 串行判定</td><td class="mono">mutatingSerialReasons :110</td><td>写域为空或重叠（WriteScopeRules.overlaps）→ 记录串行原因</td></tr>
+          </table>
+          <div class="callout key">
+            <b>🔑 重点</b>：<span class="mono">serialReasons</span> 是<b>波次级否决票</b>——任一写组有串行原因，整波写操作退回串行（runMutatingGroups :507）。宁可慢，不冒险并行写重叠路径。
+          </div>
+          <div class="callout trap">
+            <b>⚠️ 易错</b>：指纹去重原则「<b>宁漏勿误</b>」——宁可不合并，也不错误合并。指纹精确匹配，描述稍有差异就判为不同步骤，可能重复执行，但绝不误删独立步骤。
+          </div>
+        </div>
+      </details>
+
+      <details open>
+        <summary>并行模型与 worktree 隔离</summary>
+        <div class="dbody">
+          <div class="cols">
+            <div>
+              <h4>读并行（runBatchParallel :1127）</h4>
+              <ul class="plain">
+                <li><span class="mono">Executors.newFixedThreadPool</span>，线程名 <span class="mono">mindcli-multi-agent</span></li>
+                <li>每步独立缓冲，join 后按顺序 flush，避免输出交错（:1131-1182）</li>
+              </ul>
+            </div>
+            <div>
+              <h4>写并行（runMutatingBatchParallel :542）</h4>
+              <ul class="plain">
+                <li>线程名 <span class="mono">mindcli-multi-agent-worktree</span>，并行度 <span class="mono">min(leader, batchParallelism)</span></li>
+                <li>每步独立 git worktree，<span class="mono">forkForProject :299</span> fork registry</li>
+              </ul>
+            </div>
+          </div>
+
+          <h4>worktree 隔离四步</h4>
+          <ul class="plain">
+            <li><b>基线快照</b> <span class="mono">commitCheckpoint :555</span></li>
+            <li><b>预创建 worktree</b> <span class="mono">create :574</span>，任一失败 → 整波回退串行</li>
+            <li><b>并行执行</b> fork registry</li>
+            <li><b>合并</b> <span class="mono">mergeWorktreeAndDispose :681</span>，冲突 → FAILED 并报告（:686-690），<b>绝不静默覆盖</b></li>
+          </ul>
+
+          <div class="callout trap">
+            <b>⚠️ 易错</b>：worktree 分支 registry <b>刻意不继承 MCP 工具</b>（ToolRegistry.java:297）。MCP 可能有全局副作用，放隔离 worktree 会失控。
+          </div>
+          <div class="callout ask">
+            <b>❓ 面试点</b>：为什么用固定线程池，不用虚拟线程？<br>
+            <b>答</b>：瓶颈在 LLM 网络 I/O，并发度被 profile 的 <span class="mono">maxConcurrency</span> 严格限制，固定线程池更可控；跨线程互斥由 <span class="mono">ResourceLockManager</span>（ReentrantReadWriteLock）兜底。
+          </div>
+        </div>
+      </details>
+
+      <details>
+        <summary>AgentPool 租借：最少权限优先</summary>
+        <div class="dbody">
+          <ul class="plain">
+            <li>每个 profile 持 <span class="mono">Semaphore(maxConcurrency)</span> 限流</li>
+            <li><span class="mono">preferredAgent</span> 精确匹配 → 否则 role+工具过滤，<b>按 privilegeScore 升序</b>（最少权限优先）</li>
+            <li><span class="mono">tryAcquire</span> 非阻塞扫候选，失败才阻塞——避免「假并行」</li>
+            <li>Lease 是 <span class="mono">AutoCloseable :130</span>，保证释放</li>
+          </ul>
+        </div>
+      </details>
+    </section>
+
+    <!-- ============ CLASSES ============ -->
+    <section id="classes">
+      <h2><span class="num">04</span>核心抽象</h2>
+      <p class="sec-desc">14 个关键类及其职责。</p>
+      <details open>
+        <summary>编排与执行（agent 包）</summary>
+        <div class="dbody">
+          <table>
+            <tr><th>类</th><th>职责</th></tr>
+            <tr><td class="mono">AgentOrchestrator</td><td>主控：内联规划、解析、主循环、执行、自审、聚合</td></tr>
+            <tr><td class="mono">SubAgent</td><td>从属代理：ReAct 循环、上下文注入、自审</td></tr>
+            <tr><td class="mono">TeamScheduler</td><td>纯函数、无状态调度决策层</td></tr>
+            <tr><td class="mono">ExecutionStep</td><td>单步执行模型（package-private record）</td></tr>
+            <tr><td class="mono">StepStatus</td><td>PENDING / RUNNING / COMPLETED / FAILED / SKIPPED</td></tr>
+            <tr><td class="mono">ScheduleWave</td><td>一波工作：readOnly / mutating / serialReasons</td></tr>
+            <tr><td class="mono">TeamStepClassifier</td><td>「是否改文件」分类策略</td></tr>
+            <tr><td class="mono">AgentMessage</td><td>TASK / RESULT / ERROR</td></tr>
+            <tr><td class="mono">AgentBudget</td><td>token 预算 / 停滞检测 / 硬上限 50</td></tr>
+          </table>
+        </div>
+      </details>
+      <details>
+        <summary>计划 / profile / 运行时</summary>
+        <div class="dbody">
+          <table>
+            <tr><th>类</th><th>包</th><th>职责</th></tr>
+            <tr><td class="mono">DependencyGraph</td><td>plan</td><td>业务无关 DAG，就绪判定由调用方注入</td></tr>
+            <tr><td class="mono">AgentPool</td><td>profile</td><td>按 profile 发 AgentLease，最少权限优先</td></tr>
+            <tr><td class="mono">AgentProfile</td><td>profile</td><td>不可变 record：name/role/工具/并发/权限/模型</td></tr>
+            <tr><td class="mono">AgentToolPolicy</td><td>profile</td><td>工具策略求值：*、@read/@write/@web、拒绝列表</td></tr>
+            <tr><td class="mono">ToolDispatcher</td><td>runtime.run</td><td>工具分发 + 跨实例互斥（SHARED_LOCK_MANAGER :15）</td></tr>
+            <tr><td class="mono">ResourceLockManager</td><td>runtime.run</td><td>ReentrantReadWriteLock，按资源排序加锁</td></tr>
+            <tr><td class="mono">AgentModeRouter</td><td>runtime.run</td><td>按 AgentMode 路由到 ModeAdapter</td></tr>
+          </table>
+          <div class="callout key">
+            <b>🔑 重点</b>：<span class="mono">DependencyGraph</span> 的「依赖满足条件」是<b>注入</b>的——/team 用 <span class="mono">COMPLETED|SKIPPED</span> 放行、<span class="mono">FAILED</span> 阻断；/plan 用另一套语义。同一 DAG 支撑两种模式。
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <!-- ============ STATE ============ -->
+    <section id="state">
+      <h2><span class="num">05</span>状态与数据流</h2>
+      <p class="sec-desc">共享状态、上下文传递、可观测性，含 StepStatus 状态流转图。</p>
+
+      <details open>
+        <summary>StepStatus 状态流转图 <span class="hint">5 状态 · 4 转移 · 带守卫</span></summary>
+        <div class="dbody">
+          <figure>
+            <div class="svgwrap">
+<svg viewBox="0 0 720 420" role="img" aria-labelledby="state-title state-desc" xmlns="http://www.w3.org/2000/svg">
+  <title id="state-title">StepStatus 状态流转图</title>
+  <desc id="state-desc">执行步骤从待执行到执行中，经自审进入完成或失败；依赖失败时从待执行直接跳到跳过。三个终止态。</desc>
+  <defs>
+    <marker id="st-arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#9aa0ae"/></marker>
+    <marker id="st-arrR" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#e5534b"/></marker>
+  </defs>
+
+  <!-- 初始点 -->
+  <circle cx="16" cy="208" r="5" fill="#9aa0ae"/>
+  <line x1="21" y1="208" x2="32" y2="208" stroke="#9aa0ae" marker-end="url(#st-arr)"/>
+
+  <!-- PENDING -->
+  <rect x="32" y="176" width="128" height="64" rx="8" fill="#1e222b" stroke="#3a4150"/>
+  <text x="96" y="204" fill="#e6e8ee" font-size="13" font-weight="600" text-anchor="middle" font-family="Consolas,monospace">PENDING</text>
+  <text x="96" y="224" fill="#9aa0ae" font-size="10" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">待执行</text>
+
+  <!-- RUNNING -->
+  <rect x="264" y="176" width="128" height="64" rx="8" fill="#1e222b" stroke="#3a4150"/>
+  <text x="328" y="204" fill="#e6e8ee" font-size="13" font-weight="600" text-anchor="middle" font-family="Consolas,monospace">RUNNING</text>
+  <text x="328" y="224" fill="#9aa0ae" font-size="10" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">执行中</text>
+
+  <!-- COMPLETED -->
+  <rect x="528" y="56" width="128" height="64" rx="8" fill="#1a241d" stroke="#3fb27f"/>
+  <rect x="536" y="64" width="112" height="48" rx="6" fill="none" stroke="#3fb27f" stroke-width="0.7"/>
+  <text x="592" y="92" fill="#7fd4ab" font-size="13" font-weight="600" text-anchor="middle" font-family="Consolas,monospace">COMPLETED</text>
+  <text x="592" y="110" fill="#9aa0ae" font-size="10" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">完成(终止)</text>
+
+  <!-- FAILED -->
+  <rect x="528" y="176" width="128" height="64" rx="8" fill="#2a1a1a" stroke="#e5534b"/>
+  <rect x="536" y="184" width="112" height="48" rx="6" fill="none" stroke="#e5534b" stroke-width="0.7"/>
+  <text x="592" y="204" fill="#ff8b85" font-size="13" font-weight="600" text-anchor="middle" font-family="Consolas,monospace">FAILED</text>
+  <text x="592" y="224" fill="#9aa0ae" font-size="10" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">失败(阻断下游)</text>
+
+  <!-- SKIPPED -->
+  <rect x="264" y="312" width="128" height="64" rx="8" fill="#1e222b" stroke="#9aa0ae"/>
+  <rect x="272" y="320" width="112" height="48" rx="6" fill="none" stroke="#9aa0ae" stroke-width="0.7"/>
+  <text x="328" y="340" fill="#c6cbd6" font-size="13" font-weight="600" text-anchor="middle" font-family="Consolas,monospace">SKIPPED</text>
+  <text x="328" y="360" fill="#9aa0ae" font-size="10" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif">跳过(终止)</text>
+
+  <!-- PENDING → RUNNING -->
+  <line x1="160" y1="208" x2="264" y2="208" stroke="#9aa0ae" marker-end="url(#st-arr)"/>
+  <rect x="168" y="192" width="88" height="14" rx="2" fill="#1e222b"/>
+  <text x="212" y="203" fill="#9aa0ae" font-size="9" text-anchor="middle" font-family="Consolas,monospace">nextWave 选中</text>
+
+  <!-- RUNNING → COMPLETED -->
+  <path d="M328 176 L328 88 L528 88" fill="none" stroke="#3fb27f" marker-end="url(#st-arr)"/>
+  <rect x="352" y="74" width="72" height="14" rx="2" fill="#1e222b"/>
+  <text x="388" y="85" fill="#7fd4ab" font-size="9" text-anchor="middle" font-family="Consolas,monospace">[自审通过]</text>
+
+  <!-- RUNNING → FAILED -->
+  <line x1="392" y1="208" x2="528" y2="208" stroke="#e5534b" marker-end="url(#st-arrR)"/>
+  <rect x="404" y="192" width="116" height="14" rx="2" fill="#1e222b"/>
+  <text x="462" y="203" fill="#ff8b85" font-size="9" text-anchor="middle" font-family="Consolas,monospace">[自审失败×2|异常]</text>
+
+  <!-- PENDING → SKIPPED -->
+  <path d="M96 240 L96 344 L264 344" fill="none" stroke="#9aa0ae" marker-end="url(#st-arr)"/>
+  <rect x="104" y="332" width="80" height="14" rx="2" fill="#1e222b"/>
+  <text x="144" y="343" fill="#9aa0ae" font-size="9" text-anchor="middle" font-family="Consolas,monospace">[依赖 FAILED]</text>
+
+  <!-- legend -->
+  <line x1="32" y1="404" x2="656" y2="404" stroke="#2a2f3a"/>
+  <text x="32" y="418" fill="#9aa0ae" font-size="8" font-family="Consolas,monospace" letter-spacing="1">LEGEND</text>
+  <rect x="88" y="411" width="16" height="10" rx="2" fill="#1e222b" stroke="#3a4150"/><text x="110" y="420" fill="#9aa0ae" font-size="9">状态</text>
+  <rect x="152" y="411" width="16" height="10" rx="2" fill="#1a241d" stroke="#3fb27f"/><text x="174" y="420" fill="#9aa0ae" font-size="9">成功终止</text>
+  <rect x="248" y="411" width="16" height="10" rx="2" fill="#2a1a1a" stroke="#e5534b"/><text x="270" y="420" fill="#9aa0ae" font-size="9">失败终止</text>
+  <text x="344" y="420" fill="#9aa0ae" font-size="9">[ ] = 转移守卫</text>
+</svg>
+            </div>
+            <figcaption>图 4 · StepStatus 状态流转图：三个终止态（完成/失败/跳过），守卫标注在转移箭头上</figcaption>
+          </figure>
+        </div>
+      </details>
+
+      <details open>
+        <summary>共享状态与上下文注入</summary>
+        <div class="dbody">
+          <div class="callout key">
+            <b>🔑 重点</b>：<span class="mono">List&lt;ExecutionStep&gt; steps</span> 是唯一可变计划状态，写操作走 <span class="mono">synchronized updateStep :912</span>，保证并行 worker 线程安全。
+          </div>
+          <ul class="plain">
+            <li><b>无消息总线</b>——代理间是同步调用 + <span class="mono">AgentMessage</span> 记录</li>
+            <li><span class="mono">buildStepContext :1342</span> 注入：前置依赖结果预览（各 500 字）+ <span class="mono">allowedWriteScope</span> + <span class="mono">forbiddenWriteScope</span>（:1365-1388）</li>
+          </ul>
+          <div class="callout key">
+            <b>🔑 重点</b>：给 worker 明确「能写哪些、<b>不能碰哪些</b>文件」，是从根源防并行写冲突——不只靠事后 worktree 合并，还靠事前边界告知。
+          </div>
+        </div>
+      </details>
+
+      <details>
+        <summary>可观测性：RunStore / JSONL</summary>
+        <div class="dbody">
+          <ul class="plain">
+            <li><span class="mono">AgentRunContext</span>（runId/mode/input/workspace）贯穿父子 run</li>
+            <li>父 run 写 <span class="mono">RUN_STARTED / MODE_SELECTED / RUN_FINISHED</span>；子 run 带 <span class="mono">parentRunId / stepId / attempt / writeScope</span>（childRunContext :964）</li>
+            <li>落 <span class="mono">RunStore</span>（JSONL，<span class="mono">~/.mindcli/runs</span>）</li>
+          </ul>
+        </div>
+      </details>
+    </section>
+
+    <!-- ============ MCP ============ -->
+    <section id="mcp">
+      <h2><span class="num">06</span>MCP 集成</h2>
+      <p class="sec-desc">MCP 服务器如何接入多代理工具链。</p>
+      <details open>
+        <summary>注册 → 过滤 → 调用 → 注入</summary>
+        <div class="dbody">
+          <ul class="plain">
+            <li>服务器 READY 后，每个工具注册为 <span class="mono">mcp__{server}__{tool}</span>（ToolRegistry :1099-1102）</li>
+            <li>子代理经 <span class="mono">toolDefinitionsForProfile :526</span> + <span class="mono">AgentToolPolicy</span> 过滤可见性</li>
+            <li>MCP 调用按 <span class="mono">MCP_SERVER:&lt;server&gt;</span> 做独占锁</li>
+            <li><span class="mono">externalContextSupplier = mcpServerManager::resourceIndexForPrompt</span> 注入资源索引（:318）</li>
+          </ul>
+          <div class="callout trap">
+            <b>⚠️ 易错</b>：两处「MCP 不可用」——① worktree 分支不带 MCP 工具；② 自审 readOnly 过滤 <span class="mono">mcp__*</span>。别在需要 MCP 的步骤里指望这两阶段还能调 MCP。
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <!-- ============ CONFIG ============ -->
+    <section id="config">
+      <h2><span class="num">07</span>代理配置</h2>
+      <p class="sec-desc">内置代理硬编码，自定义代理走 TOML。</p>
+      <details open>
+        <summary>内置与自定义</summary>
+        <div class="dbody">
+          <div class="cols">
+            <div>
+              <h4>内置（源码硬编码）</h4>
+              <ul class="plain">
+                <li><span class="mono">explorer#1 / #2</span> —— 只读 <span class="mono">@read</span> + <span class="mono">READ_ONLY</span>，并发 1</li>
+                <li><span class="mono">worker#1</span> —— <span class="mono">*</span> 工具 + <span class="mono">LEGACY_COMPAT</span>，并发 2</li>
+                <li>定义 <span class="mono">AgentProfileLoader.builtinDefaults :46-52</span></li>
+              </ul>
+            </div>
+            <div>
+              <h4>自定义（TOML）</h4>
+              <ul class="plain">
+                <li><span class="mono">.mindcli/agents/*.toml</span>（load :27-44）</li>
+                <li>必填 <span class="mono">name / description / developer_instructions</span></li>
+                <li><span class="mono">sandbox_mode</span>：read-only | workspace-write | danger-full-access</li>
+                <li>坏文件/重名 fail-soft 跳过</li>
+              </ul>
+            </div>
+          </div>
+          <div class="callout key">
+            <b>🔑 重点</b>：<span class="mono">sandbox_mode</span> 三档是 Codex 风格对齐，把安全边界外化给配置，而非散落在 if-else。
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <!-- ============ DESIGN ============ -->
+    <section id="design">
+      <h2><span class="num">08</span>设计要点与安全防线</h2>
+      <p class="sec-desc">来自 docs/ 的关键决策 + 五层安全防线。</p>
+      <details open>
+        <summary>关键设计决策</summary>
+        <div class="dbody">
+          <div class="callout key">
+            <b>🔑 TeamScheduler 抽取</b>（2026-08-17）：从 1800 行编排器抽出纯函数调度层，只移决策、留下并发/执行。单一入口 <span class="mono">nextWave</span>，逐波增量语义。
+          </div>
+          <div class="callout key">
+            <b>🔑 WriteScopeRules 一致性</b>：调度器和 <span class="mono">ToolRegistry</span> 共享同一套写域规则——「能否并行」和「路径是否允许」永不分歧。
+          </div>
+          <div class="callout trap">
+            <b>⚠️ 自审 fail-closed</b>：评审 JSON 解析失败一律不通过，最多重试 2 次。
+          </div>
+        </div>
+      </details>
+      <details open>
+        <summary>五层安全防线</summary>
+        <div class="dbody">
+          <ul class="plain">
+            <li><b>1 规划</b> —— TEAM_PLANNER 提示约束</li>
+            <li><b>2 权限</b> —— least-privilege 租借</li>
+            <li><b>3 写域</b> —— WriteScopeRules 强制</li>
+            <li><b>4 隔离</b> —— worktree 并行写</li>
+            <li><b>5 自审</b> —— readOnly 复检</li>
+          </ul>
+          <p style="margin-top:8px">五层纵深防御：每一步假设上一层可能被绕过，层层设防，而非单点依赖。</p>
+        </div>
+      </details>
+    </section>
+
+    <footer>
+      分析来源：<span class="mono">com.mindcli.agent</span> / <span class="mono">com.mindcli.agent.plan</span> / <span class="mono">com.mindcli.agent.profile</span> / <span class="mono">com.mindcli.runtime.run</span> · 设计文档 <span class="mono">docs/mindcli-*-design.md</span> · 方法名与行号来自源码实读。
+    </footer>
+  </main>
+</div>
+
+<script>
+function setAll(open){document.querySelectorAll('details').forEach(function(d){d.open=open;});}
+var links=document.querySelectorAll('.toc a'),secs=[];
+links.forEach(function(a){var el=document.querySelector(a.getAttribute('href'));if(el)secs.push([el,a]);});
+window.addEventListener('scroll',function(){
+  var y=window.scrollY+90,cur=secs[0]&&secs[0][1];
+  secs.forEach(function(p){if(p[0].offsetTop<=y)cur=p[1];});
+  links.forEach(function(a){a.classList.remove('active');});
+  if(cur)cur.classList.add('active');
+});
+</script>
+</body>
+</html>

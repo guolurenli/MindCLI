@@ -47,7 +47,7 @@ class PlannerTest {
                 }
                 """);
         Planner planner = new Planner(client);
-        planner.setProjectMemorySupplier(() -> "## PAI.md 项目记忆\n- 计划前必须读取项目规则");
+        planner.setProjectMemorySupplier(() -> "## MIND.md 项目记忆\n- 计划前必须读取项目规则");
 
         ExecutionPlan plan = planner.createPlan("先读取 pom.xml 然后验证项目结构");
 

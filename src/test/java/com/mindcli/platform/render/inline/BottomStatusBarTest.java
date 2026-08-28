@@ -24,14 +24,14 @@ class BottomStatusBarTest {
         StatusInfo info = StatusInfo.tokens("glm-5.1", 200_000L, 1200L, 1000L, 234L, 100L, "¥0.0123",
                 true, 1500L, "running");
         String line = BottomStatusBar.formatFooterLine(info, 200);
-        assertTrue(line.contains("Auto Model"), line);
+        assertTrue(line.contains("MINDCLI //"), line);
         assertTrue(line.contains("running"), line);
         assertTrue(line.contains("glm-5.1"), line);
-        assertTrue(line.contains("ctx"), line);
+        assertTrue(line.contains("CTX"), line);
         assertTrue(line.contains("1%"), line);
         assertTrue(line.contains("1.2k/200.0k"), line);
-        assertTrue(line.contains("in 1.0k out 234"), line);
-        assertTrue(line.contains("cache 100"), line);
+        assertTrue(line.contains("IN 1.0k OUT 234"), line);
+        assertTrue(line.contains("CACHE 100"), line);
         assertTrue(line.contains("¥0.0123"), line);
         assertTrue(line.contains("1.5s"), line);
     }
@@ -42,9 +42,9 @@ class BottomStatusBarTest {
                 null, false, 0L, "idle");
         String line = BottomStatusBar.formatFooterLine(info, 200);
 
-        assertTrue(line.contains("ctx"), line);
+        assertTrue(line.contains("CTX"), line);
         assertTrue(line.contains("1.2k/200.0k"), line);
-        assertTrue(line.contains("in 51.0k out 2.0k"), line);
+        assertTrue(line.contains("IN 51.0k OUT 2.0k"), line);
         assertFalse(line.contains("53.0k/200.0k"), line);
     }
 
@@ -82,7 +82,7 @@ class BottomStatusBarTest {
     void footerLineFitsColumnWidth() {
         String line = BottomStatusBar.formatFooterLine(StatusInfo.idle("glm-5.1", 200_000L, false), 40);
         assertTrue(line.length() == 40, "footer should fill requested width: " + line.length());
-        assertTrue(line.contains("Auto Model"), line);
+        assertTrue(line.contains("MINDCLI //"), line);
     }
 
     @Test
@@ -91,8 +91,8 @@ class BottomStatusBarTest {
                 .withEnvironment("MCP 4/4", "Skill 2/2");
         String top = BottomStatusBar.formatStatusLine(info, 80);
         String bottom = BottomStatusBar.formatFooterLine(info, 80);
-        assertTrue(top.contains("4 MCP servers"), top);
-        assertTrue(top.contains("2 skills"), top);
+        assertTrue(top.contains("MCP 4/4"), top);
+        assertTrue(top.contains("SKILL 2/2"), top);
         assertTrue(bottom.contains("plan"), bottom);
         assertTrue(bottom.contains("glm-5.1"), bottom);
     }
@@ -120,13 +120,13 @@ class BottomStatusBarTest {
         String footer = lines.get(1).toString();
 
         assertStyledWhenColorEnabled(lines.get(0), top, "YOLO");
-        assertStyledWhenColorEnabled(lines.get(0), top, "5 MCP servers");
-        assertStyledWhenColorEnabled(lines.get(0), top, "5 skills");
+        assertStyledWhenColorEnabled(lines.get(0), top, "MCP 5/5");
+        assertStyledWhenColorEnabled(lines.get(0), top, "SKILL 5/5");
         assertStyledWhenColorEnabled(lines.get(1), footer, "deepseek-v4-pro");
         assertStyledWhenColorEnabled(lines.get(1), footer, "idle");
-        assertStyledWhenColorEnabled(lines.get(1), footer, "ctx");
-        assertStyledWhenColorEnabled(lines.get(1), footer, "in");
-        assertStyledWhenColorEnabled(lines.get(1), footer, "cache");
+        assertStyledWhenColorEnabled(lines.get(1), footer, "CTX");
+        assertStyledWhenColorEnabled(lines.get(1), footer, "IN");
+        assertStyledWhenColorEnabled(lines.get(1), footer, "CACHE");
     }
 
     @Test

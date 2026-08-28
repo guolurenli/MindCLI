@@ -493,4 +493,32 @@ class CliCommandParserTest {
         assertEquals(CliCommandParser.CommandType.SKILL_OFF, off.type());
         assertEquals("verbose-debug", off.payload());
     }
+
+    @Test
+    void parsesAgentListCommand() {
+        CliCommandParser.ParsedCommand command = CliCommandParser.parse("/agent");
+        assertEquals(CliCommandParser.CommandType.AGENT, command.type());
+        assertNull(command.payload());
+    }
+
+    @Test
+    void parsesAgentCreateCommand() {
+        CliCommandParser.ParsedCommand command = CliCommandParser.parse("/agent create");
+        assertEquals(CliCommandParser.CommandType.AGENT, command.type());
+        assertEquals("create", command.payload());
+    }
+
+    @Test
+    void parsesAgentDetailCommand() {
+        CliCommandParser.ParsedCommand command = CliCommandParser.parse("/agent code-reviewer");
+        assertEquals(CliCommandParser.CommandType.AGENT, command.type());
+        assertEquals("code-reviewer", command.payload());
+    }
+
+    @Test
+    void parsesAgentRunCommand() {
+        CliCommandParser.ParsedCommand command = CliCommandParser.parse("/agent code-reviewer 审查这个 PR");
+        assertEquals(CliCommandParser.CommandType.AGENT, command.type());
+        assertEquals("code-reviewer 审查这个 PR", command.payload());
+    }
 }
