@@ -36,6 +36,7 @@ public class Planner {
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
     private Supplier<String> projectMemorySupplier = () ->
             ProjectMemoryLoader.createDefault(Path.of(".").toAbsolutePath().normalize()).loadForPrompt();
+    private Supplier<String> sessionContextSupplier = () -> "";
 
     public Planner(LlmClient llmClient) {
         this(llmClient, System.out);
@@ -50,6 +51,10 @@ public class Planner {
         this.projectMemorySupplier = projectMemorySupplier == null ? () -> "" : projectMemorySupplier;
     }
 
+    public void setSessionContextSupplier(Supplier<String> sessionContextSupplier) {
+        this.sessionContextSupplier = sessionContextSupplier == null ? () -> "" : sessionContextSupplier;
+    }
+
     public ExecutionPlan createPlan(String goal) throws IOException {
         out.println("📋 正在规划任务: " + goal + "\n");
 
@@ -60,6 +65,7 @@ public class Planner {
         List<LlmClient.Message> messages = Arrays.asList(
                 LlmClient.Message.system(promptAssembler.assemble(PromptMode.PLANNER, PromptContext.builder()
                         .projectMemoryContext(buildProjectMemoryContext())
+                        .memoryContext(sessionContextSupplier.get())
                         .build())),
                 LlmClient.Message.user("请为以下任务制定执行计划：\n" + goal)
         );

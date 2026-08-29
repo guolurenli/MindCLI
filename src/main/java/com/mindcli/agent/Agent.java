@@ -27,6 +27,7 @@ import com.mindcli.runtime.run.InMemoryRunStore;
 import com.mindcli.runtime.run.ReActModeAdapter;
 import com.mindcli.runtime.run.RunStoreFactory;
 import com.mindcli.runtime.run.RunStore;
+import com.mindcli.runtime.run.SessionContext;
 import com.mindcli.runtime.run.ToolDispatcher;
 import com.mindcli.runtime.run.ToolOutcome;
 import com.mindcli.capability.skill.SkillIndexFormatter;
@@ -76,6 +77,7 @@ public class Agent {
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
     //运行时事件账本（Phase 2 先使用内存实现）
     private final RunStore runStore;
+    private volatile SessionContext sessionContext;
 
     public Agent(LlmClient llmClient) {
         this(llmClient, new ToolRegistry(), RunStoreFactory.create());
@@ -103,6 +105,10 @@ public class Agent {
         this.memoryManager.setLlmClient(llmClient);
         this.toolRegistry.setContextProfile(memoryManager.getContextProfile());
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
+    }
+
+    public void setSessionContext(SessionContext sessionContext) {
+        this.sessionContext = sessionContext;
     }
 
     public void setExternalContextSupplier(Supplier<String> externalContextSupplier) {
@@ -175,6 +181,13 @@ public class Agent {
                 .collect(java.util.stream.Collectors.toSet());
         String memoryContext = memoryManager.buildContextForQuery(
                 userInput, contextProfile.memoryContextTokens(), activeToolNames, runContext, effectiveRunStore);
+
+        String sessionContextText = sessionContext == null
+                ? ""
+                : sessionContext.promptContext(contextProfile.memoryContextTokens());
+        if (!sessionContextText.isBlank()) {
+            memoryContext = sessionContextText + "\n\n" + memoryContext;
+        }
 
         // 预加载 MEMORY.md 索引（会话级缓存，只在首次运行时加载）
         String memoryIndexSection = buildMemoryIndexSection();
@@ -594,6 +607,18 @@ public class Agent {
      */
     public List<LlmClient.Message> getConversationHistory() {
         return new ArrayList<>(conversationHistory);
+    }
+
+    /** 返回最近一条可用于跨 run 摘要的 assistant 文本。 */
+    public String latestAssistantResponse() {
+        for (int i = conversationHistory.size() - 1; i >= 0; i--) {
+            LlmClient.Message message = conversationHistory.get(i);
+            if ("assistant".equals(message.role()) && message.content() != null
+                    && !message.content().isBlank()) {
+                return message.content().trim();
+            }
+        }
+        return "";
     }
 
     /**

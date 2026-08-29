@@ -29,6 +29,7 @@ import com.mindcli.runtime.run.AgentRunEventType;
 import com.mindcli.runtime.run.AgentRunStatus;
 import com.mindcli.runtime.run.RunStore;
 import com.mindcli.runtime.run.RunStoreFactory;
+import com.mindcli.runtime.run.SessionContext;
 import com.mindcli.capability.skill.SkillRegistry;
 import com.mindcli.capability.tool.ToolRegistry;
 import com.mindcli.platform.worktree.GitWorktreeManager;
@@ -84,6 +85,7 @@ public class AgentOrchestrator {
     private final RunStore runStore;
     private volatile RunStore activeRunStore;
     private volatile String runtimeOwnedLifecycleRunId;
+    private volatile SessionContext sessionContext;
     private final PlanSchemaParser planSchemaParser = new PlanSchemaParser(mapper);
     private final PlanSchemaValidator planSchemaValidator = new PlanSchemaValidator();
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
@@ -142,6 +144,12 @@ public class AgentOrchestrator {
         workers.forEach(worker -> worker.setExternalContextSupplier(this.externalContextSupplier));
     }
 
+    public void setSessionContext(SessionContext sessionContext) {
+        this.sessionContext = sessionContext;
+        explorers.forEach(explorer -> explorer.setSessionContext(sessionContext));
+        workers.forEach(worker -> worker.setSessionContext(sessionContext));
+    }
+
     /**
      * 把 Skill 系统下发给所有 SubAgent。
      */
@@ -162,6 +170,7 @@ public class AgentOrchestrator {
     private SubAgent createSubAgent(AgentProfile profile, ToolRegistry registry) {
         SubAgent agent = new SubAgent(profile, llmClient, registry);
         agent.setMemoryManager(memoryManager);
+        agent.setSessionContext(sessionContext);
         agent.setExternalContextSupplier(externalContextSupplier);
         if (skillRegistry != null) {
             agent.setSkillRegistry(skillRegistry);
@@ -176,6 +185,7 @@ public class AgentOrchestrator {
         String systemPrompt = promptAssembler.assemble(PromptMode.TEAM_PLANNER,
                 PromptContext.builder()
                         .projectMemoryContext(buildProjectMemoryContext())
+                        .memoryContext(buildSessionContext())
                         .build())
                 + "\n\n" + buildAgentCatalog();
         List<LlmClient.Message> messages = List.of(
@@ -187,6 +197,11 @@ public class AgentOrchestrator {
         LlmTraceLogger.logReasoning(log, "team-planner", llmClient, response.reasoningContent());
         renderer.finish();
         return response.content();
+    }
+
+    private String buildSessionContext() {
+        SessionContext current = sessionContext;
+        return current == null ? "" : current.promptContext(memoryManager.getContextProfile().memoryContextTokens());
     }
 
     /**
@@ -580,6 +595,7 @@ public class AgentOrchestrator {
             return t;
         });
         Map<String, ByteArrayOutputStream> buffers = new ConcurrentHashMap<>();
+        Map<String, Boolean> completed = new ConcurrentHashMap<>();
         List<Future<?>> futures = new ArrayList<>();
 
         for (ExecutionStep step : leaders) {
@@ -589,13 +605,15 @@ public class AgentOrchestrator {
             PrintStream stepOut = new PrintStream(baos, true, StandardCharsets.UTF_8);
             String context = buildStepContext(steps, step);
             futures.add(executor.submit(() -> {
+                boolean succeeded = false;
                 try {
-                    runStepInWorktree(runContext, step, steps, retryCount, context, stepOut, projectRoot, handle);
+                    succeeded = runStepInWorktree(runContext, step, steps, retryCount, context, stepOut, handle);
                 } catch (RuntimeException e) {
                     log.error("Worktree step {} failed unexpectedly", step.id(), e);
                     updateStep(steps, step.id(), step.withFailed("worktree 并行执行异常: " + e.getMessage()));
                     stepOut.println("❌ 步骤 [" + step.id() + "] worktree 并行执行异常：" + e.getMessage() + "\n");
                 } finally {
+                    completed.put(step.id(), succeeded);
                     stepOut.flush();
                 }
                 return null;
@@ -622,20 +640,54 @@ public class AgentOrchestrator {
             }
         }
 
+        boolean allStepsSucceeded = leaders.stream()
+                .allMatch(step -> Boolean.TRUE.equals(completed.get(step.id())));
+        if (!allStepsSucceeded) {
+            disposeWorktrees(projectRoot, handles.values());
+            String reason = "同批次存在未完成步骤，已丢弃未合并的 worktree 结果";
+            for (ExecutionStep step : leaders) {
+                if (Boolean.TRUE.equals(completed.get(step.id()))) {
+                    updateStep(steps, step.id(), step.withFailed(reason));
+                }
+            }
+            out.println("⚠️ 批次 #" + batchIndex + " 未全部完成，未合并任何 worktree 结果。\n");
+        } else {
+            try {
+                GitWorktreeManager.BatchMergeResult mergeResult = worktreeManager.mergeBatchAndDispose(
+                        projectRoot,
+                        new ArrayList<>(handles.values()),
+                        "mindcli: integrate batch " + batchIndex);
+                if (mergeResult.status() == GitWorktreeManager.BatchMergeResult.Status.CONFLICTING) {
+                    String files = String.join(", ", mergeResult.conflictingFiles());
+                    for (ExecutionStep step : leaders) {
+                        updateStep(steps, step.id(), step.withFailed("worktree merge 冲突: " + files));
+                    }
+                    out.println("⚠️ 批次 #" + batchIndex + " worktree merge 冲突，需人工处理："
+                            + files + "\n");
+                }
+            } catch (IOException e) {
+                disposeWorktrees(projectRoot, handles.values());
+                String reason = "worktree 批次合并失败: " + e.getMessage();
+                for (ExecutionStep step : leaders) {
+                    updateStep(steps, step.id(), step.withFailed(reason));
+                }
+                out.println("❌ 批次 #" + batchIndex + " worktree 合并失败：" + e.getMessage() + "\n");
+            }
+        }
+
         for (StepExecutionGroup group : groups) {
             propagateDuplicateResult(group, steps);
         }
     }
 
     /**
-     * 在已创建的独立 worktree 中执行单个写入步骤，成功后 merge 回主工作区；失败则丢弃 worktree 变更。
+     * 在已创建的独立 worktree 中执行单个写入步骤。批次合并由调用方统一协调。
      */
-    private void runStepInWorktree(AgentRunContext runContext, ExecutionStep step, List<ExecutionStep> steps,
-                                   Map<String, Integer> retryCount, String context, PrintStream out,
-                                   Path projectRoot, GitWorktreeManager.WorktreeHandle handle) {
+    private boolean runStepInWorktree(AgentRunContext runContext, ExecutionStep step, List<ExecutionStep> steps,
+                                      Map<String, Integer> retryCount, String context, PrintStream out,
+                                      GitWorktreeManager.WorktreeHandle handle) {
         AgentTaskRequirements workerRequirements = requirementsFor(step);
 
-        boolean succeeded = false;
         try {
             ToolRegistry fork = toolRegistry.forkForProject(handle.path());
             try (AgentPool.AgentLease workerLease = acquireForStep(step, workerRequirements)) {
@@ -649,30 +701,19 @@ public class AgentOrchestrator {
                 out.println("❌ 步骤 [" + step.id() + "] Agent profile 选择失败：" + e.getMessage() + "\n");
             }
             ExecutionStep current = stepById(steps, step.id());
-            succeeded = current != null && current.status() == StepStatus.COMPLETED;
-        } finally {
-            if (succeeded) {
-                mergeWorktreeAndDispose(projectRoot, handle, step, steps, out);
-            } else {
-                worktreeManager.dispose(projectRoot, handle);
-            }
+            return current != null && current.status() == StepStatus.COMPLETED;
+        } catch (RuntimeException e) {
+            updateStep(steps, step.id(), step.withFailed("worktree 执行失败: " + e.getMessage()));
+            throw e;
         }
     }
 
-    private void mergeWorktreeAndDispose(Path projectRoot, GitWorktreeManager.WorktreeHandle handle,
-                                         ExecutionStep step, List<ExecutionStep> steps, PrintStream out) {
-        try {
-            GitWorktreeManager.WorktreeMergeResult mergeResult =
-                    worktreeManager.mergeAndDispose(projectRoot, handle, "mindcli: worktree " + step.id());
-            if (mergeResult.status() == GitWorktreeManager.WorktreeMergeResult.Status.CONFLICTING) {
-                String files = String.join(", ", mergeResult.conflictingFiles());
-                out.println("⚠️ 步骤 [" + step.id() + "] worktree merge 冲突，需人工处理：" + files + "\n");
-                updateStep(steps, step.id(), step.withFailed("worktree merge 冲突: " + files));
-            }
-        } catch (IOException e) {
-            log.warn("worktree merge failed for step {}: {}", step.id(), e.getMessage());
-            out.println("❌ 步骤 [" + step.id() + "] worktree 合并失败：" + e.getMessage() + "\n");
-            updateStep(steps, step.id(), step.withFailed("worktree merge 失败: " + e.getMessage()));
+    private void disposeWorktrees(Path projectRoot,
+                                  java.util.Collection<GitWorktreeManager.WorktreeHandle> handles) {
+        if (handles == null) {
+            return;
+        }
+        for (GitWorktreeManager.WorktreeHandle handle : handles) {
             worktreeManager.dispose(projectRoot, handle);
         }
     }

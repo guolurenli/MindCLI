@@ -59,6 +59,7 @@ import com.mindcli.runtime.run.ModeAdapter;
 import com.mindcli.runtime.run.PlanModeAdapter;
 import com.mindcli.runtime.run.ReActModeAdapter;
 import com.mindcli.runtime.run.RunStore;
+import com.mindcli.runtime.run.SessionContext;
 import com.mindcli.runtime.run.SingleAgentAdapter;
 import com.mindcli.runtime.run.TeamModeAdapter;
 import com.mindcli.runtime.api.RuntimeApiServer;
@@ -289,6 +290,8 @@ public class Main {
             hitlToolRegistry.setSkillRegistry(skillRegistry);
 
             Agent reactAgent = new Agent(llmClient, hitlToolRegistry);
+            SessionContext sessionContext = new SessionContext();
+            reactAgent.setSessionContext(sessionContext);
             reactAgent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
             reactAgent.setSkillRegistry(skillRegistry);
             DurableTaskManager taskManager = openTaskManager(llmClientRef);
@@ -396,6 +399,7 @@ public class Main {
                     }
                     case CLEAR -> {
                         reactAgent.clearHistory();
+                        sessionContext.clear();
                         hitlHandler.clearApprovedAll();
                         renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
                         ui.println("🗑️ 当前对话历史已清空，长期记忆保持不变\n");
@@ -619,13 +623,15 @@ public class Main {
                         String agentResponse = runWithCancelSupport(terminal, ui, () -> {
                             SubAgent subAgent = createSingleAgent(profile, activeClient, reactAgent,
                                     mcpServerManager, skillRegistry);
+                            subAgent.setSessionContext(sessionContext);
                             return runModeWithRuntime(
                                     AgentMode.TEAM,
                                     agentTask,
                                     projectPath,
                                     agentRunStore,
                                     agentSnapshotService,
-                                    new SingleAgentAdapter(subAgent, ui));
+                                    new SingleAgentAdapter(subAgent, ui),
+                                    sessionContext);
                         });
                         renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
                         if (agentResponse != null && !agentResponse.isBlank()) {
@@ -825,6 +831,7 @@ public class Main {
                     LlmClient activeClient = llmClient;
                     runTask = () -> {
                         PlanExecuteAgent planAgent = createPlanAgent(activeClient, reactAgent, terminal, lineReader, ui);
+                        planAgent.setSessionContext(sessionContext);
                         planAgent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
                         planAgent.setSkillRegistry(skillRegistry);
                         return runModeWithRuntime(
@@ -833,13 +840,15 @@ public class Main {
                                 reactAgent.getToolRegistry().getProjectPath(),
                                 reactAgent.runStore(),
                                 reactAgent.getToolRegistry().getSnapshotService(),
-                                new PlanModeAdapter(planAgent));
+                                new PlanModeAdapter(planAgent),
+                                sessionContext);
                     };
                 } else if (nextTaskUseTeamMode || command.type() == CliCommandParser.CommandType.SWITCH_TEAM) {
                     snapshotMode = "team";
                     LlmClient activeClient = llmClient;
                     runTask = () -> {
                         AgentOrchestrator orchestrator = createTeamAgent(activeClient, reactAgent, ui);
+                        orchestrator.setSessionContext(sessionContext);
                         orchestrator.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
                         orchestrator.setSkillSystem(skillRegistry);
                         return runModeWithRuntime(
@@ -848,7 +857,8 @@ public class Main {
                                 reactAgent.getToolRegistry().getProjectPath(),
                                 reactAgent.runStore(),
                                 reactAgent.getToolRegistry().getSnapshotService(),
-                                new TeamModeAdapter(orchestrator));
+                                new TeamModeAdapter(orchestrator),
+                                sessionContext);
                     };
                 } else {
                     snapshotMode = "react";
@@ -857,7 +867,8 @@ public class Main {
                             reactAgent.getToolRegistry().getProjectPath(),
                             reactAgent.runStore(),
                             reactAgent.getToolRegistry().getSnapshotService(),
-                            new ReActModeAdapter(reactAgent));
+                            new ReActModeAdapter(reactAgent),
+                            sessionContext);
                 }
                 SnapshotService snapshotService = reactAgent.getToolRegistry().getSnapshotService();
                 renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, snapshotMode));
@@ -1002,9 +1013,21 @@ public class Main {
     static String runModeWithRuntime(AgentMode mode, String input, String workspace,
                                      RunStore runStore, SnapshotService snapshotService,
                                      ModeAdapter adapter) {
+        return runModeWithRuntime(mode, input, workspace, runStore, snapshotService, adapter, null);
+    }
+
+    static String runModeWithRuntime(AgentMode mode, String input, String workspace,
+                                     RunStore runStore, SnapshotService snapshotService,
+                                     ModeAdapter adapter, SessionContext sessionContext) {
         AgentRuntime runtime = new AgentRuntime(runStore, snapshotService);
         AgentModeRouter router = new AgentModeRouter(runtime, List.of(adapter), workspace);
         AgentRunResult result = router.submit(input, mode);
+        if (sessionContext != null) {
+            String contentOverride = adapter instanceof ReActModeAdapter reactAdapter
+                    ? reactAdapter.latestAssistantResponse()
+                    : null;
+            sessionContext.record(result, contentOverride);
+        }
         return runtimeUserFacingContent(result);
     }
 
@@ -1012,6 +1035,13 @@ public class Main {
                                           RunStore runStore, SnapshotService snapshotService,
                                           ModeAdapter adapter) {
         return runModeWithRuntime(AgentMode.REACT, input, workspace, runStore, snapshotService, adapter);
+    }
+
+    static String runReactModeWithRuntime(String input, String workspace,
+                                          RunStore runStore, SnapshotService snapshotService,
+                                          ModeAdapter adapter, SessionContext sessionContext) {
+        return runModeWithRuntime(AgentMode.REACT, input, workspace, runStore, snapshotService,
+                adapter, sessionContext);
     }
 
     static String runAgentTask(String mode, String input, SnapshotService snapshotService,

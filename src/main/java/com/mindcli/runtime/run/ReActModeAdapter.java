@@ -40,6 +40,10 @@ public final class ReActModeAdapter implements ModeAdapter {
         }
     }
 
+    public String latestAssistantResponse() {
+        return agent == null ? "" : agent.latestAssistantResponse();
+    }
+
     private static String errorMessage(Exception e) {
         String message = e.getMessage();
         return message == null || message.isBlank() ? e.getClass().getSimpleName() : message;

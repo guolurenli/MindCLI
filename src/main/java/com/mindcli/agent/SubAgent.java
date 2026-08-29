@@ -16,6 +16,7 @@ import com.mindcli.platform.prompt.ProjectMemoryLoader;
 import com.mindcli.runtime.run.AgentMode;
 import com.mindcli.runtime.run.AgentRunContext;
 import com.mindcli.runtime.run.RunStore;
+import com.mindcli.runtime.run.SessionContext;
 import com.mindcli.runtime.run.ToolDispatcher;
 import com.mindcli.runtime.run.ToolOutcome;
 import com.mindcli.runtime.run.ToolOutcomeEventFactory;
@@ -63,6 +64,7 @@ public class SubAgent {
     private Supplier<String> externalContextSupplier = () -> "";
     private SkillRegistry skillRegistry;
     private MemoryManager memoryManager;
+    private volatile SessionContext sessionContext;
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
     private volatile boolean readOnly;
 
@@ -92,12 +94,18 @@ public class SubAgent {
         this.memoryManager = memoryManager;
     }
 
+    public void setSessionContext(SessionContext sessionContext) {
+        this.sessionContext = sessionContext;
+        refreshSystemPrompt();
+    }
+
     /**
      * 根据角色获取系统提示词
      */
     private String getSystemPrompt() {
         PromptContext context = PromptContext.builder()
                 .projectMemoryContext(buildProjectMemoryContext())
+                .memoryContext(buildSessionContext())
                 .externalContext(buildProfileAndExternalContext())
                 .skillIndex(buildSkillIndex())
                 .toolsEnabled(llmClient == null || llmClient.supportsTools())
@@ -106,6 +114,12 @@ public class SubAgent {
             return promptAssembler.assembleCustom(profile.developerInstructions(), context);
         }
         return promptAssembler.assemble(promptMode(), context);
+    }
+
+    private String buildSessionContext() {
+        SessionContext current = sessionContext;
+        int maxTokens = memoryManager == null ? 2_000 : memoryManager.getContextProfile().memoryContextTokens();
+        return current == null ? "" : current.promptContext(maxTokens);
     }
 
     private PromptMode promptMode() {

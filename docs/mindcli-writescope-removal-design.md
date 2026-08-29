@@ -2,7 +2,7 @@
 
 - 日期：2026-08-20
 - 范围：`/team` Multi-Agent 写入调度、worktree 隔离、工具层保护
-- 状态：设计中
+- 状态：已落地
 
 ## 1. 核心结论
 
@@ -52,8 +52,9 @@ TeamScheduler
   -> worktree 不可用 / git 不可用 / 工作区不适合并行：回退串行
 
 合并
-  -> merge 成功：step 完成
-  -> merge 冲突：step 失败，报告冲突文件，不静默覆盖
+  -> 在临时 integration worktree 中按顺序合并所有 step 分支
+  -> 全部 merge 成功后 fast-forward 主工作区
+  -> 任一 merge 冲突：abort integration merge，主工作区保持批次基线，报告冲突文件
 ```
 
 ## 4. 要删除
@@ -97,7 +98,7 @@ TeamScheduler
    删除动态 `setWriteScope` guard，保留 workspace 级工具保护。
 
 5. **补测试**
-   覆盖：无 `writeScope` 计划可解析、多写 step 进入 worktree、worktree 不可用回退串行、merge 冲突失败、资源锁仍生效。
+   覆盖：无 `writeScope` 计划可解析、多写 step 进入 worktree、worktree 不可用回退串行、批次 integration merge 冲突不污染主工作区、资源锁仍生效。
 
 6. **删旧测试**
    共 5 个测试文件引用 `writeScope`，按性质分类处理：

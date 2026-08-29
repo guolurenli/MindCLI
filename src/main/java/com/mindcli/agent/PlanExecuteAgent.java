@@ -19,6 +19,7 @@ import com.mindcli.runtime.run.AgentRunEventType;
 import com.mindcli.runtime.run.AgentRunStatus;
 import com.mindcli.runtime.run.RunStore;
 import com.mindcli.runtime.run.RunStoreFactory;
+import com.mindcli.runtime.run.SessionContext;
 import com.mindcli.runtime.run.ToolDispatcher;
 import com.mindcli.runtime.run.ToolOutcome;
 import com.mindcli.runtime.run.ToolOutcomeEventFactory;
@@ -120,6 +121,7 @@ public class PlanExecuteAgent {
     private volatile RunStore activeRunStore;
     private volatile AgentRunContext activeRunContext;
     private volatile String runtimeOwnedLifecycleRunId;
+    private volatile SessionContext sessionContext;
     private Supplier<String> externalContextSupplier = () -> "";
     private SkillRegistry skillRegistry;
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
@@ -182,6 +184,16 @@ public class PlanExecuteAgent {
         this.memoryManager.setProjectPath(this.toolRegistry.getProjectPath());
         this.toolRegistry.setScopedMemoryWriter(this.memoryManager::storeFact);
         this.planner.setProjectMemorySupplier(this::buildProjectMemoryContext);
+    }
+
+    public void setSessionContext(SessionContext sessionContext) {
+        this.sessionContext = sessionContext;
+        this.planner.setSessionContextSupplier(this::buildSessionContext);
+    }
+
+    private String buildSessionContext() {
+        SessionContext current = sessionContext;
+        return current == null ? "" : current.promptContext(memoryManager.getContextProfile().memoryContextTokens());
     }
 
     private static PrintStream deferredSystemOut() {
@@ -612,6 +624,7 @@ public class PlanExecuteAgent {
                                       StreamState streamState, PrintStream out) throws IOException {
         String prompt = promptAssembler.assemble(PromptMode.PLAN, PromptContext.builder()
                 .projectMemoryContext(buildProjectMemoryContext())
+                .memoryContext(buildSessionContext())
                 .variable("taskType", task.getType())
                 .variable("taskDescription", task.getDescription())
                 .externalContext(buildExternalContext())

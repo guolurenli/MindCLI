@@ -122,6 +122,53 @@ class GitWorktreeManagerTest {
         assertFalse(Files.exists(wt2), "冲突后 worktree 目录应被清理");
     }
 
+    @Test
+    void mergeBatchAndDispose_keepsMainWorkspaceAtBaselineWhenIntegrationConflicts() throws Exception {
+        Path repo = tempDir.resolve("repo");
+        initRepo(repo);
+
+        Path wt1 = tempDir.resolve("wt1");
+        Path wt2 = tempDir.resolve("wt2");
+        GitWorktreeManager.WorktreeHandle h1 = manager.create(repo, wt1, "batch-branch-1");
+        GitWorktreeManager.WorktreeHandle h2 = manager.create(repo, wt2, "batch-branch-2");
+
+        Files.writeString(wt1.resolve("a.txt"), "change-1\n");
+        Files.writeString(wt2.resolve("a.txt"), "change-2\n");
+
+        GitWorktreeManager.BatchMergeResult result = manager.mergeBatchAndDispose(
+                repo, java.util.List.of(h1, h2), "batch");
+
+        assertEquals(GitWorktreeManager.BatchMergeResult.Status.CONFLICTING, result.status());
+        assertTrue(result.conflictingFiles().contains("a.txt"));
+        assertEquals("base", Files.readString(repo.resolve("a.txt")).strip(),
+                "批次冲突时主工作区不应部分合并");
+        assertFalse(Files.exists(wt1));
+        assertFalse(Files.exists(wt2));
+    }
+
+    @Test
+    void mergeBatchAndDispose_promotesAllCleanWorktreesTogether() throws Exception {
+        Path repo = tempDir.resolve("repo");
+        initRepo(repo);
+
+        Path wt1 = tempDir.resolve("wt1");
+        Path wt2 = tempDir.resolve("wt2");
+        GitWorktreeManager.WorktreeHandle h1 = manager.create(repo, wt1, "clean-batch-branch-1");
+        GitWorktreeManager.WorktreeHandle h2 = manager.create(repo, wt2, "clean-batch-branch-2");
+
+        Files.writeString(wt1.resolve("one.txt"), "one\n");
+        Files.writeString(wt2.resolve("two.txt"), "two\n");
+
+        GitWorktreeManager.BatchMergeResult result = manager.mergeBatchAndDispose(
+                repo, java.util.List.of(h1, h2), "batch");
+
+        assertEquals(GitWorktreeManager.BatchMergeResult.Status.CLEAN, result.status());
+        assertEquals("one", Files.readString(repo.resolve("one.txt")).strip());
+        assertEquals("two", Files.readString(repo.resolve("two.txt")).strip());
+        assertFalse(Files.exists(wt1));
+        assertFalse(Files.exists(wt2));
+    }
+
     private static void initRepo(Path root) throws Exception {
         Files.createDirectories(root);
         try (Git git = Git.init().setDirectory(root.toFile()).call()) {
