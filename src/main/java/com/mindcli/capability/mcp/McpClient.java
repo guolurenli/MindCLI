@@ -8,6 +8,7 @@ import com.mindcli.capability.mcp.jsonrpc.JsonRpcClient;
 import com.mindcli.capability.mcp.jsonrpc.JsonRpcException;
 import com.mindcli.capability.mcp.protocol.McpCallToolRequest;
 import com.mindcli.capability.mcp.protocol.McpCallToolResult;
+import com.mindcli.capability.mcp.protocol.McpContent;
 import com.mindcli.capability.mcp.protocol.McpInitializeRequest;
 import com.mindcli.capability.mcp.protocol.McpSchemaSanitizer;
 import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
@@ -15,11 +16,16 @@ import com.mindcli.capability.mcp.resources.McpResourceContent;
 import com.mindcli.capability.mcp.resources.McpResourceDescriptor;
 import com.mindcli.capability.mcp.transport.McpTransport;
 import com.mindcli.capability.tool.ToolOutput;
+import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.spec.McpSchema;
+import io.modelcontextprotocol.spec.McpClientTransport;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 public class McpClient implements AutoCloseable {
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -30,15 +36,39 @@ public class McpClient implements AutoCloseable {
     private final String serverName;
     private final JsonRpcClient rpc;
     private final McpTransport transport;
+    private final McpSyncClient officialClient;
+    private final McpClientTransport officialTransport;
+    private final Supplier<List<String>> officialStderr;
     private volatile JsonNode serverCapabilities = JsonNodeFactory.instance.objectNode();
 
     public McpClient(String serverName, McpTransport transport) {
         this.serverName = serverName;
         this.transport = transport;
         this.rpc = new JsonRpcClient(transport);
+        this.officialClient = null;
+        this.officialTransport = null;
+        this.officialStderr = List::of;
+    }
+
+    public McpClient(String serverName, McpSyncClient officialClient,
+                     McpClientTransport officialTransport, Supplier<List<String>> officialStderr) {
+        this.serverName = serverName;
+        this.rpc = null;
+        this.transport = null;
+        this.officialClient = officialClient;
+        this.officialTransport = officialTransport;
+        this.officialStderr = officialStderr == null ? List::of : officialStderr;
     }
 
     public void initialize() throws IOException {
+        if (officialClient != null) {
+            try {
+                officialClient.initialize();
+                return;
+            } catch (RuntimeException e) {
+                throw asIoException(e);
+            }
+        }
         JsonNode result = rpc.request("initialize", McpInitializeRequest.toJson(), initializeTimeoutSeconds());
         serverCapabilities = result == null ? JsonNodeFactory.instance.objectNode() : result.path("capabilities");
         rpc.sendNotification("notifications/initialized", JsonNodeFactory.instance.objectNode());
@@ -61,14 +91,37 @@ public class McpClient implements AutoCloseable {
     }
 
     public boolean supportsResources() {
+        if (officialClient != null) {
+            McpSchema.ServerCapabilities capabilities = officialClient.getServerCapabilities();
+            return capabilities != null && capabilities.resources() != null;
+        }
         return serverCapabilities.has("resources");
     }
 
     public boolean supportsPrompts() {
+        if (officialClient != null) {
+            McpSchema.ServerCapabilities capabilities = officialClient.getServerCapabilities();
+            return capabilities != null && capabilities.prompts() != null;
+        }
         return serverCapabilities.has("prompts");
     }
 
     public List<McpToolDescriptor> listTools() throws IOException {
+        if (officialClient != null) {
+            try {
+                McpSchema.ListToolsResult result = officialClient.listTools();
+                if (result == null || result.tools() == null) return List.of();
+                return result.tools().stream()
+                        .filter(tool -> tool != null && tool.name() != null && !tool.name().isBlank())
+                        .map(tool -> new McpToolDescriptor(serverName, tool.name(),
+                                McpToolDescriptor.namespaced(serverName, tool.name()),
+                                tool.description() == null ? "" : tool.description(),
+                                sanitizeSchema(tool.inputSchema())))
+                        .toList();
+            } catch (RuntimeException e) {
+                throw asIoException(e);
+            }
+        }
         JsonNode result = rpc.request("tools/list", JsonNodeFactory.instance.objectNode(), 30);
         JsonNode tools = result.path("tools");
         if (!tools.isArray()) {
@@ -98,6 +151,21 @@ public class McpClient implements AutoCloseable {
     }
 
     public ToolOutput callToolOutput(String toolName, String argumentsJson) throws IOException {
+        if (officialClient != null) {
+            try {
+                Map<String, Object> arguments = argumentsJson == null || argumentsJson.isBlank()
+                        ? java.util.Map.of() : MAPPER.readValue(argumentsJson, java.util.Map.class);
+                McpSchema.CallToolResult result = officialClient.callTool(
+                        new McpSchema.CallToolRequest(toolName, arguments));
+                ToolOutput output = toToolOutput(result);
+                if (Boolean.TRUE.equals(result.isError())) {
+                    return new ToolOutput("MCP 工具返回错误: " + output.text(), output.imageParts());
+                }
+                return output;
+            } catch (RuntimeException e) {
+                throw asIoException(e);
+            }
+        }
         JsonNode args;
         if (argumentsJson == null || argumentsJson.isBlank()) {
             args = JsonNodeFactory.instance.objectNode();
@@ -115,6 +183,20 @@ public class McpClient implements AutoCloseable {
     }
 
     public List<McpResourceDescriptor> listResources() throws IOException {
+        if (officialClient != null) {
+            try {
+                McpSchema.ListResourcesResult result = officialClient.listResources();
+                if (result == null || result.resources() == null) return List.of();
+                return result.resources().stream()
+                        .filter(resource -> resource != null && resource.uri() != null && !resource.uri().isBlank())
+                        .map(resource -> new McpResourceDescriptor(serverName, resource.uri(), resource.name(),
+                                resource.title(), resource.description(), resource.mimeType(), resource.size()))
+                        .toList();
+            } catch (RuntimeException e) {
+                if (isMethodNotFound(e)) return List.of();
+                throw asIoException(e);
+            }
+        }
         try {
             JsonNode result = rpc.request("resources/list", JsonNodeFactory.instance.objectNode(), 30);
             JsonNode resources = result.path("resources");
@@ -138,6 +220,23 @@ public class McpClient implements AutoCloseable {
     }
 
     public List<McpResourceContent> readResource(String uri) throws IOException {
+        if (officialClient != null) {
+            try {
+                McpSchema.ReadResourceResult result = officialClient.readResource(new McpSchema.ReadResourceRequest(uri));
+                if (result == null || result.contents() == null) return List.of();
+                return result.contents().stream().map(content -> {
+                    if (content instanceof McpSchema.TextResourceContents text) {
+                        return new McpResourceContent(text.uri(), text.mimeType(), text.text(), null);
+                    }
+                    if (content instanceof McpSchema.BlobResourceContents blob) {
+                        return new McpResourceContent(blob.uri(), blob.mimeType(), null, blob.blob());
+                    }
+                    return new McpResourceContent(content.uri(), content.mimeType(), null, null);
+                }).toList();
+            } catch (RuntimeException e) {
+                throw asIoException(e);
+            }
+        }
         ObjectNode params = JsonNodeFactory.instance.objectNode();
         params.put("uri", uri);
         JsonNode result = rpc.request("resources/read", params, 60);
@@ -156,12 +255,36 @@ public class McpClient implements AutoCloseable {
     }
 
     public void subscribeResource(String uri) throws IOException {
+        if (officialClient != null) {
+            try {
+                officialClient.subscribeResource(new McpSchema.SubscribeRequest(uri));
+                return;
+            } catch (RuntimeException e) {
+                throw asIoException(e);
+            }
+        }
         ObjectNode params = JsonNodeFactory.instance.objectNode();
         params.put("uri", uri);
         rpc.request("resources/subscribe", params, 30);
     }
 
     public List<String> listPrompts() throws IOException {
+        if (officialClient != null) {
+            try {
+                McpSchema.ListPromptsResult result = officialClient.listPrompts();
+                if (result == null || result.prompts() == null) return List.of();
+                return result.prompts().stream().filter(prompt -> prompt != null && prompt.name() != null && !prompt.name().isBlank())
+                        .map(prompt -> {
+                            String display = prompt.title() == null || prompt.title().isBlank()
+                                    ? prompt.name() : prompt.title() + " (" + prompt.name() + ")";
+                            return prompt.description() == null || prompt.description().isBlank()
+                                    ? display : display + " - " + prompt.description();
+                        }).toList();
+            } catch (RuntimeException e) {
+                if (isMethodNotFound(e)) return List.of();
+                throw asIoException(e);
+            }
+        }
         try {
             JsonNode result = rpc.request("prompts/list", JsonNodeFactory.instance.objectNode(), 30);
             JsonNode prompts = result.path("prompts");
@@ -189,7 +312,7 @@ public class McpClient implements AutoCloseable {
     }
 
     public void onNotification(Consumer<JsonNode> listener) {
-        rpc.onNotification(listener);
+        if (rpc != null) rpc.onNotification(listener);
     }
 
     public static String formatResources(List<McpResourceDescriptor> resources) {
@@ -249,15 +372,16 @@ public class McpClient implements AutoCloseable {
     }
 
     public List<String> stderrLines() {
-        return transport.stderrLines();
+        return transport != null ? transport.stderrLines() : List.copyOf(officialStderr.get());
     }
 
     public Long processId() {
-        return transport.processId();
+        return transport == null ? null : transport.processId();
     }
 
     public String transportName() {
-        return transport.transportName();
+        if (transport != null) return transport.transportName();
+        return officialTransport == null ? "unknown" : officialTransport.getClass().getSimpleName().contains("Stdio") ? "stdio" : "http";
     }
 
     @Override
@@ -265,6 +389,39 @@ public class McpClient implements AutoCloseable {
         // 直接走 transport-level 关闭信号：stdio 通过 stdin EOF + 进程销毁；HTTP 通过 DELETE session。
         // 之前会先发 shutdown notification，但当 server 卡死 / 队列堵塞时这条通知会让 close 阻塞 60 秒。
         // 移除后退出更快、行为更可预期；shutdown 语义改由 transport 层承担。
-        rpc.close();
+        if (officialClient != null) {
+            officialClient.close();
+        } else {
+            rpc.close();
+        }
+    }
+
+    private static JsonNode sanitizeSchema(Map<String, Object> schema) {
+        return McpSchemaSanitizer.sanitize(MAPPER.valueToTree(schema == null ? java.util.Map.of() : schema));
+    }
+
+    private static ToolOutput toToolOutput(McpSchema.CallToolResult result) {
+        if (result == null || result.content() == null || result.content().isEmpty()) {
+            return ToolOutput.text(Boolean.TRUE.equals(result == null ? null : result.isError())
+                    ? "MCP 工具返回错误，但没有错误正文" : "");
+        }
+        List<McpContent> content = result.content().stream().map(item -> {
+            if (item instanceof McpSchema.TextContent text) return new McpContent("text", text.text(), null, null);
+            if (item instanceof McpSchema.ImageContent image) return new McpContent("image", null, image.data(), image.mimeType());
+            return new McpContent(item.type(), null, null, null);
+        }).toList();
+        return new McpCallToolResult(content, Boolean.TRUE.equals(result.isError())).toToolOutput();
+    }
+
+    private static IOException asIoException(RuntimeException exception) {
+        Throwable cause = exception.getCause();
+        String message = exception.getMessage();
+        if (cause != null && (message == null || message.isBlank())) message = cause.getMessage();
+        return new IOException(message == null ? exception.getClass().getSimpleName() : message, exception);
+    }
+
+    private static boolean isMethodNotFound(RuntimeException exception) {
+        String message = exception.getMessage();
+        return message != null && (message.contains("-32601") || message.toLowerCase().contains("method not found"));
     }
 }
