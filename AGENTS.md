@@ -12,7 +12,7 @@
 
 - 项目名：`MindCLI`
 - 定位：面向商业使用的 Java Agent CLI 产品，对标 Claude Code
-- 已交付 23 期 + Agent Runtime 企业级改造 Phase 6 + 记忆治理 Phase 8（ReAct → Plan+DAG → Memory → RAG → Multi-Agent → HITL → 并行工具 → 多模型 → 联网 → MCP 核心 → MCP 高级 → 长上下文 → Chrome DevTools → CDP 会话复用 → Skill → TUI → LSP 诊断 → Side-Git 快照 → Prompt 分层 → Runtime API → 图片输入 → 微信 iLink 通道文本 MVP；Runtime Spine / Dispatcher / Profile 化 Multi-Agent、记忆候选审批、策略裁决与审计导出已落地）
+- 已交付 23 期 + Agent Runtime 企业级改造 Phase 6 + 记忆治理 Phase 8（ReAct → Plan+DAG → Memory → Multi-Agent → HITL → 并行工具 → 多模型 → 联网 → MCP 核心 → MCP 高级 → 长上下文 → Chrome DevTools → CDP 会话复用 → Skill → TUI → LSP 诊断 → Side-Git 快照 → Prompt 分层 → Runtime API → 图片输入 → 微信 iLink 通道文本 MVP；Runtime Spine / Dispatcher / Profile 化 Multi-Agent、记忆候选审批、策略裁决与审计导出已落地）
 - `MIND.md` 是 MindCLI 的项目级记忆文件：启动时自动注入 system prompt，适合团队共享的长期稳定规则；个人/会变化的经验继续用 `/save` 长期记忆。
 - 下一步：OAuth / sampling / recovery 作为后续 MCP 增强
 - Banner 版本：`v16.1.0`，Maven 产物：`mindcli-1.0-SNAPSHOT.jar`（两者不一致是正常状态）
@@ -58,13 +58,13 @@ ReAct 的 LLM/tool 循环已委托给 `runtime/run/AgentLoopExecutor.java`；`Ag
 
 Agent Runtime 账本默认通过 `RunStoreFactory` 写到 `~/.mindcli/runs`（可用 `mindcli.runs.dir` / `MINDCLI_RUNS_DIR` 改写），`InMemoryRunStore` 仅保留给测试和降级。JSONL ledger 是 source of truth：每个事件包含 run 内递增 `seq` 和唯一 `eventId`，`run.meta.json` / `run.state.json` 由事件投影生成；读取会忽略尾部坏行，继续 append 前会先截断坏尾，`runId` 只能使用安全路径字符。AgentRuntime 可写 `SNAPSHOT_CREATED`，把 `PRE_RUN` / `POST_RUN` Side-Git checkpoint 与 runId 关联；CLI Agent 主路径不再额外套 `SnapshotService.runTurn(...)`，避免同一 run 产生旧 turn snapshot 与 runtime snapshot 两套快照；`/run inspect <runId>` 通过 `RunRecoveryService` 展示状态、checkpoint 和恢复提示。Multi-Agent 的规划阶段由 parent run 直接记录 `LLM_RESPONSE phase=plan`；explorer / worker 的执行与自审会写入 child run，目录布局为 `parentRun/children/childRun/`，事件 attributes 带 `parentRunId`、`rootRunId`、`role`、`stepId`、`attempt`、`phase=execute|review`；parent `run.state.json` 会 materialize child run 摘要。自审调用失败、输出不可解析、重试后仍拒绝时必须 fail closed，不能把执行候选结果标记为完成；review phase 摘要要保留 `approved` / `businessStatus`，供恢复和审计判断。
 
-核心内置工具 11 个：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `create_project` / `search_code` / `web_search` / `web_fetch` / `revert_turn`
+核心内置工具 10 个：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `create_project` / `web_search` / `web_fetch` / `revert_turn`
 
 `ToolRegistry` 是工具对外 facade；内置工具的名称、描述、参数 schema 由 `capability/tool/builtin/*ToolRegistrar.java` 维护，通过 `capability/tool/registry/ToolRegistrar` / `ToolRegistrationContext` 注册。MCP 动态工具状态由 `capability/tool/namespace/McpToolNamespace.java` 管理，`ToolRegistry` 继续保留原有 `registerMcpTool*` / `replaceMcpTool*` 兼容入口。
 
-代码库理解默认走 Claude Code 式实时探索：`glob_files` 找候选文件、`grep_code` 精确定位符号或字符串、`read_file` 按需读取具体行段。`grep_code` 优先使用本机 `ripgrep`，不可用时回退到 Java 扫描；结果受 `max_results` / `head_limit` / `max_chars` 预算约束，返回 `partial: true` 或 `suggested_reads` 时应继续缩小搜索范围或按建议读取行段。`search_code` 是 RAG 语义辅助，适合模糊自然语言、关键词不明确、常规搜索无果、巨型/跨知识检索场景，不作为精确代码定位的首选。
+代码库理解默认走 Claude Code 式实时探索：`glob_files` 找候选文件、`grep_code` 精确定位符号或字符串、`read_file` 按需读取具体行段。`grep_code` 优先使用本机 `ripgrep`，不可用时回退到 Java 扫描；结果受 `max_results` / `head_limit` / `max_chars` 预算约束，返回 `partial: true` 或 `suggested_reads` 时应继续缩小搜索范围或按建议读取行段。
 
-MCP 动态工具：`mcp__{server}__{tool}`（+ resources 虚拟工具）
+MCP 动态工具：`mcp__{server}__{tool}`（+ resources 虚拟工具）。协议与 stdio/Streamable HTTP 传输由官方 MCP Java SDK 2.0.1 提供，MindCLI 只保留生命周期、命名空间、策略、审计和资源缓存 facade。
 
 MCP 配置会合并用户级 `~/.mindcli/mcp.json` 与项目级 `.mindcli/mcp.json`；`${VAR}` 支持系统环境变量、系统属性、项目 `.env`、用户 `~/.env`。检测到 `STEP_API_KEY` 时会自动内置 `step_search` 远程 MCP（显式同名配置优先）。
 
@@ -79,7 +79,7 @@ DeepSeek SSE 调用默认强制 HTTP/1.1，避免部分网络/网关下 HTTP/2 �
 src/main/java/com/mindcli/
 ├── agent/       ReAct / Plan / Multi-Agent 编排；plan/ 放 Planner / ExecutionPlan / Task / DependencyGraph，profile/ 放 AgentProfile / AgentPool
 ├── app/         用户入口适配：cli/、tui/、wechat/
-├── capability/  Agent 能力：browser/、image/、lsp/、mcp/、memory/、rag/、skill/、tool/、web/
+├── capability/  Agent 能力：browser/、image/、lsp/、mcp/、memory/、skill/、tool/、web/
 ├── platform/    平台支撑：config/、hitl/、llm/、prompt/、render/、security/、snapshot/、text/
 └── runtime/     run/ (AgentRuntime / ToolDispatcher / RunStore) + api/ (RuntimeApiServer) + task/ (DurableTaskManager)
 ```
@@ -93,7 +93,7 @@ src/main/java/com/mindcli/
 - Lanterna TUI 保持三栏结构，但面板标题和消息标签使用同一套 cyber-lite 语言：`PROJECT // FILES`、`COMMS // STREAM`、`SYSTEM // STATUS`、`INPUT // COMMAND`，对话流标签为 `USER //`、`MINDCLI //`、`SYS //`、`TOOL //`、`OUT //`。
 - 普通任务和斜杠命令提交后，`Main` 会把本轮原始输入以暗色整行块写回 transcript：输入态左提示仍是 `* `，提交回显左提示改为 `>`；单行输入只占一行，不额外追加空白行。普通任务随后再展开 MCP resource / 本地 `@path` 并进入 Agent；不要只依赖 JLine 提交行残留，否则 activity 重绘或 dock 刷新可能让用户输入从可见历史里消失。`/clear` 清空 conversationHistory、shortTermMemory，并重建不含上一轮检索记忆的 system prompt；长期记忆保留。`/compact` 会手动压缩当前 ReAct conversationHistory，不等待上下文阈值触发，保留最近 1 个 user 轮次和 tool_call/tool_result 边界。
 - ReAct LLM 调用期间，inline renderer 使用固定高度 live thinking 区动态显示 `Thinking...` 和灰色竖线 reasoning 预览；该区域只能清理自己刚打印的几行，不能用独立 JLine `Display.update()` / `CLEAR_TO_EOS` 向上覆盖 transcript。content 或 tool call 开始前先清掉 live 区，再把完整 reasoning 引用块落到正文区，正文回答用低调标记起始，不再刷强标题。
-- 交互期输出应优先走 `Renderer.stream()`；`Main`、`PlanExecuteAgent`、`Planner`、`AgentOrchestrator` 都支持把输出流接到 inline renderer，避免直接争抢 stdout。`CodeIndex` 的索引进度通过 `ProgressListener` 注入，`/index` 应绑定到当前 renderer 输出流。
+- 交互期输出应优先走 `Renderer.stream()`；`Main`、`PlanExecuteAgent`、`Planner`、`AgentOrchestrator` 都支持把输出流接到 inline renderer，避免直接争抢 stdout。
 - Phase 22 开始，`InlineRenderer` 可绑定当前 `LineReader`；当 `LineReader.isReading()` 为 true 时，`Renderer.stream()` 的完整行输出优先通过 `LineReader#printAbove` 显示在输入行上方，未绑定 / 非读取态 / 测试路径回退到原 `PrintStream`。
 - Markdown 表格渲染要按当前终端列宽分配列宽；长内容在单元格内部换行，不能依赖终端自动折行把整行表格打散。
 - ReAct 正常结束后不再把 `📊 Token: ...` 打进正文区；token/cost/elapsed 会保留在底部强状态行，phase 回到 `idle`。
@@ -195,8 +195,6 @@ src/main/java/com/mindcli/
 
 对应 Client + `LlmClientFactory.java` + `.env.example` + 文档
 
-### 5.1 改 Embedding → `EmbeddingClient` + `VectorStore` + `.env.example` + 文档
-
 ### 5.2 改 Web/搜索 → `capability/web/` 相关 + ToolRegistry + `.env.example` + 文档 + 测试
 
 ### 5.3 改 Memory → `capability/memory/MemoryManager` + `LongTermMemory` + `TokenBudget` + 测试 + 文档
@@ -218,7 +216,6 @@ src/main/java/com/mindcli/
 | DAG/Plan | `mvn test -Dtest=ExecutionPlanTest` |
 | Multi-Agent | `mvn test -Dtest=AgentRoleTest,AgentMessageTest,SubAgentTest,AgentProfileLoaderTest,AgentOrchestratorTest` |
 | TUI/终端 | `mvn test -Pphase16-smoke` |
-| RAG | `mvn test -Dtest=CodeChunkerTest,CodeAnalyzerTest,VectorStoreTest,CodeIndexTest` |
 | 常规回归 | `mvn test -Pquick` |
 
 ## 给新线程的导航
@@ -233,7 +230,6 @@ src/main/java/com/mindcli/
 | ReAct loop | Agent.java + runtime/run/AgentLoopExecutor.java |
 | 代码搜索 | capability/tool/builtin/FileToolRegistrar.java + ToolRegistry.java (`glob_files` / `grep_code` / `read_file`) |
 | 模型/API | platform/llm/*Client.java + LlmClientFactory.java |
-| RAG 语义辅助 | capability/rag/CodeRetriever.java + CodeIndex.java + VectorStore.java |
 | Multi-Agent | AgentOrchestrator.java + SubAgent.java + agent/profile/* |
 | MCP | capability/mcp/McpServerManager.java + McpClient.java |
 | TUI/渲染 | app/tui/* + platform/render/Renderer.java + RendererFactory.java |

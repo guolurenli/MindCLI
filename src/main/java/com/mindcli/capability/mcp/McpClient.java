@@ -41,6 +41,12 @@ public class McpClient implements AutoCloseable {
     private final Supplier<List<String>> officialStderr;
     private volatile JsonNode serverCapabilities = JsonNodeFactory.instance.objectNode();
 
+    /**
+     * Legacy constructor retained for compatibility with embedders that provide
+     * an in-memory transport. Production server startup uses the official SDK
+     * constructor below via {@link McpServerManager#createOfficialClient(McpServer)}.
+     */
+    @Deprecated(forRemoval = false)
     public McpClient(String serverName, McpTransport transport) {
         this.serverName = serverName;
         this.transport = transport;

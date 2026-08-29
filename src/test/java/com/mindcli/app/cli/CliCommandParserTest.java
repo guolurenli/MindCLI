@@ -311,19 +311,17 @@ class CliCommandParserTest {
     }
 
     @Test
-    void parsesSearchWithoutPayload() {
+    void removedSearchCommandIsUnknown() {
         CliCommandParser.ParsedCommand command = CliCommandParser.parse("/search");
 
-        assertEquals(CliCommandParser.CommandType.SEARCH_CODE, command.type());
-        assertNull(command.payload());
+        assertEquals(CliCommandParser.CommandType.UNKNOWN_COMMAND, command.type());
     }
 
     @Test
-    void parsesGraphWithoutPayload() {
+    void removedGraphCommandIsUnknown() {
         CliCommandParser.ParsedCommand command = CliCommandParser.parse("/graph");
 
-        assertEquals(CliCommandParser.CommandType.GRAPH_QUERY, command.type());
-        assertNull(command.payload());
+        assertEquals(CliCommandParser.CommandType.UNKNOWN_COMMAND, command.type());
     }
 
     @Test

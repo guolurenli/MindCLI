@@ -93,7 +93,7 @@ final class ProjectMemoryInitializer {
                     "针对性测试：`mvn test -Dtest=XxxTest -DskipTests=false`。"
             );
             architecture.add("三条执行路径共享 `ToolRegistry` / `MemoryManager` / `SnapshotService`，不要为某个模式创建孤立能力。");
-            architecture.add("精确代码定位优先 `glob_files` / `grep_code` / `read_file`，`search_code` 只做 RAG 语义辅助。");
+            architecture.add("代码定位优先 `glob_files` / `grep_code` / `read_file`，按需逐步缩小范围并读取具体行段。");
             architecture.add("system prompt 由 `PromptAssembler` 分层组装；内置 prompt 在 `src/main/resources/prompts/`。");
             pitfalls.add("改行为要同步 `AGENTS.md` / `README.md` / `ROADMAP.md`；路线图只在状态变化时更新。");
             pitfalls.add("改命令入口要联动 `Main.java`、`CliCommandParser.java`、测试、`README.md`、`AGENTS.md`。");

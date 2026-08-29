@@ -179,7 +179,9 @@ final class RipgrepCodeSearchEngine implements CodeSearchEngine {
     }
 
     private String pathText(JsonNode data) {
-        return data.path("path").path("text").asText();
+        // ripgrep emits platform-native separators on Windows; normalize so the
+        // tool contract remains stable across the native and Java fallback engines.
+        return data.path("path").path("text").asText().replace('\\', '/');
     }
 
     private boolean isRipgrepAvailable() {

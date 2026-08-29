@@ -11,7 +11,6 @@ import com.mindcli.capability.tool.builtin.BrowserToolRegistrar;
 import com.mindcli.capability.tool.builtin.CodeToolRegistrar;
 import com.mindcli.capability.tool.builtin.FileToolRegistrar;
 import com.mindcli.capability.tool.builtin.MemoryToolRegistrar;
-import com.mindcli.capability.tool.builtin.RagToolRegistrar;
 import com.mindcli.capability.tool.builtin.ShellToolRegistrar;
 import com.mindcli.capability.tool.builtin.SkillToolRegistrar;
 import com.mindcli.capability.tool.builtin.SnapshotToolRegistrar;
@@ -105,7 +104,6 @@ class ToolRegistryTest {
                 "grepCodeTool",
                 "executeCommandTool",
                 "createProjectTool",
-                "searchCodeTool",
                 "webSearchTool",
                 "webFetchTool",
                 "browserConnectTool",
@@ -139,7 +137,6 @@ class ToolRegistryTest {
 
     @Test
     void shouldKeepRemainingBuiltinToolsInDedicatedRegistrars() {
-        assertInstanceOf(ToolRegistrar.class, new RagToolRegistrar());
         assertInstanceOf(ToolRegistrar.class, new WebToolRegistrar());
         assertInstanceOf(ToolRegistrar.class, new BrowserToolRegistrar());
         assertInstanceOf(ToolRegistrar.class, new SkillToolRegistrar());
@@ -148,7 +145,7 @@ class ToolRegistryTest {
 
         ToolRegistry registry = new ToolRegistry();
 
-        assertTrue(registry.hasTool("search_code"));
+        assertFalse(registry.hasTool("search_code"));
         assertTrue(registry.hasTool("web_search"));
         assertTrue(registry.hasTool("web_fetch"));
         assertTrue(registry.hasTool("browser_connect"));

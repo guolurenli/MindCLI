@@ -4,7 +4,7 @@
 
 ![MindCLI 项目架构图](image.jpg)
 
-MindCLI 是一个 Java 17 + Maven 实现的 Agent CLI，目标是做面向商业使用的本地开发助手，对标 Claude Code。当前代码已经形成三条主执行路径：默认 ReAct、`/plan` 的 Plan-and-Execute，以及 `/team` 的 Multi-Agent 协作；三条路径共享工具注册、记忆、RAG、Side-Git 快照和 Agent Runtime 账本。
+MindCLI 是一个 Java 17 + Maven 实现的 Agent CLI，目标是做面向商业使用的本地开发助手，对标 Claude Code。当前代码已经形成三条主执行路径：默认 ReAct、`/plan` 的 Plan-and-Execute，以及 `/team` 的 Multi-Agent 协作；三条路径共享工具注册、记忆、Side-Git 快照和 Agent Runtime 账本。
 
 `mvn clean package` 默认跳过测试，优先产出可手工验收的 `target/mindcli-1.0-SNAPSHOT.jar`；回归测试请显式运行文末的测试命令。
 
@@ -50,7 +50,6 @@ flowchart LR
     Runtime --> Dispatcher["ToolDispatcher"]
     Dispatcher --> Tools["ToolRegistry + MCP Tools"]
     Tools --> Memory["MemoryManager"]
-    Tools --> RAG["CodeIndex / CodeRetriever"]
     Tools --> Snapshot["Side-Git SnapshotService"]
     Runtime --> RunStore["JSONL RunStore"]
 ```
@@ -84,7 +83,7 @@ sequenceDiagram
 src/main/java/com/mindcli/
 ├── agent/       ReAct / Plan / Multi-Agent 编排，plan/ 含 DependencyGraph，profile/ 是 Agent Profile 与 profile lease
 ├── app/         cli / tui / wechat 用户入口与命令 handler
-├── capability/  browser / image / lsp / mcp / memory / rag / skill / tool / web
+├── capability/  browser / image / lsp / mcp / memory / skill / tool / web
 ├── platform/    config / hitl / llm / prompt / render / security / snapshot / text
 └── runtime/     run ledger、ToolDispatcher、Runtime API、DurableTaskManager
 ```
@@ -96,9 +95,9 @@ src/main/java/com/mindcli/
 | 执行模式 | 默认 ReAct；`/plan` 进入计划审阅与执行；`/team` 由 orchestrator 内建规划 + explorer/worker 协作，worker/explorer 自审修复，多个无依赖写入步骤按一 Step 一 worktree 隔离并行，在临时 integration worktree 中合并，冲突不静默覆盖 |
 | Runtime 账本 | `JsonlRunStore` 按 run 写 JSONL 事件，投影 `run.meta.json` / `run.state.json`，支持 child run 摘要 |
 | 工具调度 | `ToolDispatcher` 统一进入 Hook、资源分类、资源锁与结构化 `ToolOutcome` |
-| 代码理解 | `glob_files` / `grep_code` / `read_file` 实时探索，`/index` + `/search` + `/graph` 提供 RAG 语义辅助 |
+| 代码理解 | `glob_files` / `grep_code` / `read_file` 实时探索，按需逐步缩小范围 |
 | 记忆治理 | `/save` 手动长期记忆；自动提取只生成候选；`/memory approve/reject/export --audit` 管理审计链路 |
-| MCP | 合并用户级 `~/.mindcli/mcp.json` 和项目级 `.mindcli/mcp.json`，支持 stdio 与 Streamable HTTP |
+| MCP | 基于官方 Model Context Protocol Java SDK 2.0.1，合并用户级 `~/.mindcli/mcp.json` 和项目级 `.mindcli/mcp.json`，支持 stdio 与 Streamable HTTP |
 | 浏览器 | 默认 `chrome-devtools` MCP isolated 模式，`/browser connect` 可复用本机 Chrome 登录态 |
 | Web | `web_search` 支持 zhipu / serpapi / searxng，`web_fetch` 通过 HTTP + Jsoup 提取 Markdown |
 | 安全 | HITL、PathGuard、CommandGuard、BrowserGuard、危险工具 JSONL 审计 |
@@ -116,7 +115,6 @@ src/main/java/com/mindcli/
 | `grep_code` | 按关键字或正则搜索代码，优先 ripgrep，失败时回退 Java 扫描 |
 | `execute_command` | 在项目目录执行短时 shell 命令，默认 60 秒超时 |
 | `create_project` | 创建 `java` / `python` / `node` 项目骨架 |
-| `search_code` | RAG 语义辅助检索代码块，精确符号仍优先使用 `grep_code` |
 | `web_search` / `web_fetch` | 联网搜索与 URL 正文抓取 |
 | `browser_connect` / `browser_disconnect` / `browser_status` | 管理 Chrome DevTools MCP 登录态复用 |
 | `save_memory` | 用户明确要求记住时写入长期记忆 |
@@ -152,15 +150,6 @@ src/main/java/com/mindcli/
 | `/config` | 打开只读配置 palette，并提示对应 CLI 命令 |
 | `/config provider <name> --api-key <key> --model <m> --base-url <url> --default` | 写入 `~/.mindcli/config.json` 的 provider 配置 |
 | `/config provider xfyun --lora-id <resourceId>` | 为讯飞星辰 MaaS 微调模型配置 `lora_id` header |
-
-### 代码检索
-
-| 命令 | 说明 |
-|---|---|
-| `/index` | 索引当前代码库 |
-| `/index <路径>` | 索引指定路径，并同步 ToolRegistry / MemoryManager 的项目路径 |
-| `/search <查询>` | 对已索引代码执行 hybrid search |
-| `/graph <类名>` | 查看已索引代码关系图谱 |
 
 ### 记忆系统
 
@@ -269,11 +258,6 @@ XFYUN_MAAS_BASE_URL=https://maas-api.cn-huabei-1.xf-yun.com/v2
 XFYUN_MAAS_MODEL=Qwen3.6-35B-A3B
 XFYUN_MAAS_LORA_ID=your_resource_id
 
-# Embedding / RAG
-EMBEDDING_PROVIDER=ollama
-EMBEDDING_MODEL=nomic-embed-text:latest
-EMBEDDING_BASE_URL=http://localhost:11434
-
 # Web 搜索
 SEARCH_PROVIDER=zhipu       # zhipu | serpapi | searxng
 ZHIPU_SEARCH_ENGINE=search_std
@@ -327,10 +311,9 @@ X-MindCLI-API-Key: <MINDCLI_RUNTIME_API_KEY>
 mvn test -Pquick
 mvn test -Pphase16-smoke
 mvn test -Dtest=CliCommandParserTest,PlanReviewInputParserTest,MainInputNormalizationTest
-mvn test -Dtest=ToolRegistryTest,CodeSearchGoldenSetTest,ApprovalPolicyTest
+mvn test -Dtest=ToolRegistryTest,ApprovalPolicyTest
 mvn test -Dtest=ExecutionPlanTest
 mvn test -Dtest=AgentRoleTest,AgentMessageTest,AgentOrchestratorTest
-mvn test -Dtest=CodeChunkerTest,CodeAnalyzerTest,VectorStoreTest,CodeIndexTest
 mvn test -DskipTests=false
 ```
 
@@ -347,6 +330,7 @@ mvn test -DskipTests=false
 ## 技术栈
 
 - Java 17、Maven、JLine 4、Lanterna
+- 官方 MCP Java SDK 2.0.1（`mcp-core` + `mcp-json-jackson2`）
 - OkHttp、Jackson、Logback
 - SQLite、JavaParser、JGit、Jsoup
 - JUnit 5、Mockito、OkHttp MockWebServer

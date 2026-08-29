@@ -35,7 +35,7 @@ public final class ToolResourceClassifier {
             case "read_file" -> fileAccess(effectiveContext, args.get("path"), ResourceAccess.SHARED);
             case "write_file" -> fileAccess(effectiveContext, args.get("path"), ResourceAccess.EXCLUSIVE);
             case "list_dir" -> directoryAccess(effectiveContext, args.get("path"), ResourceAccess.SHARED);
-            case "glob_files", "grep_code", "search_code" ->
+            case "glob_files", "grep_code" ->
                     List.of(workspace(effectiveContext, ResourceAccess.SHARED));
             case "web_search", "web_fetch" ->
                     List.of(new ResourceKey(ResourceScope.NETWORK, "web", ResourceAccess.SHARED));

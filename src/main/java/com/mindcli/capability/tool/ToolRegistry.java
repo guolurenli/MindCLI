@@ -13,9 +13,6 @@ import com.mindcli.capability.lsp.LspDiagnosticReport;
 import com.mindcli.capability.lsp.LspManager;
 import com.mindcli.capability.memory.MemoryWriteResult;
 import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
-import com.mindcli.capability.rag.CodeRetriever;
-import com.mindcli.capability.rag.SearchResultFormatter;
-import com.mindcli.capability.rag.VectorStore;
 import com.mindcli.platform.security.AuditLog;
 import com.mindcli.platform.security.CommandGuard;
 import com.mindcli.platform.security.PathGuard;
@@ -29,7 +26,6 @@ import com.mindcli.capability.tool.builtin.BrowserToolRegistrar;
 import com.mindcli.capability.tool.builtin.CodeToolRegistrar;
 import com.mindcli.capability.tool.builtin.FileToolRegistrar;
 import com.mindcli.capability.tool.builtin.MemoryToolRegistrar;
-import com.mindcli.capability.tool.builtin.RagToolRegistrar;
 import com.mindcli.capability.tool.builtin.ShellToolRegistrar;
 import com.mindcli.capability.tool.builtin.SkillToolRegistrar;
 import com.mindcli.capability.tool.builtin.SnapshotToolRegistrar;
@@ -131,7 +127,6 @@ public class ToolRegistry {
         registerTools(new FileToolRegistrar());
         registerTools(new ShellToolRegistrar());
         registerTools(new CodeToolRegistrar());
-        registerTools(new RagToolRegistrar());
         registerTools(new WebToolRegistrar());
         registerTools(new BrowserToolRegistrar());
         registerTools(new MemoryToolRegistrar());
@@ -209,11 +204,6 @@ public class ToolRegistry {
             @Override
             public String createProjectTool(Map<String, String> args) {
                 return ToolRegistry.this.createProjectTool(args);
-            }
-
-            @Override
-            public String searchCodeTool(Map<String, String> args) {
-                return ToolRegistry.this.searchCodeTool(args);
             }
 
             @Override
@@ -662,34 +652,6 @@ public class ToolRegistry {
             return "项目已创建: " + name + " (类型: " + type + ")";
         } catch (Exception e) {
             return "创建项目失败: " + e.getMessage();
-        }
-    }
-
-    String searchCodeTool(Map<String, String> args) {
-        String query = args.get("query");
-        int topK = 5;
-        try {
-            if (args.containsKey("top_k")) {
-                topK = Integer.parseInt(args.get("top_k"));
-            }
-        } catch (NumberFormatException ignored) {
-        }
-        topK = Math.max(1, Math.min(topK, 30));
-
-        try (CodeRetriever retriever = new CodeRetriever(projectPath)) {
-            var stats = retriever.getStats();
-            if (stats.chunkCount() == 0) {
-                return "代码库尚未索引，请先使用 /index 命令索引当前项目。";
-            }
-
-            List<VectorStore.SearchResult> results = retriever.hybridSearch(query, topK);
-            if (results.isEmpty()) {
-                return "未找到与查询相关的代码。";
-            }
-
-            return SearchResultFormatter.formatForTool(query, results);
-        } catch (Exception e) {
-            return "代码检索失败: " + e.getMessage();
         }
     }
 

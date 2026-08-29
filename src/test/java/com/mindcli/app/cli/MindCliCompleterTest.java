@@ -24,7 +24,6 @@ class MindCliCompleterTest {
 
         assertTrue(candidates.stream().anyMatch(c -> c.displ().equals("/model")));
         assertTrue(candidates.stream().anyMatch(c -> c.displ().equals("/browser connect")));
-        assertTrue(candidates.stream().anyMatch(c -> c.displ().equals("/search <查询>")));
     }
 
     @Test

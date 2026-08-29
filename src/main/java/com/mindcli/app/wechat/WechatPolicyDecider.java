@@ -68,7 +68,7 @@ public class WechatPolicyDecider {
 
     private static boolean isReadOnlyBuiltin(String name) {
         return switch (name) {
-            case "read_file", "list_dir", "glob_files", "grep_code", "search_code",
+            case "read_file", "list_dir", "glob_files", "grep_code",
                     "web_search", "web_fetch", "browser_status" -> true;
             default -> false;
         };

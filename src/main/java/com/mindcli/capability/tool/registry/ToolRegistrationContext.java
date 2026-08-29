@@ -29,8 +29,6 @@ public interface ToolRegistrationContext {
 
         String createProjectTool(Map<String, String> args);
 
-        String searchCodeTool(Map<String, String> args);
-
         String webSearchTool(Map<String, String> args);
 
         String webFetchTool(Map<String, String> args);

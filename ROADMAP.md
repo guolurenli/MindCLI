@@ -27,12 +27,12 @@
 ### 3. 代码理解与检索
 
 - **精确定位** —— `glob_files` / `grep_code`（优先 ripgrep）/ `read_file`，Claude Code 式实时探索。
-- **RAG 语义** —— `search_code` + `capability/rag/*`（向量化 / 索引 / 语义检索），作为精确搜索之外的辅助。
+- **实时代码探索** —— `glob_files` / `grep_code` / `read_file` 逐步定位代码；语义检索不再由 MindCLI 内置维护，按需通过官方 MCP 接入外部能力。
 - **LSP 诊断** —— `LspManager` 惰性启动语言服务，编辑后注入编译诊断（`capability/lsp/*`）。
 
 ### 4. 内置工具集
 
-11 个内置工具：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `create_project` / `search_code` / `web_search` / `web_fetch` / `revert_turn`。
+10 个内置工具：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `create_project` / `web_search` / `web_fetch` / `revert_turn`。
 
 - `ToolRegistry` 作为工具 facade，`ToolRegistrar` 维护内置工具 schema。
 - 并行工具调用统一走 `ToolDispatcher`，产出结构化 `ToolOutcome`。

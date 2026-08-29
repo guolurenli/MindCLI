@@ -42,12 +42,8 @@ import com.mindcli.capability.image.ClipboardImage;
 import com.mindcli.capability.mcp.McpServerManager;
 import com.mindcli.capability.mcp.mention.AtMentionExpander;
 import com.mindcli.agent.plan.ExecutionPlan;
-import com.mindcli.capability.rag.CodeIndex;
 import com.mindcli.platform.hitl.ApprovalPolicy;
 import com.mindcli.platform.security.AuditLog;
-import com.mindcli.capability.rag.CodeRetriever;
-import com.mindcli.capability.rag.CodeRelation;
-import com.mindcli.capability.rag.SearchResultFormatter;
 import com.mindcli.runtime.CancellationContext;
 import com.mindcli.runtime.CancellationToken;
 import com.mindcli.runtime.run.AgentMode;
@@ -109,7 +105,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * MindCLI v16.1.0 - Terminal-First Agent IDE
- * 支持 ReAct、Plan-and-Execute、Memory、RAG、Multi-Agent、HITL、并行工具调用、多模型切换、MCP、CDP 会话复用
+ * 支持 ReAct、Plan-and-Execute、Memory、Multi-Agent、HITL、并行工具调用、多模型切换、MCP、CDP 会话复用
  * 第 15 期新增：Skill 系统（三层加载 + load_skill 工具 + tool_result 即时注入）、内置 web-access skill
  * 第 16 期新增：TUI 界面（Lanterna 3）、文件树浏览、代码高亮、对话历史可视化、配置管理面板
  * 第 16.1 期形态修正 ：抽出 Renderer 接口 + 三个实现（inline/lanterna/plain），默认形态切换为 inline 流式 TUI（Claude Code 风格）
@@ -734,76 +730,6 @@ public class Main {
                     }
                     case EXPORT -> {
                         handleExportCommand(ui, reactAgent);
-                        continue;
-                    }
-                    case INDEX_CODE -> {
-                        String indexPath = command.payload() != null ? command.payload() : ".";
-                        CodeIndex indexer = new CodeIndex(ui::println);
-                        indexer.index(indexPath);
-                        ui.println();
-
-                        // 同步项目路径到 ToolRegistry，让 search_code 工具可以正常工作
-                        String absPath = new File(indexPath).getAbsolutePath();
-                        reactAgent.getToolRegistry().setProjectPath(absPath);
-                        reactAgent.getMemoryManager().setProjectPath(absPath);
-                        continue;
-                    }
-                    case SEARCH_CODE -> {
-                        String query = command.payload();
-                        if (query == null || query.isEmpty()) {
-                            ui.println("❌ 请提供检索关键词，例如 /search 用户登录实现\n");
-                            continue;
-                        }
-                        ui.println("🔍 检索: " + query);
-                        try (CodeRetriever retriever = new CodeRetriever(".")) {
-                            var stats = retriever.getStats();
-                            if (stats.chunkCount() == 0) {
-                                ui.println("⚠️ 代码库尚未索引，请先使用 /index 命令\n");
-                                continue;
-                            }
-                            List<com.mindcli.capability.rag.VectorStore.SearchResult> results = retriever.hybridSearch(query, 5);
-                            if (results.isEmpty()) {
-                                ui.println("📭 未找到相关代码\n");
-                            } else {
-                                ui.println(SearchResultFormatter.formatForCli(query, results) + "\n");
-                            }
-                        } catch (Exception e) {
-                            ui.println("❌ 检索失败: " + e.getMessage() + "\n");
-                        }
-                        continue;
-                    }
-                    case GRAPH_QUERY -> {
-                        String className = command.payload();
-                        if (className == null || className.isEmpty()) {
-                            ui.println("❌ 请提供类名，例如 /graph Main\n");
-                            continue;
-                        }
-                        ui.println("🕸️ 查询类关系图谱: " + className);
-                        try (CodeRetriever retriever = new CodeRetriever(".")) {
-                            var stats = retriever.getStats();
-                            if (stats.chunkCount() == 0) {
-                                ui.println("⚠️ 代码库尚未索引，请先使用 /index 命令\n");
-                                continue;
-                            }
-                            List<CodeRelation> relations = retriever.getRelationGraph(className);
-                            if (relations.isEmpty()) {
-                                ui.println("📭 未找到相关关系\n");
-                            } else {
-                                ui.println("📋 找到 " + relations.size() + " 条关系:\n");
-                                for (CodeRelation rel : relations) {
-                                    String arrow = rel.relationType().equals("contains") ? "├── contains -->"
-                                            : rel.relationType().equals("extends") ? "└── extends -->"
-                                            : rel.relationType().equals("implements") ? "└── implements -->"
-                                            : rel.relationType().equals("calls") ? "├── calls -->"
-                                            : "├── " + rel.relationType() + " -->";
-                                    ui.printf("   %s %s [%s]%n", rel.fromName(), arrow,
-                                            rel.toName() != null ? rel.toName() : "unknown");
-                                }
-                                ui.println();
-                            }
-                        } catch (Exception e) {
-                            ui.println("❌ 查询失败: " + e.getMessage() + "\n");
-                        }
                         continue;
                     }
                     case NONE -> {

@@ -17,21 +17,19 @@
 5. `grep_code` - 按关键字或正则实时搜索项目内代码，优先使用 ripgrep，参数：`{"pattern": "UserService", "glob": "**/*.java", "context_lines": 2, "head_limit": 20, "max_chars": 24000}`
 6. `execute_command` - 在当前项目目录执行短时 Shell 命令
 7. `create_project` - 创建新项目结构
-8. `search_code` - RAG 语义辅助检索代码库，参数：`{"query": "自然语言描述", "top_k": 5}`
-9. `web_search` - 搜索互联网获取实时信息，参数：`{"query": "搜索关键词", "top_k": 5}`
-10. `web_fetch` - 抓取已知 URL 并返回正文 Markdown，参数：`{"url": "https://...", "max_chars": 8000}`
-11. `save_memory` - 在用户明确要求“记一下/记住/以后记得”时保存长期记忆，默认 `scope=project`，跨项目偏好才用 `scope=global`
-12. `revert_turn` - 恢复到最近第 N 个 pre-turn 快照，属于高危写入操作
-13. `mcp__{server}__{tool}` - MCP server 动态提供的外部工具，具体参数以工具 schema 为准
+8. `web_search` - 搜索互联网获取实时信息，参数：`{"query": "搜索关键词", "top_k": 5}`
+9. `web_fetch` - 抓取已知 URL 并返回正文 Markdown，参数：`{"url": "https://...", "max_chars": 8000}`
+10. `save_memory` - 在用户明确要求“记一下/记住/以后记得”时保存长期记忆，默认 `scope=project`，跨项目偏好才用 `scope=global`
+11. `revert_turn` - 恢复到最近第 N 个 pre-turn 快照，属于高危写入操作
+12. `mcp__{server}__{tool}` - MCP server 动态提供的外部工具，具体参数以工具 schema 为准
 
 ## Tool Policy
 
 - 当需要操作文件、执行命令或创建项目时，请使用工具调用。
 - 使用工具后，根据工具返回结果继续思考下一步行动。
 - 当前项目内的文件和代码优先使用 `glob_files` / `grep_code` / `read_file` 现用现查：先找文件或符号，再按需读取具体行段。
-- 精确符号、文件名、字符串、命令入口、调用链定位优先 `grep_code` / `glob_files`，不要为了这类任务先走 `search_code`。
+- 精确符号、文件名、字符串、命令入口、调用链定位优先 `grep_code` / `glob_files`，再用 `read_file` 按需读取行段。
 - `grep_code` 返回 `partial: true` 或 `suggested_reads` 时，优先缩小 `path`/`glob`/`pattern` 或按建议调用 `read_file offset/limit` 读取命中附近上下文，不要一次性读取大文件。
-- `search_code` 只作为语义辅助：适合用户描述很模糊、关键词难以确定、普通搜索多轮无果，或代码/文档/知识混合检索场景。
 - `web_fetch` 可抓取已知 URL 并提取正文 Markdown。
 - `web_fetch` 拿到空正文或 SPA / 防爬墙提示时，自动 fallback 到浏览器 MCP，不要重复抓取。
 - 同一轮返回多个工具调用时，系统会并行执行；如果工具之间有依赖关系，请分多轮调用。
