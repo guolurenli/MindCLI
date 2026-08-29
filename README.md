@@ -1,5 +1,9 @@
 # MindCLI
 
+## 项目架构
+
+![MindCLI 项目架构图](image.jpg)
+
 MindCLI 是一个 Java 17 + Maven 实现的 Agent CLI，目标是做面向商业使用的本地开发助手，对标 Claude Code。当前代码已经形成三条主执行路径：默认 ReAct、`/plan` 的 Plan-and-Execute，以及 `/team` 的 Multi-Agent 协作；三条路径共享工具注册、记忆、RAG、Side-Git 快照和 Agent Runtime 账本。
 
 `mvn clean package` 默认跳过测试，优先产出可手工验收的 `target/mindcli-1.0-SNAPSHOT.jar`；回归测试请显式运行文末的测试命令。
