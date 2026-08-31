@@ -55,8 +55,9 @@ class NetworkPolicyTest {
 
     @Test
     void allowsPublicHttps() {
-        assertNull(policy.checkUrl("https://example.com/path"));
-        assertNull(policy.checkUrl("https://paicoding.com"));
+        // 使用公网字面量，避免测试环境 hosts/DNS 将域名解析到回环地址。
+        assertNull(policy.checkUrl("https://1.1.1.1/path"));
+        assertNull(policy.checkUrl("https://8.8.8.8"));
     }
 
     @Test

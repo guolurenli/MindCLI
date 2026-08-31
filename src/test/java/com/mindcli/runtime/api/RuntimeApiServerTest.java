@@ -11,11 +11,13 @@ import java.nio.file.Path;
 import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class RuntimeApiServerTest {
 
     @Test
     void exposesThreadTurnAndSseEvents(@TempDir Path tempDir) throws Exception {
+        assumeTrue(loopbackHttpServerAvailable(), "当前测试环境无法建立 loopback HTTP server");
         try (RuntimeThreadStore store = new RuntimeThreadStore(tempDir.resolve("runtime.db"));
              RuntimeApiServer server = new RuntimeApiServer(store, prompt -> "reply:" + prompt, 0, "secret")) {
             server.start();
@@ -43,6 +45,7 @@ class RuntimeApiServerTest {
 
     @Test
     void rejectsMissingApiKey(@TempDir Path tempDir) throws Exception {
+        assumeTrue(loopbackHttpServerAvailable(), "当前测试环境无法建立 loopback HTTP server");
         try (RuntimeThreadStore store = new RuntimeThreadStore(tempDir.resolve("runtime.db"));
              RuntimeApiServer server = new RuntimeApiServer(store, prompt -> "x", 0, "secret")) {
             server.start();
@@ -67,6 +70,17 @@ class RuntimeApiServerTest {
                 .header("Authorization", "Bearer secret")
                 .header("Content-Type", "application/json")
                 .method(method, publisher);
+    }
+
+    private static boolean loopbackHttpServerAvailable() {
+        try {
+            com.sun.net.httpserver.HttpServer probe =
+                    com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+            probe.stop(0);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private static String waitForEvents(HttpClient client, String base, String threadId) throws Exception {

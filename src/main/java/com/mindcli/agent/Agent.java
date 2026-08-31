@@ -21,7 +21,9 @@ import com.mindcli.runtime.run.AgentLoopResult;
 import com.mindcli.runtime.run.AgentLoopStatus;
 import com.mindcli.runtime.run.AgentMode;
 import com.mindcli.runtime.run.AgentRuntime;
+import com.mindcli.runtime.run.AgentRunEvent;
 import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.runtime.run.AgentRunEventType;
 import com.mindcli.runtime.run.AgentRunResult;
 import com.mindcli.runtime.run.InMemoryRunStore;
 import com.mindcli.runtime.run.ReActModeAdapter;
@@ -48,6 +50,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 
 /**
@@ -191,6 +194,12 @@ public class Agent {
         }
 
         updateSystemPromptWithMemory(memoryContext);
+        effectiveRunStore.append(AgentRunEvent.of(runContext, AgentRunEventType.MEMORY_CONTEXT_BUILT,
+                Map.of(
+                        "strategy", "INDEX_ONLY",
+                        "bodyInjected", "false",
+                        "indexInjected", String.valueOf(!memoryIndexSection.isEmpty())
+                )));
 
         // 添加用户输入到历史
         String userMessageContent = userInput;
