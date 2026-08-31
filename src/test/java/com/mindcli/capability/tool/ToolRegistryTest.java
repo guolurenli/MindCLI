@@ -111,6 +111,8 @@ class ToolRegistryTest {
                 "browserStatusTool",
                 "loadSkillTool",
                 "saveMemoryTool",
+                "searchMemoryTool",
+                "readMemoryTool",
                 "revertTurnTool")) {
             int modifiers = ToolRegistry.class.getDeclaredMethod(method, Map.class).getModifiers();
 
@@ -153,6 +155,8 @@ class ToolRegistryTest {
         assertTrue(registry.hasTool("browser_status"));
         assertTrue(registry.hasTool("load_skill"));
         assertTrue(registry.hasTool("save_memory"));
+        assertTrue(registry.hasTool("search_memory"));
+        assertTrue(registry.hasTool("read_memory"));
         assertTrue(registry.hasTool("revert_turn"));
     }
 
@@ -517,6 +521,18 @@ class ToolRegistryTest {
                 "{\"fact\":\"API_KEY=sk-1234567890abcdefghijklmnopqrst\"}");
 
         assertEquals("保存长期记忆被策略拒绝: memory.sensitive - 检测到敏感信息，拒绝写入长期记忆", result);
+    }
+
+    @Test
+    void memoryReadToolsUseInjectedCallbacks() {
+        ToolRegistry registry = new ToolRegistry();
+        registry.setMemorySearcher((query, limit) -> "search:" + query + ":" + limit);
+        registry.setMemoryReader(id -> "read:" + id);
+
+        assertEquals("search:项目测试命令:3",
+                registry.executeTool("search_memory", "{\"query\":\"项目测试命令\",\"limit\":3}"));
+        assertEquals("read:fact-a1b2c3d4",
+                registry.executeTool("read_memory", "{\"id\":\"fact-a1b2c3d4\"}"));
     }
 
     @Test

@@ -36,50 +36,41 @@ class MemoryRetrieverTest {
         longTerm.store(new MemoryEntry("f1", "用户偏好使用Java开发", MemoryEntry.MemoryType.PROJECT_FACT, null, 10));
         longTerm.store(new MemoryEntry("f2", "项目路径: /home/user/project", MemoryEntry.MemoryType.PROJECT_FACT, null, 10));
 
-        // candidates (2) <= limit (5), bypass LLM routing
+        // 仅返回与查询匹配的条目
         var results = retriever.retrieveLongTerm("Java", 5, null);
-        assertEquals(2, results.size());
+        assertEquals(1, results.size());
     }
 
     @Test
-    void shouldReturnEmptyOnLlmFailure() {
-        // 存储超过 limit 的条目迫使走 LLM 路由
+    void shouldReturnMatchingEntriesWithoutLlmRouting() {
         for (int i = 1; i <= 10; i++) {
             longTerm.store(new MemoryEntry("f" + i, "记忆条目 " + i, MemoryEntry.MemoryType.PROJECT_FACT, null, 10));
         }
 
-        // StubGLMClient 没有预设响应，将抛出异常 → LLM 失败 → 返回空
-        var results = retriever.retrieveLongTerm("查询", 3, null);
-        assertTrue(results.isEmpty(), "LLM 失败应静默返回空列表");
+        var results = retriever.retrieveLongTerm("记忆条目", 3, null);
+        assertEquals(3, results.size());
     }
 
     @Test
-    void shouldReturnLlmSelectedEntries() throws Exception {
-        // 存储超过 limit 的条目
+    void shouldReturnDeterministicallyRankedEntries() {
+        Instant fixedTime = Instant.parse("2026-01-01T00:00:00Z");
+        for (int i = 1; i <= 10; i++) {
+            longTerm.store(new MemoryEntry("f" + i, "记忆条目内容 " + i,
+                    MemoryEntry.MemoryType.PROJECT_FACT, fixedTime, null, 10));
+        }
+
+        var results = retriever.retrieveLongTerm("条目内容", 3, null);
+        assertEquals(3, results.size());
+        assertEquals("f1", results.get(0).getId());
+    }
+
+    @Test
+    void shouldReturnEmptyWhenThereIsNoTextMatch() {
         for (int i = 1; i <= 10; i++) {
             longTerm.store(new MemoryEntry("f" + i, "记忆条目内容 " + i, MemoryEntry.MemoryType.PROJECT_FACT, null, 10));
         }
 
-        // 预设 LLM 响应：选中 f3, f7
-        llmClient.responses.add(new LlmClient.ChatResponse("assistant", "f3\nf7", null, 30, 10));
-        MemoryRetriever r = new MemoryRetriever(llmClient, longTerm);
-
-        var results = r.retrieveLongTerm("查询条目3和7", 3, null);
-        assertEquals(2, results.size());
-        assertTrue(results.stream().anyMatch(e -> e.getId().equals("f3")));
-        assertTrue(results.stream().anyMatch(e -> e.getId().equals("f7")));
-    }
-
-    @Test
-    void shouldReturnEmptyWhenLlmRespondsNone() throws Exception {
-        for (int i = 1; i <= 10; i++) {
-            longTerm.store(new MemoryEntry("f" + i, "记忆条目内容 " + i, MemoryEntry.MemoryType.PROJECT_FACT, null, 10));
-        }
-
-        llmClient.responses.add(new LlmClient.ChatResponse("assistant", "NONE", null, 30, 10));
-        MemoryRetriever r = new MemoryRetriever(llmClient, longTerm);
-
-        var results = r.retrieveLongTerm("查询", 3, null);
+        var results = retriever.retrieveLongTerm("完全不存在", 3, null);
         assertTrue(results.isEmpty());
     }
 
@@ -102,14 +93,13 @@ class MemoryRetrieverTest {
 
     @Test
     void shouldFilterByProjectScope() {
-        longTerm.store(new MemoryEntry("global", "默认用中文回答", MemoryEntry.MemoryType.PROJECT_FACT,
+        longTerm.store(new MemoryEntry("global", "项目默认用中文回答", MemoryEntry.MemoryType.PROJECT_FACT,
                 Map.of("scope", "global"), 10));
         longTerm.store(new MemoryEntry("current", "当前项目使用 Java 17", MemoryEntry.MemoryType.PROJECT_FACT,
                 Map.of("scope", "project", "project", "/repo/current"), 10));
         longTerm.store(new MemoryEntry("other", "其他项目使用 Python", MemoryEntry.MemoryType.PROJECT_FACT,
                 Map.of("scope", "project", "project", "/repo/other"), 10));
 
-        // candidates (3) <= limit (10), bypass LLM routing, returns project-filtered directly
         var results = retriever.retrieveLongTerm("项目", 10, "/repo/current");
         assertEquals(2, results.size());
         assertTrue(results.stream().anyMatch(e -> e.getId().equals("global")));
@@ -146,14 +136,14 @@ class MemoryRetrieverTest {
     }
 
     @Test
-    void shouldReturnEmptyWhenLlmClientIsNull() {
+    void shouldSearchWhenLlmClientIsNull() {
         MemoryRetriever noLlmRetriever = new MemoryRetriever(null, longTerm);
         for (int i = 1; i <= 10; i++) {
             longTerm.store(new MemoryEntry("f" + i, "记忆条目内容 " + i, MemoryEntry.MemoryType.PROJECT_FACT, null, 10));
         }
 
-        var results = noLlmRetriever.retrieveLongTerm("查询", 3, null);
-        assertTrue(results.isEmpty(), "无 LLM 客户端时无法路由，应返回空");
+        var results = noLlmRetriever.retrieveLongTerm("记忆条目", 3, null);
+        assertEquals(3, results.size());
     }
 
     // ===== Stub =====

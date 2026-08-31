@@ -7,5 +7,6 @@ public enum ResourceScope {
     BROWSER_SESSION,
     MCP_SERVER,
     NETWORK,
+    MEMORY,
     UNKNOWN
 }

@@ -20,8 +20,10 @@
 8. `web_search` - 搜索互联网获取实时信息，参数：`{"query": "搜索关键词", "top_k": 5}`
 9. `web_fetch` - 抓取已知 URL 并返回正文 Markdown，参数：`{"url": "https://...", "max_chars": 8000}`
 10. `save_memory` - 在用户明确要求“记一下/记住/以后记得”时保存长期记忆，默认 `scope=project`，跨项目偏好才用 `scope=global`
-11. `revert_turn` - 恢复到最近第 N 个 pre-turn 快照，属于高危写入操作
-12. `mcp__{server}__{tool}` - MCP server 动态提供的外部工具，具体参数以工具 schema 为准
+11. `search_memory` - 按关键词检索当前项目可见的长期记忆目录，返回候选 ID、标题和摘要；多个候选不代表它们彼此一致
+12. `read_memory` - 按 `search_memory` 返回的 ID 读取一条当前项目可见的长期记忆正文
+13. `revert_turn` - 恢复到最近第 N 个 pre-turn 快照，属于高危写入操作
+14. `mcp__{server}__{tool}` - MCP server 动态提供的外部工具，具体参数以工具 schema 为准
 
 ## Tool Policy
 
@@ -51,7 +53,11 @@
 - 用户明确说“记一下”“记住”“以后记得”或要求保存长期偏好/稳定事实时，必须调用 `save_memory`。
 - 只保存跨会话仍成立的精炼事实；默认保存为当前项目作用域，只有跨项目通用偏好才保存为 global。
 - 不保存一次性任务请求、临时文件名、模型猜测或当前轮执行计划。
-- 如果提供了相关记忆，请参考其中的信息辅助决策。
+- system prompt 中的“长期记忆索引”只是目录，不是事实正文；只有当前任务确实需要时，才调用 `search_memory`，再调用 `read_memory` 获取具体条目。
+- 不要猜测记忆 ID，不要直接使用 `read_file` 读取用户目录下的记忆文件；记忆读取必须使用 `read_memory`。
+- 读取到的长期记忆是辅助上下文；涉及当前项目代码、配置和命令时，以实时读取到的项目状态为准。
+- `search_memory` 返回的是定位候选，不是事实裁决。若出现多个相关记忆，先逐一 `read_memory` 比较完整正文；不要按更新时间自动选择，也不要自动覆盖或删除任何记忆。
+- 记忆内容影响当前任务时，必须用 `glob_files`、`grep_code`、`read_file` 检查当前代码和配置；当前任务相关且可验证的项目证据优先。证据仍不明确时向用户说明冲突并请求确认。
 
 ## Safety Policy
 

@@ -104,6 +104,8 @@ public class ToolRegistry {
     private BrowserGuard browserGuard;
     private BrowserConnector browserConnector;
     private BiFunction<String, String, MemoryWriteResult> memorySaver;
+    private BiFunction<String, Integer, String> memorySearcher;
+    private Function<String, String> memoryReader;
     private SkillRegistry skillRegistry;
     private java.util.function.BiConsumer<String, String[]> writeFileObserver = (p, ba) -> {};
     private LspManager lspManager = new LspManager(projectPath);
@@ -242,6 +244,16 @@ public class ToolRegistry {
             }
 
             @Override
+            public String searchMemoryTool(Map<String, String> args) {
+                return ToolRegistry.this.searchMemoryTool(args);
+            }
+
+            @Override
+            public String readMemoryTool(Map<String, String> args) {
+                return ToolRegistry.this.readMemoryTool(args);
+            }
+
+            @Override
             public String revertTurnTool(Map<String, String> args) {
                 return ToolRegistry.this.revertTurnTool(args);
             }
@@ -293,6 +305,8 @@ public class ToolRegistry {
         fork.setBrowserGuard(this.browserGuard);
         fork.setBrowserConnector(this.browserConnector);
         fork.setWriteFileObserver(this.writeFileObserver);
+        fork.setMemorySearcher(this.memorySearcher);
+        fork.setMemoryReader(this.memoryReader);
         return fork;
     }
 
@@ -344,6 +358,14 @@ public class ToolRegistry {
 
     public void setScopedMemoryWriter(BiFunction<String, String, MemoryWriteResult> memorySaver) {
         this.memorySaver = memorySaver;
+    }
+
+    public void setMemorySearcher(BiFunction<String, Integer, String> memorySearcher) {
+        this.memorySearcher = memorySearcher;
+    }
+
+    public void setMemoryReader(Function<String, String> memoryReader) {
+        this.memoryReader = memoryReader;
     }
 
     public void setSkillRegistry(SkillRegistry skillRegistry) {
@@ -722,6 +744,37 @@ public class ToolRegistry {
             return MemoryWriteResult.legacyWritten(normalized, scope).message();
         }
         return result.message();
+    }
+
+    String searchMemoryTool(Map<String, String> args) {
+        String query = args.get("query");
+        if (query == null || query.isBlank()) {
+            return "检索长期记忆失败: query 不能为空";
+        }
+        if (memorySearcher == null) {
+            return "检索长期记忆失败: 记忆检索器未初始化";
+        }
+        int limit = Math.min(20, Math.max(1, parseInt(args.get("limit"), 5)));
+        try {
+            return memorySearcher.apply(query.trim(), limit);
+        } catch (RuntimeException e) {
+            return "检索长期记忆失败: " + e.getMessage();
+        }
+    }
+
+    String readMemoryTool(Map<String, String> args) {
+        String id = args.get("id");
+        if (id == null || id.isBlank()) {
+            return "读取长期记忆失败: id 不能为空";
+        }
+        if (memoryReader == null) {
+            return "读取长期记忆失败: 记忆读取器未初始化";
+        }
+        try {
+            return memoryReader.apply(id.trim());
+        } catch (RuntimeException e) {
+            return "读取长期记忆失败: " + e.getMessage();
+        }
     }
 
     String revertTurnTool(Map<String, String> args) {

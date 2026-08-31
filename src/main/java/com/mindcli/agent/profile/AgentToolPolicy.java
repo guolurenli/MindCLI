@@ -16,7 +16,7 @@ import java.util.regex.Pattern;
 public final class AgentToolPolicy {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final List<String> READ_GROUP = List.of(
-            "read_file", "list_dir", "glob_files", "grep_code");
+            "read_file", "list_dir", "glob_files", "grep_code", "search_memory", "read_memory");
     private static final List<String> WRITE_GROUP = List.of("write_file", "create_project");
     private static final List<String> WEB_GROUP = List.of("web_search", "web_fetch");
 

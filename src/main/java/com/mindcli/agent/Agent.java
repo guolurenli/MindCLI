@@ -97,6 +97,8 @@ public class Agent {
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
         this.memoryManager.setProjectPath(this.toolRegistry.getProjectPath());
         this.toolRegistry.setScopedMemoryWriter(memoryManager::storeFact);
+        this.toolRegistry.setMemorySearcher(memoryManager::searchMemory);
+        this.toolRegistry.setMemoryReader(memoryManager::readMemory);
         conversationHistory.add(LlmClient.Message.system(buildSystemPrompt("")));
     }
 
@@ -171,16 +173,9 @@ public class Agent {
         log.info("ReAct run started: inputLength={}", userInput == null ? 0 : userInput.length());
         pruneHistoricalImagePayloads();
 
-        // 重置本轮已注入记忆的去重集合
-        memoryManager.resetSurfaced();
-
-        // 检索相关长期记忆，注入到 system prompt（支持工具感知过滤）
+        // 仅注入会话级记忆目录；记忆正文由模型按需通过 search_memory/read_memory 获取。
         ContextProfile contextProfile = memoryManager.getContextProfile();
-        java.util.Set<String> activeToolNames = toolRegistry.getToolDefinitions().stream()
-                .map(LlmClient.Tool::name)
-                .collect(java.util.stream.Collectors.toSet());
-        String memoryContext = memoryManager.buildContextForQuery(
-                userInput, contextProfile.memoryContextTokens(), activeToolNames, runContext, effectiveRunStore);
+        String memoryContext = "";
 
         String sessionContextText = sessionContext == null
                 ? ""
@@ -576,26 +571,14 @@ public class Agent {
     }
 
     /**
-     * 读取 MEMORY.md 索引文件，注入到 system prompt。
+     * 构建受当前项目作用域约束的 MEMORY.md 目录，注入到 system prompt。
      * 对齐 Claude Code：会话启动时预加载记忆索引（≤200 行 / 25KB），
      * 让 LLM 在全局层面知道有哪些已知信息域。
      */
     private String buildMemoryIndexSection() {
         try {
-            java.io.File storageDir = memoryManager.getLongTermMemory().getStorageDir();
-            java.io.File indexFile = new java.io.File(storageDir, "MEMORY.md");
-            if (!indexFile.exists() || indexFile.length() == 0) return "";
-
-            String content = java.nio.file.Files.readString(indexFile.toPath());
-            String[] lines = content.split("\n");
-            if (lines.length > 200) {
-                content = String.join("\n", java.util.Arrays.copyOf(lines, 200))
-                        + "\n\n<!-- 索引已截断，更多记忆通过查询检索 -->";
-            }
-            if (content.length() > 25000) {
-                content = content.substring(0, 25000) + "\n<!-- 索引已截断 -->";
-            }
-            return "\n## 长期记忆索引\n" + content + "\n";
+            String content = memoryManager.buildMemoryIndex(200, 25_000);
+            return content.isBlank() ? "" : "\n## 长期记忆索引\n" + content + "\n";
         } catch (Exception e) {
             log.warn("读取 MEMORY.md 索引失败: {}", e.getMessage());
             return "";

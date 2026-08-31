@@ -1,5 +1,6 @@
 package com.mindcli.capability.memory;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.platform.llm.context.ContextProfile;
 import com.mindcli.runtime.run.AgentRunContext;
@@ -14,6 +15,7 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -32,6 +34,7 @@ public class MemoryManager {
     private static final Logger log = LoggerFactory.getLogger(MemoryManager.class);
     private static final String AUTO_EXTRACT_PROPERTY = "mindcli.memory.autoExtract.enabled";
     private static final String AUTO_EXTRACT_ENV = "MINDCLI_MEMORY_AUTO_EXTRACT";
+    private static final ObjectMapper TOOL_MAPPER = new ObjectMapper();
     private final LongTermMemory longTermMemory;
     private final MemoryExtractor extractor;
     private final MemoryRetriever retriever;
@@ -219,6 +222,85 @@ public class MemoryManager {
         return longTermMemory.search(query, limit, currentProject);
     }
 
+    /** 构建当前项目可见的短记忆目录，供 system prompt 注入。 */
+    public String buildMemoryIndex(int maxLines, int maxChars) {
+        return longTermMemory.buildIndex(currentProject, maxLines, maxChars);
+    }
+
+    /** 为 search_memory 工具返回不含正文的结构化摘要。 */
+    public String searchMemory(String query, int limit) {
+        return searchMemory(query, limit, null, null);
+    }
+
+    public String searchMemory(String query, int limit, AgentRunContext runContext, RunStore runStore) {
+        List<MemoryEntry> results = longTermMemory.search(query, limit, currentProject);
+        List<Map<String, String>> summaries = results.stream().map(entry -> {
+            Map<String, String> summary = new LinkedHashMap<>();
+            summary.put("id", entry.getId());
+            summary.put("name", entry.getName());
+            summary.put("type", entry.getType().name());
+            summary.put("scope", LongTermMemory.scopeOf(entry));
+            summary.put("snippet", snippet(entry.getContent()));
+            summary.put("updatedAt", entry.getTimestamp().toString());
+            return summary;
+        }).toList();
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("candidates", summaries);
+        response.put("candidateCount", results.size());
+        response.put("multipleCandidates", results.size() > 1);
+        response.put("guidance", results.size() > 1
+                ? "这些是可能相关的记忆候选，不代表已验证事实；请先用 read_memory 比较内容。若内容影响当前代码，再用 glob_files、grep_code、read_file 检查当前代码和配置，以当前任务相关的最新证据为准。"
+                : "搜索结果只是定位信息，不代表已验证事实；需要使用时请用 read_memory 读取记忆内容，涉及当前代码时以实时代码和配置为准。");
+        Map<String, String> audit = Map.of(
+                "queryLength", String.valueOf(query == null ? 0 : query.length()),
+                "limit", String.valueOf(limit),
+                "resultCount", String.valueOf(results.size()),
+                "project", currentProject
+        );
+        recordMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_SEARCHED, audit);
+        try {
+            return TOOL_MAPPER.writeValueAsString(response);
+        } catch (IOException e) {
+            return "检索长期记忆失败: 无法序列化检索结果";
+        }
+    }
+
+    /** 按 ID 读取当前项目可见的单条记忆正文。 */
+    public String readMemory(String id) {
+        return readMemory(id, null, null);
+    }
+
+    public String readMemory(String id, AgentRunContext runContext, RunStore runStore) {
+        String normalizedId = id == null ? "" : id.trim();
+        MemoryEntry entry = longTermMemory.retrieve(normalizedId)
+                .filter(candidate -> LongTermMemory.isVisible(candidate, currentProject))
+                .orElse(null);
+        Map<String, String> audit = Map.of(
+                "memoryId", normalizedId,
+                "found", String.valueOf(entry != null),
+                "project", currentProject
+        );
+        recordMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_READ, audit);
+        if (entry == null) {
+            return "读取长期记忆失败: 未找到或当前项目不可见的记忆 " + normalizedId;
+        }
+        return "## 长期记忆 " + entry.getId() + "\n"
+                + "name: " + entry.getName() + "\n"
+                + "type: " + entry.getType() + "\n"
+                + "scope: " + LongTermMemory.scopeOf(entry) + "\n"
+                + "updatedAt: " + entry.getTimestamp() + "\n\n"
+                + entry.getContent();
+    }
+
+    private static String snippet(String content) {
+        String normalized = content == null ? "" : content.replace('\n', ' ').trim();
+        // 搜索阶段只用于定位候选；短正文不重复回显，避免摘要被误认为已读取事实。
+        if (normalized.isEmpty()) return "";
+        return normalized.length() <= 80
+                ? "短记忆，请使用 read_memory 读取"
+                : normalized.substring(0, 80) + "...";
+    }
+
     public boolean deleteLongTerm(String id) {
         return deleteLongTerm(id, null, null);
     }
@@ -235,8 +317,12 @@ public class MemoryManager {
     }
 
     /**
-     * 构建用于 LLM 的记忆上下文
+     * 构建用于 LLM 的记忆上下文。
+     *
+     * @deprecated 生产 Agent 使用 MEMORY.md 目录 + search_memory/read_memory
+     * 分层读取；此方法仅为旧调用方保留，避免破坏 API。
      */
+    @Deprecated
     public String buildContextForQuery(String query, int maxTokens) {
         return buildContextForQuery(query, maxTokens, Set.of(), null, null);
     }
@@ -564,13 +650,19 @@ public class MemoryManager {
 
     private static String normalizeProjectKey(String path) {
         try {
-            Path candidate = Path.of(path).toAbsolutePath().normalize();
+            Path input = Path.of(path.trim());
+            Path candidate = input.toAbsolutePath().normalize();
             if (java.nio.file.Files.exists(candidate)) {
                 return candidate.toRealPath().toString();
             }
-            return candidate.toString();
+            // 不存在的路径可能是测试或外部传入的逻辑项目键，不要在 Windows
+            // 上擅自拼接当前盘符，确保同一逻辑键可以稳定匹配记忆作用域。
+            String raw = path.trim().replace('\\', '/');
+            // Unix 风格的 /repo/key 在 Windows 上也可能只是逻辑项目键；
+            // 只有带盘符的路径才按本机绝对路径处理。
+            return raw.startsWith("/") && !raw.matches("^[A-Za-z]:/.*") ? raw : candidate.toString();
         } catch (Exception e) {
-            return Path.of(path).toAbsolutePath().normalize().toString();
+            return path.trim().replace('\\', '/');
         }
     }
 }

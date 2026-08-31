@@ -43,6 +43,10 @@ public interface ToolRegistrationContext {
 
         String saveMemoryTool(Map<String, String> args);
 
+        String searchMemoryTool(Map<String, String> args);
+
+        String readMemoryTool(Map<String, String> args);
+
         String revertTurnTool(Map<String, String> args);
     }
 }

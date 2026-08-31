@@ -37,6 +37,8 @@ public final class ToolResourceClassifier {
             case "list_dir" -> directoryAccess(effectiveContext, args.get("path"), ResourceAccess.SHARED);
             case "glob_files", "grep_code" ->
                     List.of(workspace(effectiveContext, ResourceAccess.SHARED));
+            case "search_memory", "read_memory" ->
+                    List.of(new ResourceKey(ResourceScope.MEMORY, "long-term", ResourceAccess.SHARED));
             case "web_search", "web_fetch" ->
                     List.of(new ResourceKey(ResourceScope.NETWORK, "web", ResourceAccess.SHARED));
             case "create_project" -> createProjectAccess(effectiveContext, args);

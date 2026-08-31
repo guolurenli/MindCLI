@@ -17,5 +17,24 @@ public class MemoryToolRegistrar implements ToolRegistrar {
                 ),
                 executors::saveMemoryTool
         ));
+
+        context.register(new ToolRegistry.Tool(
+                "search_memory",
+                "按关键词检索长期记忆目录（只读、确定性、按当前项目作用域过滤）；返回 ID、标题、摘要，不直接返回正文",
+                context.parameters(
+                        new ToolRegistrationContext.Parameter("query", "string", "要检索的关键词或短语", true),
+                        new ToolRegistrationContext.Parameter("limit", "integer", "最多返回条数，默认 5，最大 20", false)
+                ),
+                executors::searchMemoryTool
+        ));
+
+        context.register(new ToolRegistry.Tool(
+                "read_memory",
+                "按长期记忆 ID 读取一条记忆正文（只读、自动校验当前项目作用域和治理状态）",
+                context.parameters(
+                        new ToolRegistrationContext.Parameter("id", "string", "search_memory 返回的记忆 ID", true)
+                ),
+                executors::readMemoryTool
+        ));
     }
 }

@@ -123,6 +123,8 @@ public class AgentOrchestrator {
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
         memoryManager.setProjectPath(this.toolRegistry.getProjectPath());
         this.toolRegistry.setScopedMemoryWriter(memoryManager::storeFact);
+        this.toolRegistry.setMemorySearcher(memoryManager::searchMemory);
+        this.toolRegistry.setMemoryReader(memoryManager::readMemory);
         this.memoryManager = memoryManager;
         this.agentProfiles = AgentProfileLoader.load(Path.of(this.toolRegistry.getProjectPath()));
         this.agentPool = new AgentPool(this.agentProfiles);

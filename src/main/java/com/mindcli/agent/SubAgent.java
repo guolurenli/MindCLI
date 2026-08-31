@@ -105,7 +105,7 @@ public class SubAgent {
     private String getSystemPrompt() {
         PromptContext context = PromptContext.builder()
                 .projectMemoryContext(buildProjectMemoryContext())
-                .memoryContext(buildSessionContext())
+                .memoryContext(buildSessionContext() + buildMemoryIndexContext())
                 .externalContext(buildProfileAndExternalContext())
                 .skillIndex(buildSkillIndex())
                 .toolsEnabled(llmClient == null || llmClient.supportsTools())
@@ -120,6 +120,12 @@ public class SubAgent {
         SessionContext current = sessionContext;
         int maxTokens = memoryManager == null ? 2_000 : memoryManager.getContextProfile().memoryContextTokens();
         return current == null ? "" : current.promptContext(maxTokens);
+    }
+
+    private String buildMemoryIndexContext() {
+        if (memoryManager == null) return "";
+        String index = memoryManager.buildMemoryIndex(200, 25_000);
+        return index.isBlank() ? "" : "\n## 长期记忆索引\n" + index;
     }
 
     private PromptMode promptMode() {
@@ -261,19 +267,6 @@ public class SubAgent {
         pruneHistoricalImagePayloads();
         refreshSystemPrompt();
         String taskContent = task.content();
-
-        // 检索长期记忆并注入任务上下文（对齐 Agent.java 的记忆检索）
-        if (memoryManager != null) {
-            memoryManager.resetSurfaced();
-            String memoryContext = memoryManager.buildContextForQuery(
-                    taskContent,
-                    memoryManager.getContextProfile().memoryContextTokens(),
-                    activeRunContext.get(),
-                    activeRunStore.get());
-            if (!memoryContext.isEmpty()) {
-                taskContent = "## 相关长期记忆\n\n" + memoryContext + "\n\n## 当前任务\n\n" + taskContent;
-            }
-        }
 
         // 将任务注入对话
         conversationHistory.add(ImageReferenceParser.userMessage(

@@ -118,6 +118,8 @@ src/main/java/com/mindcli/
 | `web_search` / `web_fetch` | 联网搜索与 URL 正文抓取 |
 | `browser_connect` / `browser_disconnect` / `browser_status` | 管理 Chrome DevTools MCP 登录态复用 |
 | `save_memory` | 用户明确要求记住时写入长期记忆 |
+| `search_memory` | 按关键词搜索当前项目可见的长期记忆候选，返回 ID、标题、短提示和读取指引；不自动裁决冲突 |
+| `read_memory` | 按记忆 ID 读取当前项目可见的单条长期记忆正文 |
 | `load_skill` | 加载匹配任务的 `SKILL.md` 全文 |
 | `revert_turn` | 恢复到 Side-Git 最近第 N 个 pre-turn 快照 |
 | `mcp__{server}__{tool}` | MCP server 动态注册工具 |
@@ -165,7 +167,7 @@ src/main/java/com/mindcli/
 | `/memory delete <id>` / `/memory clear` | 删除单条或清空长期记忆 |
 | `/memory export --audit` | 导出记忆审计证据到 `~/.mindcli/exports/` |
 
-长期记忆默认只通过 `/save` 或用户明确要求保存。即使开启自动提取，系统也只会生成 `MemoryProposal`，必须经过 `/memory approve <id>` 才会写入长期记忆；删除采用 tombstone 语义，审计源是长期记忆目录下的 `audit.jsonl`。
+长期记忆默认只通过 `/save` 或用户明确要求保存。每个 session 只注入受 scope/status/expiry 过滤的 `MEMORY.md` 目录，正文不会在 run 启动时自动注入；模型需要时调用 `search_memory` 获取候选，再用 `read_memory` 按 ID 读取正文。多个候选仅表示可能相关，不按更新时间自动裁决，也不自动覆盖或删除；涉及当前项目代码、配置和命令时，必须实时检查项目状态，以当前任务相关且可验证的证据为准，无法确认时请求用户确认。即使开启自动提取，系统也只会生成 `MemoryProposal`，必须经过 `/memory approve <id>` 才会写入长期记忆；删除采用 tombstone 语义，审计源是长期记忆目录下的 `audit.jsonl`。
 
 ### MCP、浏览器与 Skill
 

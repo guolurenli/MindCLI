@@ -183,6 +183,8 @@ public class PlanExecuteAgent {
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
         this.memoryManager.setProjectPath(this.toolRegistry.getProjectPath());
         this.toolRegistry.setScopedMemoryWriter(this.memoryManager::storeFact);
+        this.toolRegistry.setMemorySearcher(this.memoryManager::searchMemory);
+        this.toolRegistry.setMemoryReader(this.memoryManager::readMemory);
         this.planner.setProjectMemorySupplier(this::buildProjectMemoryContext);
     }
 
@@ -194,6 +196,11 @@ public class PlanExecuteAgent {
     private String buildSessionContext() {
         SessionContext current = sessionContext;
         return current == null ? "" : current.promptContext(memoryManager.getContextProfile().memoryContextTokens());
+    }
+
+    private String buildMemoryIndexContext() {
+        String index = memoryManager.buildMemoryIndex(200, 25_000);
+        return index.isBlank() ? "" : "\n## 长期记忆索引\n" + index;
     }
 
     private static PrintStream deferredSystemOut() {
@@ -624,7 +631,7 @@ public class PlanExecuteAgent {
                                       StreamState streamState, PrintStream out) throws IOException {
         String prompt = promptAssembler.assemble(PromptMode.PLAN, PromptContext.builder()
                 .projectMemoryContext(buildProjectMemoryContext())
-                .memoryContext(buildSessionContext())
+                .memoryContext(buildSessionContext() + buildMemoryIndexContext())
                 .variable("taskType", task.getType())
                 .variable("taskDescription", task.getDescription())
                 .externalContext(buildExternalContext())
@@ -632,16 +639,7 @@ public class PlanExecuteAgent {
                 .toolsEnabled(llmClient == null || llmClient.supportsTools())
                 .build());
 
-        // 注入长期记忆上下文
-        String memoryContext = memoryManager.buildContextForQuery(
-                task.getDescription(),
-                memoryManager.getContextProfile().memoryContextTokens(),
-                activeRunContext,
-                activeRunStore);
         String taskInput = buildTaskContext(goal, plan, task);
-        if (!memoryContext.isEmpty()) {
-            taskInput = taskInput + "\n\n" + memoryContext;
-        }
 
         List<LlmClient.Message> messages = new ArrayList<>(Arrays.asList(
                 LlmClient.Message.system(prompt),

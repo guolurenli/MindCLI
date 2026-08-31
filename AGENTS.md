@@ -58,11 +58,11 @@ ReAct 的 LLM/tool 循环已委托给 `runtime/run/AgentLoopExecutor.java`；`Ag
 
 Agent Runtime 账本默认通过 `RunStoreFactory` 写到 `~/.mindcli/runs`（可用 `mindcli.runs.dir` / `MINDCLI_RUNS_DIR` 改写），`InMemoryRunStore` 仅保留给测试和降级。JSONL ledger 是 source of truth：每个事件包含 run 内递增 `seq` 和唯一 `eventId`，`run.meta.json` / `run.state.json` 由事件投影生成；读取会忽略尾部坏行，继续 append 前会先截断坏尾，`runId` 只能使用安全路径字符。AgentRuntime 可写 `SNAPSHOT_CREATED`，把 `PRE_RUN` / `POST_RUN` Side-Git checkpoint 与 runId 关联；CLI Agent 主路径不再额外套 `SnapshotService.runTurn(...)`，避免同一 run 产生旧 turn snapshot 与 runtime snapshot 两套快照；`/run inspect <runId>` 通过 `RunRecoveryService` 展示状态、checkpoint 和恢复提示。Multi-Agent 的规划阶段由 parent run 直接记录 `LLM_RESPONSE phase=plan`；explorer / worker 的执行与自审会写入 child run，目录布局为 `parentRun/children/childRun/`，事件 attributes 带 `parentRunId`、`rootRunId`、`role`、`stepId`、`attempt`、`phase=execute|review`；parent `run.state.json` 会 materialize child run 摘要。自审调用失败、输出不可解析、重试后仍拒绝时必须 fail closed，不能把执行候选结果标记为完成；review phase 摘要要保留 `approved` / `businessStatus`，供恢复和审计判断。
 
-核心内置工具 10 个：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `create_project` / `web_search` / `web_fetch` / `revert_turn`
+核心内置工具 13 个：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `create_project` / `web_search` / `web_fetch` / `save_memory` / `search_memory` / `read_memory` / `revert_turn`
 
 `ToolRegistry` 是工具对外 facade；内置工具的名称、描述、参数 schema 由 `capability/tool/builtin/*ToolRegistrar.java` 维护，通过 `capability/tool/registry/ToolRegistrar` / `ToolRegistrationContext` 注册。MCP 动态工具状态由 `capability/tool/namespace/McpToolNamespace.java` 管理，`ToolRegistry` 继续保留原有 `registerMcpTool*` / `replaceMcpTool*` 兼容入口。
 
-代码库理解默认走 Claude Code 式实时探索：`glob_files` 找候选文件、`grep_code` 精确定位符号或字符串、`read_file` 按需读取具体行段。`grep_code` 优先使用本机 `ripgrep`，不可用时回退到 Java 扫描；结果受 `max_results` / `head_limit` / `max_chars` 预算约束，返回 `partial: true` 或 `suggested_reads` 时应继续缩小搜索范围或按建议读取行段。
+代码库理解默认走 Claude Code 式实时探索：`glob_files` 找候选文件、`grep_code` 精确定位符号或字符串、`read_file` 按需读取具体行段。长期记忆只在 session 注入受当前项目 scope/status/expiry 过滤的 `MEMORY.md` 短目录，正文通过 `search_memory` 查询后再用 `read_memory(id)` 按需读取；不得让模型直接读取用户目录下的记忆文件。`grep_code` 优先使用本机 `ripgrep`，不可用时回退到 Java 扫描；结果受 `max_results` / `head_limit` / `max_chars` 预算约束，返回 `partial: true` 或 `suggested_reads` 时应继续缩小搜索范围或按建议读取行段。
 
 MCP 动态工具：`mcp__{server}__{tool}`（+ resources 虚拟工具）。协议与 stdio/Streamable HTTP 传输由官方 MCP Java SDK 2.0.1 提供，MindCLI 只保留生命周期、命名空间、策略、审计和资源缓存 facade。
 
@@ -122,6 +122,7 @@ src/main/java/com/mindcli/
 - 长期记忆只保存跨会话稳定事实，不保存临时指令；默认项目级作用域，跨项目通用偏好才用 global
 - 长期记忆注入 prompt 前必须过滤 `status=revoked/deleted/expired` 或 `expiresAt` 已过期的条目；缺失这些治理 metadata 的旧记忆按原兼容规则可见。
 - 长期记忆必须可审计和可删除：`/memory policy` / `/memory list` / `/memory search <关键词>` / `/memory delete <id>` / `/memory clear` / `/memory export --audit`
+- `search_memory` / `read_memory` 是 run 级只读工具，只接受查询和记忆 ID，不暴露绝对路径；搜索结果是确定性排序的候选和读取指引，不代表事实裁决，正文不会在 run 启动时自动注入。多个候选必须逐一读取比较；涉及当前代码、配置和命令时，实时项目证据优先，不能按更新时间自动覆盖或删除记忆。
 - 记忆审计本地 source of truth 是长期记忆目录下的 `audit.jsonl`；有 `AgentRunContext` 的路径还会同步写 RunStore。导出文件写到 `~/.mindcli/exports/memory-audit-*.md`。
 - 删除长期记忆使用 tombstone 语义：活动集合移除，原 `.md` 文件保留 `status: deleted` / `deletedAt`，重启加载时不得重新变成活动记忆。
 - 两道压缩不要混淆：shortTermMemory 压缩 vs conversationHistory 压缩（后者是防 window 超限的关键）

@@ -146,4 +146,29 @@ class LongTermMemoryTest {
         assertEquals("global", LongTermMemory.scopeOf(legacy));
         assertTrue(LongTermMemory.isVisibleInProject(legacy, "/repo/current"));
     }
+
+    @Test
+    void indexIsScopedGovernedAndStable() {
+        Instant older = Instant.parse("2026-08-20T10:00:00Z");
+        Instant newer = Instant.parse("2026-08-29T10:00:00Z");
+        memory.store(new MemoryEntry("global", "全局偏好", MemoryEntry.MemoryType.USER_PREFERENCE,
+                older, Map.of("scope", "global"), 5));
+        memory.store(new MemoryEntry("project-old", "项目旧事实", "旧事实详细正文", MemoryEntry.MemoryType.PROJECT_FACT,
+                older, Map.of("scope", "project", "project", "/repo/a"), 5));
+        memory.store(new MemoryEntry("project-new", "项目新事实", "新事实详细正文", MemoryEntry.MemoryType.PROJECT_FACT,
+                newer, Map.of("scope", "project", "project", "/repo/a"), 5));
+        memory.store(new MemoryEntry("project-b", "其他项目事实", MemoryEntry.MemoryType.PROJECT_FACT,
+                newer, Map.of("scope", "project", "project", "/repo/b"), 5));
+        memory.store(new MemoryEntry("revoked", "撤销事实", MemoryEntry.MemoryType.PROJECT_FACT,
+                newer, Map.of("scope", "project", "project", "/repo/a", "status", "revoked"), 5));
+
+        String index = memory.buildIndex("/repo/a", 200, 25_000);
+
+        assertTrue(index.indexOf("project-new") < index.indexOf("project-old"), index);
+        assertTrue(index.contains("global"), index);
+        assertTrue(index.contains("project-new"), index);
+        assertFalse(index.contains("project-b"), index);
+        assertFalse(index.contains("revoked"), index);
+        assertFalse(index.contains("新事实详细正文"), "索引不应写入正文或长内容");
+    }
 }
