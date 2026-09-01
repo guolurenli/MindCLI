@@ -97,7 +97,7 @@ src/main/java/com/mindcli/
 | 工具调度 | `ToolDispatcher` 统一进入 Hook、资源分类、资源锁与结构化 `ToolOutcome`；锁跟随实际工具线程生命周期，审批策略显式传播到工具线程，需要 HITL 的调用串行提示 |
 | 代码理解 | `glob_files` / `grep_code` / `read_file` 实时探索，按需逐步缩小范围 |
 | 记忆治理 | `/save` 手动长期记忆；自动提取只生成候选；`/memory approve/reject/export --audit` 管理审计链路 |
-| MCP | 基于官方 Model Context Protocol Java SDK 2.0.1，合并用户级 `~/.mindcli/mcp.json` 和项目级 `.mindcli/mcp.json`，支持 stdio 与 Streamable HTTP |
+| MCP | 仅使用官方 Model Context Protocol Java SDK 2.0.1，合并用户级 `~/.mindcli/mcp.json` 和项目级 `.mindcli/mcp.json`，支持 stdio 与 Streamable HTTP |
 | 浏览器 | 默认 `chrome-devtools` MCP isolated 模式，`/browser connect` 可复用本机 Chrome 登录态 |
 | Web | `web_search` 支持 zhipu / serpapi / searxng，`web_fetch` 通过 HTTP + Jsoup 提取 Markdown |
 | 安全 | HITL、PathGuard、CommandGuard、BrowserGuard、危险工具 JSONL 审计 |
@@ -188,6 +188,8 @@ src/main/java/com/mindcli/
 | `/skill on <name>` / `/skill off <name>` / `/skill reload` | 切换启用状态或重新扫描 |
 
 MCP 配置读取顺序为用户级 `~/.mindcli/mcp.json` 后叠加项目级 `.mindcli/mcp.json`，项目同名 server 覆盖用户配置。`${PROJECT_DIR}`、`${HOME}` 与 `${VAR}` 会在单个 server 启动前展开；某个 server 配置错误不会阻塞其他 server。检测到 `STEP_API_KEY` 且未显式配置同名 server 时，会自动加入 `step_search` 远程 MCP。
+
+MCP 初始化、JSON-RPC 编解码和 stdio/Streamable HTTP wire transport 全部由官方 Java SDK 负责，没有自研协议或 transport fallback。MindCLI 只保留配置加载、生命周期、工具命名空间、HITL/审计、内容适配和资源缓存。
 
 示例：
 

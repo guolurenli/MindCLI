@@ -27,7 +27,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * 通过 MockWebServer 模拟 Streamable HTTP MCP server 来端到端验证 McpServerManager 的启停流程。
- * 不测真实 stdio 子进程（已在 StdioTransportTest 单独覆盖）。
+ * 不测真实 stdio 子进程；协议和 transport 行为由官方 MCP SDK 负责。
  */
 class McpServerManagerTest {
 

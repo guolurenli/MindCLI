@@ -236,8 +236,6 @@
                             <excludes>
                                 <!-- 慢测试保留给全量 mvn test；日常 quick 回归跳过外部进程 / 网络超时 / 命令超时路径。 -->
                                 <exclude>**/mcp/McpServerManagerTest.java</exclude>
-                                <exclude>**/mcp/transport/StdioTransportTest.java</exclude>
-                                <exclude>**/mcp/transport/StreamableHttpTransportTest.java</exclude>
                                 <exclude>**/tool/ToolRegistryTest.java</exclude>
                                 <exclude>**/web/WebFetcherTest.java</exclude>
                             </excludes>

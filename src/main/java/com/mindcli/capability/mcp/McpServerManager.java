@@ -2,7 +2,6 @@ package com.mindcli.capability.mcp;
 
 import com.mindcli.capability.mcp.config.McpConfigLoader;
 import com.mindcli.capability.mcp.config.McpServerConfig;
-import com.mindcli.capability.mcp.notifications.NotificationRouter;
 import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
 import com.mindcli.capability.mcp.resources.McpResourceCache;
 import com.mindcli.capability.mcp.resources.McpResourceContent;
@@ -466,27 +465,6 @@ public class McpServerManager implements AutoCloseable {
     private boolean isResourceVirtualTool(McpToolDescriptor descriptor) {
         return McpResourceTool.LIST_RESOURCES.equals(descriptor.name())
                 || McpResourceTool.READ_RESOURCE.equals(descriptor.name());
-    }
-
-    private void registerNotificationHandlers(McpServer server, McpClient client) {
-        NotificationRouter router = new NotificationRouter();
-        router.on("notifications/tools/list_changed", ignored -> {
-            try {
-                List<McpToolDescriptor> tools = buildToolList(server, client);
-                replaceTools(server, client, tools);
-                server.tools(tools);
-            } catch (Exception e) {
-                server.errorMessage("tools/list_changed 处理失败: " + e.getMessage());
-            }
-        });
-        router.on("notifications/resources/list_changed", ignored -> resourceCache.invalidateServer(server.name()));
-        router.on("notifications/resources/updated", params -> {
-            String uri = params.path("uri").asText("");
-            if (!uri.isBlank()) {
-                resourceCache.invalidateResource(server.name(), uri);
-            }
-        });
-        client.onNotification(router);
     }
 
     private List<McpResourceDescriptor> refreshResources(McpServer server) throws IOException {
