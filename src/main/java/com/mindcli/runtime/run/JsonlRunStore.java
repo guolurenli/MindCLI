@@ -28,14 +28,17 @@ public final class JsonlRunStore implements RunStore {
     @Override
     public synchronized void append(AgentRunEvent event) {
         Objects.requireNonNull(event, "event");
-        AgentRunEvent persistedEvent = event.seq() > 0 ? event : event.withSeq(nextSeq(event.runId()));
-        Path ledgerFile = ledgerFile(persistedEvent);
+        Path ledgerFile = ledgerFile(event);
         try {
             Files.createDirectories(ledgerFile.getParent());
-            truncateCorruptedTail(ledgerFile);
+            LoadedLedger loaded = loadLedger(ledgerFile);
+            AgentRunEvent persistedEvent = event.seq() > 0 ? event : event.withSeq(loaded.nextSeq());
+            repairCorruptedTail(ledgerFile, loaded);
             Files.writeString(ledgerFile, MAPPER.writeValueAsString(toRecord(persistedEvent)) + System.lineSeparator(),
                     StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
-            refreshDerivedFiles(persistedEvent);
+            List<AgentRunEvent> updatedEvents = new ArrayList<>(loaded.events());
+            updatedEvents.add(persistedEvent);
+            refreshDerivedFiles(persistedEvent.runId(), ledgerFile.getParent(), updatedEvents);
             String parentRunId = persistedEvent.attributes().get("parentRunId");
             if (parentRunId != null && !parentRunId.isBlank()) {
                 refreshDerivedFiles(parentRunId);
@@ -55,7 +58,7 @@ public final class JsonlRunStore implements RunStore {
             return List.of();
         }
         try {
-            return readEvents(ledgerFile);
+            return loadLedger(ledgerFile).events();
         } catch (IOException e) {
             throw new IllegalStateException("Failed to read run events: " + e.getMessage(), e);
         }
@@ -133,23 +136,12 @@ public final class JsonlRunStore implements RunStore {
                 attributes);
     }
 
-    private long nextSeq(String runId) {
-        return events(runId).stream()
-                .mapToLong(AgentRunEvent::seq)
-                .max()
-                .orElse(0L) + 1L;
-    }
-
     private void refreshDerivedFiles(String runId) throws IOException {
-        refreshDerivedFiles(runId, runDir(runId));
+        Path runDir = runDir(runId);
+        refreshDerivedFiles(runId, runDir, loadLedger(runDir.resolve("run.jsonl")).events());
     }
 
-    private void refreshDerivedFiles(AgentRunEvent event) throws IOException {
-        refreshDerivedFiles(event.runId(), runDir(event));
-    }
-
-    private void refreshDerivedFiles(String runId, Path runDir) throws IOException {
-        List<AgentRunEvent> events = events(runId);
+    private void refreshDerivedFiles(String runId, Path runDir, List<AgentRunEvent> events) throws IOException {
         RunStateProjection projection = projector.project(events);
         Files.createDirectories(runDir);
         Files.createDirectories(runDir.resolve("artifacts"));
@@ -204,8 +196,12 @@ public final class JsonlRunStore implements RunStore {
         }
     }
 
-    private List<AgentRunEvent> readEvents(Path ledgerFile) throws IOException {
+    static LoadedLedger loadLedger(Path ledgerFile) throws IOException {
+        if (!Files.exists(ledgerFile)) {
+            return LoadedLedger.empty();
+        }
         List<AgentRunEvent> events = new ArrayList<>();
+        boolean corruptedTail = false;
         for (String line : Files.readAllLines(ledgerFile, StandardCharsets.UTF_8)) {
             String trimmed = line == null ? "" : line.trim();
             if (trimmed.isEmpty()) {
@@ -216,26 +212,19 @@ public final class JsonlRunStore implements RunStore {
                 AgentRunEvent event = fromRecord(node);
                 events.add(event.seq() > 0 ? event : event.withSeq(events.size() + 1L));
             } catch (Exception ignored) {
+                corruptedTail = true;
                 break;
             }
         }
-        return List.copyOf(events);
+        return new LoadedLedger(events, corruptedTail);
     }
 
-    private void truncateCorruptedTail(Path ledgerFile) throws IOException {
-        if (!Files.exists(ledgerFile)) {
-            return;
-        }
-        List<String> lines = Files.readAllLines(ledgerFile, StandardCharsets.UTF_8);
-        List<AgentRunEvent> validEvents = readEvents(ledgerFile);
-        long nonEmptyLineCount = lines.stream()
-                .filter(line -> line != null && !line.trim().isEmpty())
-                .count();
-        if (validEvents.size() == nonEmptyLineCount) {
+    private void repairCorruptedTail(Path ledgerFile, LoadedLedger loaded) throws IOException {
+        if (!loaded.corruptedTail()) {
             return;
         }
         StringBuilder normalized = new StringBuilder();
-        for (AgentRunEvent event : validEvents) {
+        for (AgentRunEvent event : loaded.events()) {
             normalized.append(MAPPER.writeValueAsString(toRecord(event)))
                     .append(System.lineSeparator());
         }
@@ -255,7 +244,7 @@ public final class JsonlRunStore implements RunStore {
                 if (!Files.exists(ledgerFile)) {
                     continue;
                 }
-                List<AgentRunEvent> childEvents = readEvents(ledgerFile);
+                List<AgentRunEvent> childEvents = loadLedger(ledgerFile).events();
                 RunStateProjection projection = projector.project(childEvents);
                 Map<String, String> attributes = childEvents.isEmpty()
                         ? Map.of()
@@ -280,5 +269,22 @@ public final class JsonlRunStore implements RunStore {
             }
         }
         return List.copyOf(summaries);
+    }
+
+    record LoadedLedger(List<AgentRunEvent> events, boolean corruptedTail) {
+        LoadedLedger {
+            events = events == null ? List.of() : List.copyOf(events);
+        }
+
+        static LoadedLedger empty() {
+            return new LoadedLedger(List.of(), false);
+        }
+
+        long nextSeq() {
+            return events.stream()
+                    .mapToLong(AgentRunEvent::seq)
+                    .max()
+                    .orElse(0L) + 1L;
+        }
     }
 }

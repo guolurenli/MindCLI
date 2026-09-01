@@ -17,6 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class JsonlRunStoreTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -100,6 +101,23 @@ class JsonlRunStoreTest {
         assertEquals(List.of(AgentRunEventType.RUN_STARTED, AgentRunEventType.RUN_FINISHED),
                 events.stream().map(AgentRunEvent::type).toList());
         assertEquals(2, events.get(1).seq());
+    }
+
+    @Test
+    void loadsValidPrefixAndNextSequenceFromOneLedgerSnapshot() throws Exception {
+        Path runsRoot = tempDir.resolve("runs");
+        JsonlRunStore runStore = new JsonlRunStore(runsRoot);
+        AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "plan it", tempDir.toString());
+
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED));
+        Path ledgerFile = runsRoot.resolve(context.runId()).resolve("run.jsonl");
+        Files.writeString(ledgerFile, "{not-json}\n", StandardOpenOption.APPEND);
+
+        JsonlRunStore.LoadedLedger loaded = JsonlRunStore.loadLedger(ledgerFile);
+
+        assertEquals(1, loaded.events().size());
+        assertEquals(2, loaded.nextSeq());
+        assertTrue(loaded.corruptedTail());
     }
 
     @Test
