@@ -2,12 +2,10 @@ package com.mindcli.capability.tool;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.mindcli.capability.browser.BrowserConnector;
 import com.mindcli.capability.memory.MemoryWriteResult;
 import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
 import com.mindcli.capability.skill.SkillRegistry;
 import com.mindcli.platform.llm.context.ContextProfile;
-import com.mindcli.capability.tool.builtin.BrowserToolRegistrar;
 import com.mindcli.capability.tool.builtin.CodeToolRegistrar;
 import com.mindcli.capability.tool.builtin.FileToolRegistrar;
 import com.mindcli.capability.tool.builtin.MemoryToolRegistrar;
@@ -106,9 +104,6 @@ class ToolRegistryTest {
                 "createProjectTool",
                 "webSearchTool",
                 "webFetchTool",
-                "browserConnectTool",
-                "browserDisconnectTool",
-                "browserStatusTool",
                 "loadSkillTool",
                 "saveMemoryTool",
                 "searchMemoryTool",
@@ -140,7 +135,6 @@ class ToolRegistryTest {
     @Test
     void shouldKeepRemainingBuiltinToolsInDedicatedRegistrars() {
         assertInstanceOf(ToolRegistrar.class, new WebToolRegistrar());
-        assertInstanceOf(ToolRegistrar.class, new BrowserToolRegistrar());
         assertInstanceOf(ToolRegistrar.class, new SkillToolRegistrar());
         assertInstanceOf(ToolRegistrar.class, new MemoryToolRegistrar());
         assertInstanceOf(ToolRegistrar.class, new SnapshotToolRegistrar());
@@ -150,9 +144,6 @@ class ToolRegistryTest {
         assertFalse(registry.hasTool("search_code"));
         assertTrue(registry.hasTool("web_search"));
         assertTrue(registry.hasTool("web_fetch"));
-        assertTrue(registry.hasTool("browser_connect"));
-        assertTrue(registry.hasTool("browser_disconnect"));
-        assertTrue(registry.hasTool("browser_status"));
         assertTrue(registry.hasTool("load_skill"));
         assertTrue(registry.hasTool("save_memory"));
         assertTrue(registry.hasTool("search_memory"));
@@ -402,31 +393,6 @@ class ToolRegistryTest {
                 "mcp__step_search__" + name,
                 "StepSearch " + name,
                 inputSchema);
-    }
-
-    @Test
-    void browserConnectToolUsesInjectedConnector() {
-        ToolRegistry registry = new ToolRegistry();
-        registry.setBrowserConnector(new BrowserConnector() {
-            @Override
-            public String status() {
-                return "status-ok";
-            }
-
-            @Override
-            public String connectDefault() {
-                return "connected";
-            }
-
-            @Override
-            public String disconnect() {
-                return "disconnected";
-            }
-        });
-
-        assertEquals("connected", registry.executeTool("browser_connect", "{}"));
-        assertEquals("status-ok", registry.executeTool("browser_status", "{}"));
-        assertEquals("disconnected", registry.executeTool("browser_disconnect", "{}"));
     }
 
     @Test

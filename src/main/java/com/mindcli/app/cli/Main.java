@@ -7,7 +7,6 @@ import com.mindcli.agent.SubAgent;
 import com.mindcli.agent.profile.AgentProfile;
 import com.mindcli.agent.profile.AgentProfileLoader;
 import com.mindcli.capability.browser.BrowserAuditMetadata;
-import com.mindcli.capability.browser.BrowserConnectivityCheck;
 import com.mindcli.capability.browser.BrowserGuard;
 import com.mindcli.capability.browser.BrowserSession;
 import com.mindcli.capability.browser.SensitivePagePolicy;
@@ -107,10 +106,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * MindCLI v16.1.0 - Terminal-First Agent IDE
  * 支持 ReAct、Plan-and-Execute、Memory、Multi-Agent、HITL、并行工具调用、多模型切换、MCP、CDP 会话复用
  * 第 15 期新增：Skill 系统（三层加载 + load_skill 工具 + tool_result 即时注入）、内置 web-access skill
- * 第 16 期新增：TUI 界面（Lanterna 3）、文件树浏览、代码高亮、对话历史可视化、配置管理面板
- * 第 16.1 期形态修正 ：抽出 Renderer 接口 + 三个实现（inline/lanterna/plain），默认形态切换为 inline 流式 TUI（Claude Code 风格）
+ * 第 16.1 期形态修正：抽出 Renderer 接口，默认使用 inline 流式渲染（Claude Code 风格）
  *   - inline 流式：prompt 下方 inline 状态区、行内可折叠工具块、行内 git diff、单字符 HITL 提示、命令 palette
- *   - lanterna：保留 phase-16 全屏窗口（向后兼容 MINDCLI_TUI=true）
  *   - plain：纯 println 兜底
  * HITL 增强：路径围栏（PathGuard）、命令快速拒绝（CommandGuard）、操作审计链（AuditLog）—— 见 com.mindcli.platform.security
  */
@@ -202,29 +199,9 @@ public class Main {
             SwitchableHitlHandler hitlHandler = new SwitchableHitlHandler(terminalHitlHandler);
             HitlToolRegistry hitlToolRegistry = new HitlToolRegistry(hitlHandler);
             BrowserSession browserSession = new BrowserSession();
-            BrowserConnectivityCheck browserConnectivityCheck = new BrowserConnectivityCheck();
             hitlToolRegistry.setBrowserGuard(new BrowserGuard(browserSession, new SensitivePagePolicy()));
             McpServerManager mcpServerManager = new McpServerManager(hitlToolRegistry, Path.of("."));
             AtomicReference<SkillRegistry> skillRegistryRef = new AtomicReference<>();
-            hitlToolRegistry.setBrowserConnector(new com.mindcli.capability.browser.BrowserConnector() {
-                @Override
-                public String status() {
-                    return handleBrowserCommand("status", browserSession, browserConnectivityCheck,
-                            mcpServerManager, hitlToolRegistry, hitlHandler);
-                }
-
-                @Override
-                public String connectDefault() {
-                    return handleBrowserCommand("connect", browserSession, browserConnectivityCheck,
-                            mcpServerManager, hitlToolRegistry, hitlHandler);
-                }
-
-                @Override
-                public String disconnect() {
-                    return handleBrowserCommand("disconnect", browserSession, browserConnectivityCheck,
-                            mcpServerManager, hitlToolRegistry, hitlHandler);
-                }
-            });
 
             LineReader lineReader = LineReaderBuilder.builder()
                     .terminal(terminal)
@@ -305,20 +282,6 @@ public class Main {
             renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
             boolean nextTaskUsePlanMode = false;
             boolean nextTaskUseTeamMode = false;
-
-            // === TUI / CLI 分支判断 ===
-            // 旧 MINDCLI_TUI=true 路径仍走 Lanterna 全屏 TUI（Day 5 后由 LanternaRenderer 接管）。
-            if (com.mindcli.app.tui.TuiBootstrap.shouldUseTui(terminal)) {
-                try {
-                    com.mindcli.app.tui.TuiBootstrap.launch(config, llmClient, reactAgent, hitlHandler);
-                    return;  // TUI 启动成功，不进入 CLI 循环
-                } catch (Exception e) {
-                    hitlHandler.setDelegate(terminalHitlHandler);
-                    System.err.println("❌ TUI 启动失败，降级到 CLI: " + e.getMessage());
-                    e.printStackTrace();
-                    // 降级到 CLI 继续执行
-                }
-            }
 
             reactAgent.setRenderer(renderer);
             reactAgent.setHitlEnabledSupplier(hitlHandler::isEnabled);
@@ -688,7 +651,6 @@ public class Main {
                         printMcpCommandResult(ui, handleBrowserCommand(
                                 command.payload(),
                                 browserSession,
-                                browserConnectivityCheck,
                                 mcpServerManager,
                                 hitlToolRegistry,
                                 hitlHandler));
@@ -1581,14 +1543,12 @@ public class Main {
 
     static String handleBrowserCommand(String payload,
                                        BrowserSession browserSession,
-                                       BrowserConnectivityCheck connectivityCheck,
                                        McpServerManager mcpServerManager,
                                        HitlToolRegistry registry,
                                        HitlHandler hitlHandler) {
         return BrowserCommandHandler.handle(
                 payload,
                 browserSession,
-                connectivityCheck,
                 mcpServerManager,
                 registry,
                 hitlHandler);

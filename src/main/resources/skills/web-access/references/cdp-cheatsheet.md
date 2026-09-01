@@ -1,35 +1,24 @@
 # Chrome DevTools MCP / CDP 速查
 
-MindCLI 第 13 期接入 Google 官方 `chrome-devtools-mcp@latest`（28 个工具），第 14 期加 `/browser connect` 切 shared 模式。
+MindCLI 接入 Google 官方 `chrome-devtools-mcp@latest`（28 个工具），通过 `/browser connect` 的 `--autoConnect` 切 shared 模式。
 
 ## 模式切换
 
 | 模式 | 启动参数 | 登录态 | 用途 |
 |---|---|---|---|
 | isolated（默认） | `--isolated=true` | 无（临时 user-data-dir） | 公开页面：博客、文档、新闻、SPA 应用 |
-| shared | `--browser-url=http://127.0.0.1:9222` | 复用用户 Chrome 全部登录态 | 私有仓、邮箱、内部系统、需要表单交互 |
+| shared | `--autoConnect` | 复用已授权 Chrome 登录态 | 私有仓、邮箱、内部系统、需要表单交互 |
 
 切换：
 
 ```
-/browser connect       # isolated → shared（先要求用户用 --remote-debugging-port=9222 启 Chrome）
+/browser connect       # isolated → shared（官方 MCP 自动连接已授权 Chrome）
 /browser disconnect    # shared → isolated
-/browser status        # 查当前模式 + 9222 探活
+/browser status        # 查当前模式 + MCP server 状态
 /browser tabs          # shared 模式下列 tab
 ```
 
-用户启 Chrome 调试端口（写在引导里）：
-
-```bash
-# macOS
-open -a "Google Chrome" --args --remote-debugging-port=9222
-
-# Linux
-google-chrome --remote-debugging-port=9222
-
-# Windows (PowerShell)
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
-```
+首次使用时，在 Chrome `chrome://inspect/#remote-debugging` 勾选 “Allow remote debugging for this browser instance”。
 
 ## 工具速查（28 个）
 

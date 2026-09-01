@@ -6,7 +6,6 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.mindcli.capability.browser.BrowserAuditMetadata;
 import com.mindcli.capability.browser.BrowserCheckResult;
-import com.mindcli.capability.browser.BrowserConnector;
 import com.mindcli.capability.browser.BrowserGuard;
 import com.mindcli.platform.llm.context.ContextProfile;
 import com.mindcli.capability.lsp.LspDiagnosticReport;
@@ -22,7 +21,6 @@ import com.mindcli.platform.snapshot.RestoreResult;
 import com.mindcli.platform.snapshot.SnapshotService;
 import com.mindcli.capability.skill.Skill;
 import com.mindcli.capability.skill.SkillRegistry;
-import com.mindcli.capability.tool.builtin.BrowserToolRegistrar;
 import com.mindcli.capability.tool.builtin.CodeToolRegistrar;
 import com.mindcli.capability.tool.builtin.FileToolRegistrar;
 import com.mindcli.capability.tool.builtin.MemoryToolRegistrar;
@@ -101,7 +99,6 @@ public class ToolRegistry {
     private NetworkPolicy networkPolicy;
     private ContextProfile contextProfile = ContextProfile.from(null);
     private BrowserGuard browserGuard;
-    private BrowserConnector browserConnector;
     private BiFunction<String, String, MemoryWriteResult> memorySaver;
     private BiFunction<String, Integer, String> memorySearcher;
     private Function<String, String> memoryReader;
@@ -129,7 +126,6 @@ public class ToolRegistry {
         registerTools(new ShellToolRegistrar());
         registerTools(new CodeToolRegistrar());
         registerTools(new WebToolRegistrar());
-        registerTools(new BrowserToolRegistrar());
         registerTools(new MemoryToolRegistrar());
         registerTools(new SkillToolRegistrar());
         registerTools(new SnapshotToolRegistrar());
@@ -218,21 +214,6 @@ public class ToolRegistry {
             }
 
             @Override
-            public String browserConnectTool(Map<String, String> args) {
-                return ToolRegistry.this.browserConnectTool(args);
-            }
-
-            @Override
-            public String browserDisconnectTool(Map<String, String> args) {
-                return ToolRegistry.this.browserDisconnectTool(args);
-            }
-
-            @Override
-            public String browserStatusTool(Map<String, String> args) {
-                return ToolRegistry.this.browserStatusTool(args);
-            }
-
-            @Override
             public String loadSkillTool(Map<String, String> args) {
                 return ToolRegistry.this.loadSkillTool(args);
             }
@@ -302,7 +283,6 @@ public class ToolRegistry {
         fork.setCurrentModel(this.currentProvider, this.currentModel);
         fork.setSkillRegistry(this.skillRegistry);
         fork.setBrowserGuard(this.browserGuard);
-        fork.setBrowserConnector(this.browserConnector);
         fork.setWriteFileObserver(this.writeFileObserver);
         fork.setMemorySearcher(this.memorySearcher);
         fork.setMemoryReader(this.memoryReader);
@@ -337,9 +317,6 @@ public class ToolRegistry {
         return browserGuard;
     }
 
-    public void setBrowserConnector(BrowserConnector browserConnector) {
-        this.browserConnector = browserConnector;
-    }
 
     public void setMemorySaver(Consumer<String> memorySaver) {
         this.memorySaver = memorySaver == null ? null : (fact, scope) -> {
@@ -682,24 +659,6 @@ public class ToolRegistry {
 
     String webFetchTool(Map<String, String> args) {
         return webFetch(args.get("url"), parseInt(args.get("max_chars"), DEFAULT_FETCH_MAX_CHARS));
-    }
-
-    String browserConnectTool(Map<String, String> args) {
-        return browserConnector == null
-                ? "浏览器连接器未初始化，无法自动切换 shared 模式"
-                : browserConnector.connectDefault();
-    }
-
-    String browserDisconnectTool(Map<String, String> args) {
-        return browserConnector == null
-                ? "浏览器连接器未初始化，无法切回 isolated 模式"
-                : browserConnector.disconnect();
-    }
-
-    String browserStatusTool(Map<String, String> args) {
-        return browserConnector == null
-                ? "浏览器连接器未初始化，无法查看浏览器状态"
-                : browserConnector.status();
     }
 
     String loadSkillTool(Map<String, String> args) {

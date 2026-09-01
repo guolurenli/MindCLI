@@ -70,8 +70,7 @@
 
 ### 10. 交互界面
 
-- **inline 流式 TUI**（默认，Claude Code 风格）—— 主屏直出 + 底部状态栏。
-- **Lanterna 全屏 TUI** —— 三栏结构 + HITL 模态审批。
+- **inline 流式渲染**（默认，Claude Code 风格）—— 主屏直出 + 底部状态栏。
 - **微信 iLink 通道** —— 文本 MVP（`/wechat`）。
 
 ### 11. 快照与恢复
@@ -100,7 +99,7 @@
 
 ## 三、参考项目
 
-- **Claude Code** —— 人机协同、TUI 界面
+- **Claude Code** —— 人机协同、终端界面
 - **OpenClaw** —— 多 Agent、MCP 集成
 - **PaiAgent** —— 工作流编排、可视化
 - **LangGraph** —— 状态管理、循环控制

@@ -435,7 +435,7 @@ class CliCommandParserTest {
         assertEquals(CliCommandParser.CommandType.BROWSER, CliCommandParser.parse("/browser status").type());
         assertEquals("status", CliCommandParser.parse("/browser status").payload());
         assertEquals("connect", CliCommandParser.parse("/browser connect").payload());
-        assertEquals("connect 9333", CliCommandParser.parse("/browser connect 9333").payload());
+        assertEquals("connect", CliCommandParser.parse("/browser connect").payload());
         assertEquals("disconnect", CliCommandParser.parse("/browser disconnect").payload());
         assertEquals("tabs", CliCommandParser.parse("/browser tabs").payload());
     }

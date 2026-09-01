@@ -47,7 +47,6 @@ public final class SlashCommandCatalog {
                 new SlashCommandHint("/hitl off", "/hitl off", "关闭 HITL 审批"),
                 new SlashCommandHint("/browser", "/browser", "查看浏览器会话状态"),
                 new SlashCommandHint("/browser connect", "/browser connect", "复用已允许远程调试的登录态 Chrome"),
-                new SlashCommandHint("/browser connect ", "/browser connect <port>", "旧式 CDP 端口连接"),
                 new SlashCommandHint("/browser status", "/browser status", "查看浏览器会话状态"),
                 new SlashCommandHint("/browser tabs", "/browser tabs", "查看 shared 模式真实 Chrome tab"),
                 new SlashCommandHint("/browser disconnect", "/browser disconnect", "切回 isolated 浏览器模式"),

@@ -4,7 +4,7 @@ package com.mindcli.platform.render;
  * 渲染器状态栏数据载体。
  *
  * <p>InlineRenderer 把这些字段格式化到底部常驻状态栏；
- * LanternaRenderer 写入 StatusPane；PlainRenderer 直接忽略。
+ * Inline 渲染器可将其显示在状态栏；PlainRenderer 直接忽略。
  */
 public record StatusInfo(
         String model,

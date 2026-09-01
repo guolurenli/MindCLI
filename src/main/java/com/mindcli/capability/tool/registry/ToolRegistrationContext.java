@@ -33,12 +33,6 @@ public interface ToolRegistrationContext {
 
         String webFetchTool(Map<String, String> args);
 
-        String browserConnectTool(Map<String, String> args);
-
-        String browserDisconnectTool(Map<String, String> args);
-
-        String browserStatusTool(Map<String, String> args);
-
         String loadSkillTool(Map<String, String> args);
 
         String saveMemoryTool(Map<String, String> args);

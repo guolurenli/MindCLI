@@ -82,7 +82,7 @@ sequenceDiagram
 ```text
 src/main/java/com/mindcli/
 ├── agent/       ReAct / Plan / Multi-Agent 编排，plan/ 含 DependencyGraph，profile/ 是 Agent Profile 与 profile lease
-├── app/         cli / tui / wechat 用户入口与命令 handler
+├── app/         cli / wechat 用户入口与命令 handler
 ├── capability/  browser / image / lsp / mcp / memory / skill / tool / web
 ├── platform/    config / hitl / llm / prompt / render / security / snapshot / text
 └── runtime/     run ledger、ToolDispatcher、Runtime API、DurableTaskManager
@@ -98,10 +98,10 @@ src/main/java/com/mindcli/
 | 代码理解 | `glob_files` / `grep_code` / `read_file` 实时探索，按需逐步缩小范围 |
 | 记忆治理 | `/save` 手动长期记忆；自动提取只生成候选；`/memory approve/reject/export --audit` 管理审计链路 |
 | MCP | 仅使用官方 Model Context Protocol Java SDK 2.0.1，合并用户级 `~/.mindcli/mcp.json` 和项目级 `.mindcli/mcp.json`，支持 stdio 与 Streamable HTTP |
-| 浏览器 | 默认 `chrome-devtools` MCP isolated 模式，`/browser connect` 可复用本机 Chrome 登录态 |
+| 浏览器 | 默认 `chrome-devtools` MCP isolated 模式，`/browser connect` 通过官方 `--autoConnect` 复用本机 Chrome 登录态 |
 | Web | `web_search` 支持 zhipu / serpapi / searxng，`web_fetch` 通过 HTTP + Jsoup 提取 Markdown |
 | 安全 | HITL、PathGuard、CommandGuard、BrowserGuard、危险工具 JSONL 审计 |
-| 交互体验 | JLine 4 cyber-lite inline renderer、本机 chafa 10x10 随机猫耳助手启动图、猫耳暖色分层启动 Banner、MCP 启动摘要收敛到首屏 note、`MINDCLI //` 底部状态栏、Lanterna cyber-lite 三栏 TUI、slash 补全、输入高亮、`@path` 与 MCP resource 展开 |
+| 交互体验 | JLine 4 cyber-lite inline/plain renderer、本机 chafa 10x10 随机猫耳助手启动图、猫耳暖色分层启动 Banner、MCP 启动摘要收敛到首屏 note、`MINDCLI //` 底部状态栏、slash 补全、输入高亮、`@path` 与 MCP resource 展开 |
 | 其他入口 | 微信 iLink 通道、后台任务 `/task`、本地 Runtime HTTP API |
 
 ## 内置工具
@@ -116,7 +116,6 @@ src/main/java/com/mindcli/
 | `execute_command` | 在项目目录执行短时 shell 命令，默认 60 秒超时 |
 | `create_project` | 创建 `java` / `python` / `node` 项目骨架 |
 | `web_search` / `web_fetch` | 联网搜索与 URL 正文抓取 |
-| `browser_connect` / `browser_disconnect` / `browser_status` | 管理 Chrome DevTools MCP 登录态复用 |
 | `save_memory` | 用户明确要求记住时写入长期记忆；写入期间与长期记忆查询互斥 |
 | `search_memory` | 按关键词搜索当前项目可见的长期记忆候选，返回 ID、标题、短提示和读取指引；不自动裁决冲突 |
 | `read_memory` | 按记忆 ID 读取当前项目可见的单条长期记忆正文 |
@@ -179,9 +178,8 @@ src/main/java/com/mindcli/
 | `/mcp disable <name>` / `/mcp enable <name>` | 运行时禁用或启用 server |
 | `/mcp resources <name>` | 查看 server 暴露的 resources |
 | `/mcp prompts <name>` | 查看 server 暴露的 prompts |
-| `/browser status` | 查看浏览器 MCP 模式和 CDP 探活 |
+| `/browser status` | 查看浏览器 MCP 模式与 server 状态 |
 | `/browser connect` | 使用 `chrome-devtools-mcp --autoConnect` 复用已授权 Chrome |
-| `/browser connect <port>` | 旧式 CDP 端口连接，如 `9222` |
 | `/browser tabs` | shared 模式下列出真实 Chrome tabs |
 | `/browser disconnect` | 切回 isolated 浏览器模式 |
 | `/skill list` / `/skill show <name>` | 查看 Skill 列表或完整 `SKILL.md` |
@@ -269,7 +267,7 @@ SERPAPI_KEY=your_serpapi_key
 SEARXNG_URL=http://localhost:8888
 
 # 渲染与日志
-MINDCLI_RENDERER=inline     # inline | lanterna | plain
+MINDCLI_RENDERER=inline     # inline | plain
 MINDCLI_NO_STATUSBAR=true
 MINDCLI_UI_MASCOT=true      # 检测到本机 chafa 时从 ui/*.png 随机显示 10x10 猫耳助手启动图；false 禁用
 MINDCLI_CHAFA_BIN=chafa     # chafa 可执行文件路径；未设置时从 PATH 查找，并继承控制台完成终端探测
@@ -333,7 +331,7 @@ mvn test -DskipTests=false
 
 ## 技术栈
 
-- Java 17、Maven、JLine 4、Lanterna
+- Java 17、Maven、JLine 4
 - 官方 MCP Java SDK 2.0.1（`mcp-core` + `mcp-json-jackson2`）
 - OkHttp、Jackson、Logback
 - SQLite、JavaParser、JGit、Jsoup

@@ -45,8 +45,8 @@
 - SPA、React/Vue 客户端渲染、需要 JS、防爬墙、需要登录态或表单交互时使用浏览器 MCP。
 - 浏览器读取优先 `mcp__chrome-devtools__take_snapshot`，不要默认 `take_screenshot`。
 - 表单填写优先 `fill_form`；等待异步加载使用 `wait_for`；控制台排查用 `list_console_messages`；网络排查用 `list_network_requests` / `get_network_request`。
-- 如果浏览器 MCP 返回登录页、权限不足或明确需要登录态，先调用 `browser_connect` 连接已允许远程调试的本机 Chrome，再重试原 URL。
-- 公开页面不需要登录态时，不要提前调用 `browser_connect`。
+- 如果浏览器 MCP 返回登录页、权限不足或明确需要登录态，提示用户在 Chrome 中允许远程调试，然后使用 `/browser connect`（官方 MCP `--autoConnect`）再重试原 URL。
+- 公开页面不需要登录态时，不要提前切换 shared 浏览器会话。
 
 ## Memory Policy
 

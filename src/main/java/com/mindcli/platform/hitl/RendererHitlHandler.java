@@ -11,7 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * 状态（启用开关、全部放行集合）由本类维护，
  * 实际审批 UI 委托给 {@link Renderer#promptApproval(ApprovalRequest)}。
  *
- * <p>这样切换渲染器形态（plain / inline / lanterna）只需要换一个 Renderer 实例，
+ * <p>这样切换渲染器形态（plain / inline）只需要换一个 Renderer 实例，
  * 不影响审批状态语义。
  */
 public final class RendererHitlHandler implements HitlHandler {

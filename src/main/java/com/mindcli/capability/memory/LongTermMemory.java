@@ -1,6 +1,7 @@
 package com.mindcli.capability.memory;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.mindcli.platform.text.MarkdownFrontmatterParser;
 import com.mindcli.platform.llm.LlmClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -346,14 +347,9 @@ public class LongTermMemory implements MemoryStore {
 
     private MemoryEntry parseEntryFile(File file) throws IOException {
         String content = Files.readString(file.toPath());
-        if (!content.startsWith("---")) return null;
-
-        // 解析 YAML frontmatter（简易解析，不引入 full YAML parser）
-        int endFrontmatter = content.indexOf("---", 3);
-        if (endFrontmatter < 0) return null;
-
-        String frontmatter = content.substring(3, endFrontmatter);
-        String body = content.substring(endFrontmatter + 3).trim();
+        MarkdownFrontmatterParser.ParseResult parsed = MarkdownFrontmatterParser.parse(content);
+        if (parsed.metadata().isEmpty()) return null;
+        String body = parsed.body().trim();
 
         Map<String, String> metadata = new HashMap<>();
         String typeStr = "PROJECT_FACT";
@@ -361,11 +357,9 @@ public class LongTermMemory implements MemoryStore {
         Instant timestamp = Instant.now();
         String entryId = file.getName().replaceFirst("\\.md$", "");
 
-        for (String line : frontmatter.split("\n")) {
-            int colonIdx = line.indexOf(':');
-            if (colonIdx < 0) continue;
-            String key = line.substring(0, colonIdx).trim();
-            String value = line.substring(colonIdx + 1).trim();
+        for (Map.Entry<String, Object> field : parsed.metadata().entrySet()) {
+            String key = field.getKey();
+            String value = field.getValue() == null ? "" : String.valueOf(field.getValue()).trim();
 
             if ("name".equals(key)) {
                 name = value.isEmpty() ? null : value;

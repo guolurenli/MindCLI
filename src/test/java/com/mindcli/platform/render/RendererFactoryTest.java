@@ -33,9 +33,9 @@ class RendererFactoryTest {
     }
 
     @Test
-    void propertyValueLanternaResolves() {
+    void removedLanternaValueFallsBackToInline() {
         System.setProperty("mindcli.renderer", "lanterna");
-        assertEquals(RendererFactory.Mode.LANTERNA, RendererFactory.resolveMode());
+        assertEquals(RendererFactory.Mode.INLINE, RendererFactory.resolveMode());
     }
 
     @Test
@@ -46,8 +46,8 @@ class RendererFactoryTest {
 
     @Test
     void propertyValueIsCaseInsensitive() {
-        System.setProperty("mindcli.renderer", "LANTERNA");
-        assertEquals(RendererFactory.Mode.LANTERNA, RendererFactory.resolveMode());
+        System.setProperty("mindcli.renderer", "PLAIN");
+        assertEquals(RendererFactory.Mode.PLAIN, RendererFactory.resolveMode());
     }
 
     @Test
@@ -57,9 +57,9 @@ class RendererFactoryTest {
     }
 
     @Test
-    void tuiAliasResolvesToLanterna() {
+    void removedTuiAliasFallsBackToInline() {
         System.setProperty("mindcli.renderer", "tui");
-        assertEquals(RendererFactory.Mode.LANTERNA, RendererFactory.resolveMode());
+        assertEquals(RendererFactory.Mode.INLINE, RendererFactory.resolveMode());
     }
 
     @Test

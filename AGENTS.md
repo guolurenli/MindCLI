@@ -12,7 +12,7 @@
 
 - 项目名：`MindCLI`
 - 定位：面向商业使用的 Java Agent CLI 产品，对标 Claude Code
-- 已交付 23 期 + Agent Runtime 企业级改造 Phase 6 + 记忆治理 Phase 8（ReAct → Plan+DAG → Memory → Multi-Agent → HITL → 并行工具 → 多模型 → 联网 → MCP 核心 → MCP 高级 → 长上下文 → Chrome DevTools → CDP 会话复用 → Skill → TUI → LSP 诊断 → Side-Git 快照 → Prompt 分层 → Runtime API → 图片输入 → 微信 iLink 通道文本 MVP；Runtime Spine / Dispatcher / Profile 化 Multi-Agent、记忆候选审批、策略裁决与审计导出已落地）
+- 已交付 23 期 + Agent Runtime 企业级改造 Phase 6 + 记忆治理 Phase 8（ReAct → Plan+DAG → Memory → Multi-Agent → HITL → 并行工具 → 多模型 → 联网 → MCP 核心 → MCP 高级 → 长上下文 → Chrome DevTools MCP → Skill → inline 渲染 → LSP 诊断 → Side-Git 快照 → Prompt 分层 → Runtime API → 图片输入 → 微信 iLink 通道文本 MVP；Runtime Spine / Dispatcher / Profile 化 Multi-Agent、记忆候选审批、策略裁决与审计导出已落地）
 - `MIND.md` 是 MindCLI 的项目级记忆文件：启动时自动注入 system prompt，适合团队共享的长期稳定规则；个人/会变化的经验继续用 `/save` 长期记忆。
 - 下一步：OAuth / sampling / recovery 作为后续 MCP 增强
 - Banner 版本：`v16.1.0`，Maven 产物：`mindcli-1.0-SNAPSHOT.jar`（两者不一致是正常状态）
@@ -33,7 +33,7 @@ java -jar target/mindcli-1.0-SNAPSHOT.jar wechat setup   # 主动绑定微信 iL
 java -jar target/mindcli-1.0-SNAPSHOT.jar wechat start   # 前台启动微信通道
 /wechat                   # 交互式 CLI 内扫码绑定并后台启动微信通道
 mvn test -Pquick          # 常规回归
-mvn test -Pphase16-smoke  # TUI 相关
+mvn test -Pphase16-smoke  # 终端渲染相关
 mvn test -Dtest=XxxTest -DskipTests=false   # 针对性
 mvn test -DskipTests=false                  # 全量回归
 /init                    # 生成精简项目级记忆 MIND.md；已有文件不覆盖，/init --force 可重写
@@ -78,7 +78,7 @@ DeepSeek SSE 调用默认强制 HTTP/1.1，避免部分网络/网关下 HTTP/2 �
 ```
 src/main/java/com/mindcli/
 ├── agent/       ReAct / Plan / Multi-Agent 编排；plan/ 放 Planner / ExecutionPlan / Task / DependencyGraph，profile/ 放 AgentProfile / AgentPool
-├── app/         用户入口适配：cli/、tui/、wechat/
+├── app/         用户入口适配：cli/、wechat/
 ├── capability/  Agent 能力：browser/、image/、lsp/、mcp/、memory/、skill/、tool/、web/
 ├── platform/    平台支撑：config/、hitl/、llm/、prompt/、render/、security/、snapshot/、text/
 └── runtime/     run/ (AgentRuntime / ToolDispatcher / RunStore) + api/ (RuntimeApiServer) + task/ (DurableTaskManager)
@@ -90,14 +90,14 @@ src/main/java/com/mindcli/
 - inline 模式使用 JLine 4 的 LineReader 编辑能力，默认提示符是 `* `，右提示显示 `message / @path / @image`。
 - 默认 CLI 启动路径先建立 `Terminal -> LineReader -> Renderer`，但 `Renderer.start()` 和底部 dock 初始化必须放在启动猫耳图之后；猫耳图由 native chafa 直接写真实终端，文字 Banner 随后直接打印在图片下方，避免 JLine Status/scroll-region 改变 chafa 的终端探测与显示效果。
 - `BottomStatusBar` 现在是 JLine `Status` 托管的底部 dock：由 JLine 维护滚动区域和状态行位置，不再手写 `\n` / `moveUp` / `CLEAR_TO_EOS` 清屏。输入期会把 LineReader 光标定位到 dock 上方一行，让 `*` 输入行和 Status 同处底部区域；dock 保留两类信息：上层模式 + `MCP n/n | SKILL n/n` 摘要，下层 `MINDCLI // model | phase | CTX [...]` 与 `IN/OUT/CACHE`、cost、elapsed、cwd。关键字段可用 cyber-lite 的 JLine `AttributedString` 彩色样式突出，但纯文本格式和宽度裁剪逻辑要保持稳定。`CTX` 表示当前仍会带入下一轮请求的上下文估算；`IN/OUT/CACHE` 表示最近任务的 LLM 调用统计，二者不要混用。
-- Lanterna TUI 保持三栏结构，但面板标题和消息标签使用同一套 cyber-lite 语言：`PROJECT // FILES`、`COMMS // STREAM`、`SYSTEM // STATUS`、`INPUT // COMMAND`，对话流标签为 `USER //`、`MINDCLI //`、`SYS //`、`TOOL //`、`OUT //`。
+- inline/plain 渲染保持 cyber-lite 语言；对话流标签为 `USER //`、`MINDCLI //`、`SYS //`、`TOOL //`、`OUT //`。
 - 普通任务和斜杠命令提交后，`Main` 会把本轮原始输入以暗色整行块写回 transcript：输入态左提示仍是 `* `，提交回显左提示改为 `>`；单行输入只占一行，不额外追加空白行。普通任务随后再展开 MCP resource / 本地 `@path` 并进入 Agent；不要只依赖 JLine 提交行残留，否则 activity 重绘或 dock 刷新可能让用户输入从可见历史里消失。`/clear` 清空 conversationHistory、shortTermMemory，并重建不含上一轮检索记忆的 system prompt；长期记忆保留。`/compact` 会手动压缩当前 ReAct conversationHistory，不等待上下文阈值触发，保留最近 1 个 user 轮次和 tool_call/tool_result 边界。
 - ReAct LLM 调用期间，inline renderer 使用固定高度 live thinking 区动态显示 `Thinking...` 和灰色竖线 reasoning 预览；该区域只能清理自己刚打印的几行，不能用独立 JLine `Display.update()` / `CLEAR_TO_EOS` 向上覆盖 transcript。content 或 tool call 开始前先清掉 live 区，再把完整 reasoning 引用块落到正文区，正文回答用低调标记起始，不再刷强标题。
 - 交互期输出应优先走 `Renderer.stream()`；`Main`、`PlanExecuteAgent`、`Planner`、`AgentOrchestrator` 都支持把输出流接到 inline renderer，避免直接争抢 stdout。
 - Phase 22 开始，`InlineRenderer` 可绑定当前 `LineReader`；当 `LineReader.isReading()` 为 true 时，`Renderer.stream()` 的完整行输出优先通过 `LineReader#printAbove` 显示在输入行上方，未绑定 / 非读取态 / 测试路径回退到原 `PrintStream`。
 - Markdown 表格渲染要按当前终端列宽分配列宽；长内容在单元格内部换行，不能依赖终端自动折行把整行表格打散。
 - ReAct 正常结束后不再把 `📊 Token: ...` 打进正文区；token/cost/elapsed 会保留在底部强状态行，phase 回到 `idle`。
-- 默认 CLI 启动路径应尽早建立 `Terminal -> LineReader -> Renderer`，启动 Banner、模型加载、MCP 启动、Skill summary、ReAct 提示和退出提示都应走 `Renderer.stream()`；除 fatal bootstrap / runtime API / legacy TUI 降级外，不要在交互主路径新增裸 `System.out.println`。
+- 默认 CLI 启动路径应尽早建立 `Terminal -> LineReader -> Renderer`，启动 Banner、模型加载、MCP 启动、Skill summary、ReAct 提示和退出提示都应走 `Renderer.stream()`；除 fatal bootstrap / runtime API 外，不要在交互主路径新增裸 `System.out.println`。
 - 启动期 MCP 不得阻塞首屏：CLI 默认最多等待 8 秒（`MINDCLI_MCP_STARTUP_WAIT_SECONDS` / `-Dmindcli.mcp.startup.wait.seconds` 可调），超时后保留未完成 server 为 `STARTING` 并后台继续初始化；`/mcp` 查看最新状态。
 - `LineReader` 使用 `app/cli/interaction/MindCliHighlighter` 做输入实时高亮：slash 命令、`@` 引用、`@image:`、`@clipboard`、敏感词和明显危险 shell 片段会在编辑阶段被标记；不要把这类视觉提示混入最终提交文本。
 - `LineReader` 使用 `app/cli/interaction/MindCliCompleter` 做上下文补全：`/model` provider、`/mcp` 子命令与 server、`/skill` 子命令与 skill name、`/task` / `/browser` / `/snapshot` 子命令、`@image:` 本地路径、本地 `@path` 和 MCP resource `@server:uri` 引用都应从同一个 completer 出口维护。
@@ -217,7 +217,7 @@ src/main/java/com/mindcli/
 | 命令解析 | `mvn test -Dtest=CliCommandParserTest,PlanReviewInputParserTest,MainInputNormalizationTest,MainCliBootstrapRefactorTest,MainCliStartupViewRefactorTest,MainMemoryCommandHandlerRefactorTest,MainCommandHandlerRefactorTest,MainConfigCommandHandlerRefactorTest,MainWechatCommandHandlerRefactorTest` |
 | DAG/Plan | `mvn test -Dtest=ExecutionPlanTest` |
 | Multi-Agent | `mvn test -Dtest=AgentRoleTest,AgentMessageTest,SubAgentTest,AgentProfileLoaderTest,AgentOrchestratorTest` |
-| TUI/终端 | `mvn test -Pphase16-smoke` |
+| 终端/渲染 | `mvn test -Pphase16-smoke` |
 | 常规回归 | `mvn test -Pquick` |
 
 ## 给新线程的导航
@@ -234,7 +234,7 @@ src/main/java/com/mindcli/
 | 模型/API | platform/llm/*Client.java + LlmClientFactory.java |
 | Multi-Agent | AgentOrchestrator.java + SubAgent.java + agent/profile/* |
 | MCP | capability/mcp/McpServerManager.java + McpClient.java |
-| TUI/渲染 | app/tui/* + platform/render/Renderer.java + RendererFactory.java |
+| 终端渲染 | platform/render/Renderer.java + RendererFactory.java |
 
 ## 当前已知边界
 
