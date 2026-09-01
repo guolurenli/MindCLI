@@ -88,6 +88,24 @@
 
 ## 二、规划中（未交付）
 
+### 当前技术债优先级
+
+以下是当前主线优先级。P0 配置读取统一已经完成，保留在这里作为已关闭项，避免后续盘点时重复提出。
+
+| 优先级 | 方向 | 原因与范围 |
+|---|---|---|
+| 已完成 P0 | 配置读取统一 | `ConfigValueResolver` 已统一 `System property → OS environment → 项目 .env → 用户 ~/.env → 默认值`；原先分散在 `SnapshotConfig`、`RuntimeApiServer`、`DurableTaskManager`、`LspManager`、`AuditLog`、`CliInputSupport`、`McpClient` 等模块的业务配置读取已迁移。 |
+| P1 | 继续压薄 `Main.java` | 当前约 1789 行，仍同时承担启动、命令分发、运行态管理和终端适配。保留 `Main` 作为 facade，把剩余命令分发和 session 生命周期移到已有 handler/router。 |
+| P1 | 拆薄 `ToolRegistry` | 当前约 1335 行，既是工具注册表，又包含文件、Shell、Web、Memory 等具体实现。保留原有对外接口，把实现按工具组下沉。 |
+| P1 | 统一三套 Agent 循环 | `Agent`、`PlanExecuteAgent`、`SubAgent` 仍各自保留部分 LLM/tool loop。长期统一到一个执行 seam，减少同一问题需要改三处的情况；风险较高，不与配置清理同时进行。 |
+| P1 | `/run resume` 与启动期自动恢复 | 当前只有 `/run inspect`，能查看但不能继续执行。恢复前需要生成计划并对文件写入、命令执行和未完成 child run 请求确认。 |
+| P2 | 清理兼容 API | `MemoryManager`、`MemoryExtractor` 仍有 deprecated 入口，`ToolRegistry` 仍有 `legacyWritten` 和旧 memory saver 适配。先保留一个版本周期，确认外部调用者不存在后再删除。 |
+| P2 | 依赖审计 | 当前没有明显可直接删除的核心依赖；应先运行 `mvn dependency:analyze` 验证，再评估是否删除，不能仅凭文件名判断。 |
+| P2 | Runtime 按 run 粒度加锁 | 当前 `JsonlRunStore` 仍使用实例级全局同步，正确性已保证但多 run 并发时会互相等待。属于性能优化，需单独验证锁顺序和派生状态一致性。 |
+| P2 | MCP OAuth / sampling / server 自动重启 | 路线图中的 MCP 增强能力，当前尚未实现，不应与核心重构混做。 |
+| P2 | 容器 / VM 沙箱 | 当前安全模型仍是 HITL + PathGuard + CommandGuard + 审计，不是真正的进程隔离；属于商业化安全升级。 |
+| P3 | 视频 / 音频输入 | 当前多模态只支持图片，视频和音频作为独立迭代。 |
+
 以下在路线图但**尚未在代码中落地**，不要把「将来要做」当成「现在已有」：
 
 - **容器 / VM 沙箱** —— 真正的隔离执行环境（Docker / microVM）。当前安全模型是 HITL + 路径校验 + 命令拒绝 + 审计，而非隔离；沙箱方案参考「Pro 升级版本」章节。

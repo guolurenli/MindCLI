@@ -166,7 +166,7 @@ src/main/java/com/mindcli/
 | `/memory delete <id>` / `/memory clear` | 删除单条或清空长期记忆 |
 | `/memory export --audit` | 导出记忆审计证据到 `~/.mindcli/exports/` |
 
-长期记忆默认只通过 `/save` 或用户明确要求保存。每个 session 只注入受 scope/status/expiry 过滤的 `MEMORY.md` 目录，正文不会在 run 启动时自动注入；模型需要时调用 `search_memory` 获取候选，再用 `read_memory` 按 ID 读取正文。多个候选仅表示可能相关，不按更新时间自动裁决，也不自动覆盖或删除；涉及当前项目代码、配置和命令时，必须实时检查项目状态，以当前任务相关且可验证的证据为准，无法确认时请求用户确认。即使开启自动提取，系统也只会生成 `MemoryProposal`，必须经过 `/memory approve <id>` 才会写入长期记忆；删除采用 tombstone 语义，审计源是长期记忆目录下的 `audit.jsonl`。
+长期记忆默认只通过 `/save` 或用户明确要求保存。每个 session 只注入受 scope/status/expiry 过滤的 `MEMORY.md` 目录，正文不会在 run 启动时自动注入；模型需要时调用 `search_memory` 获取候选，再用 `read_memory` 按 ID 读取正文。多个候选仅表示可能相关，不按更新时间自动裁决，也不自动覆盖或删除；涉及当前项目代码、配置和命令时，必须实时检查项目状态，以当前任务相关且可验证的证据为准，无法确认时请求用户确认。即使开启自动提取，系统也只会生成 `MemoryProposal`，必须经过 `/memory approve <id>` 才会写入长期记忆；自动提取接口返回可等待的 `CompletableFuture`，候选先成功写入 `proposals.jsonl` 再发布到内存，异步失败会保留在 Future 中并记录日志；删除采用 tombstone 语义，审计源是长期记忆目录下的 `audit.jsonl`。
 
 ### MCP、浏览器与 Skill
 

@@ -11,16 +11,20 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MemoryManagerTest {
@@ -197,16 +201,47 @@ class MemoryManagerTest {
             ));
             MemoryManager memoryManager = new MemoryManager(llmClient, 128000, longTermMemory);
 
-            memoryManager.extractFactsIncrementalAsync(memoryExtractionMessages());
+            CompletableFuture<Void> extraction = memoryManager.extractFactsIncrementalAsync(memoryExtractionMessages());
+            extraction.get(2, TimeUnit.SECONDS);
 
             assertTrue(llmClient.awaitChatCall(1_000), "显式开启后应保留旧自动提取路径");
-            waitUntilProposalCount(memoryManager, 1);
+            assertEquals(1, memoryManager.listPendingMemoryProposals().size());
             assertEquals(0, longTermMemory.size());
             MemoryProposal proposal = memoryManager.listPendingMemoryProposals().get(0);
             assertEquals(MemoryProposal.Status.PROPOSED, proposal.status());
             assertEquals(MemoryEntry.MemoryType.USER_PREFERENCE, proposal.type());
             assertEquals("用户偏好使用中文回答", proposal.content());
         assertEquals("extractor", proposal.metadata().get("source"));
+        } finally {
+            if (previous == null) {
+                System.clearProperty("mindcli.memory.autoExtract.enabled");
+            } else {
+                System.setProperty("mindcli.memory.autoExtract.enabled", previous);
+            }
+        }
+    }
+
+    @Test
+    void shouldNotPublishProposalWhenPersistenceFails() throws Exception {
+        String previous = System.getProperty("mindcli.memory.autoExtract.enabled");
+        System.setProperty("mindcli.memory.autoExtract.enabled", "true");
+        try {
+            LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
+            CountingMemoryClient llmClient = new CountingMemoryClient(new LlmClient.ChatResponse(
+                    "assistant",
+                    "[中文]: [USER_PREFERENCE] 用户偏好使用中文回答",
+                    null,
+                    10,
+                    5
+            ));
+            MemoryManager memoryManager = new MemoryManager(llmClient, 128000, longTermMemory);
+            Files.createDirectory(tempDir.resolve("proposals.jsonl"));
+
+            CompletableFuture<Void> extraction = memoryManager.extractFactsIncrementalAsync(memoryExtractionMessages());
+
+            assertThrows(ExecutionException.class, () -> extraction.get(2, TimeUnit.SECONDS));
+            assertEquals(0, memoryManager.listPendingMemoryProposals().size());
+            assertEquals(0, memoryManager.listMemoryProposals().size());
         } finally {
             if (previous == null) {
                 System.clearProperty("mindcli.memory.autoExtract.enabled");

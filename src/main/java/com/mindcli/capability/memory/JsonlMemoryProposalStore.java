@@ -28,8 +28,8 @@ public class JsonlMemoryProposalStore implements MemoryProposalStore {
         if (proposal == null) {
             return;
         }
-        proposals.put(proposal.id(), proposal);
         append(proposal);
+        proposals.put(proposal.id(), proposal);
     }
 
     @Override

@@ -120,27 +120,25 @@ public class MemoryManager {
      * 对齐 Claude Code 的 stopHooks 异步模式。
      * @deprecated 改为 {@link #extractFactsIncrementalAsync}，只传本轮新增消息
      */
-    public void extractFactsAsync(List<LlmClient.Message> conversationHistory) {
-        CompletableFuture.runAsync(() -> {
-            extractFacts(conversationHistory);
-        });
+    public CompletableFuture<Void> extractFactsAsync(List<LlmClient.Message> conversationHistory) {
+        return runBackground("自动长期记忆提取", () -> extractFacts(conversationHistory));
     }
 
     /**
      * 增量异步提取 —— 只处理本轮新增的对话消息。
      * 对齐 Claude Code Stop hook：hook 每次只收到新增 exchange，不是整段历史。
      */
-    public void extractFactsIncrementalAsync(List<LlmClient.Message> conversationHistory) {
-        extractFactsIncrementalAsync(conversationHistory, null, null);
+    public CompletableFuture<Void> extractFactsIncrementalAsync(List<LlmClient.Message> conversationHistory) {
+        return extractFactsIncrementalAsync(conversationHistory, null, null);
     }
 
-    public void extractFactsIncrementalAsync(List<LlmClient.Message> conversationHistory,
-                                             AgentRunContext runContext, RunStore runStore) {
+    public CompletableFuture<Void> extractFactsIncrementalAsync(List<LlmClient.Message> conversationHistory,
+                                                                AgentRunContext runContext, RunStore runStore) {
         if (!isAutoExtractEnabled()) {
             log.debug("自动长期记忆提取默认关闭，跳过本轮增量提取");
-            return;
+            return CompletableFuture.completedFuture(null);
         }
-        CompletableFuture.runAsync(() -> {
+        return runBackground("增量长期记忆候选提取", () -> {
             List<MemoryProposal> proposals = extractor.extractFactProposalsIncremental(conversationHistory);
             List<MemoryProposal> accepted = addPendingProposals(proposals, runContext, runStore);
             appendMemoryProposedEvent(runContext, runStore, accepted, "extractor");
@@ -479,11 +477,11 @@ public class MemoryManager {
         if (accepted.isEmpty()) {
             return List.of();
         }
-        synchronized (pendingMemoryProposals) {
-            pendingMemoryProposals.addAll(accepted);
-        }
         for (MemoryProposal proposal : accepted) {
             proposalStore.save(proposal);
+        }
+        synchronized (pendingMemoryProposals) {
+            pendingMemoryProposals.addAll(accepted);
         }
         log.info("生成了 {} 条待确认长期记忆候选", accepted.size());
         return List.copyOf(accepted);
@@ -596,6 +594,14 @@ public class MemoryManager {
     private static Path resolveAuditStorePath(LongTermMemory memoryStore) {
         Path memoryPath = memoryStore.storagePath().orElse(Path.of(System.getProperty("user.home"), ".mindcli", "memory"));
         return memoryPath.resolve("audit.jsonl");
+    }
+
+    private static CompletableFuture<Void> runBackground(String operation, Runnable task) {
+        return CompletableFuture.runAsync(task).whenComplete((ignored, error) -> {
+            if (error != null) {
+                log.warn("{}失败", operation, error);
+            }
+        });
     }
 
     private static String normalizeProjectKey(String path) {
