@@ -10,6 +10,7 @@ import com.mindcli.capability.mcp.resources.McpResourceContent;
 import com.mindcli.capability.mcp.resources.McpResourceDescriptor;
 import com.mindcli.capability.tool.ToolOutput;
 import com.mindcli.capability.tool.ToolExecution;
+import com.mindcli.platform.config.ConfigValueResolver;
 import com.mindcli.platform.llm.LlmClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpClientTransport;
@@ -52,19 +53,9 @@ public class McpClient implements AutoCloseable {
     }
 
     static int initializeTimeoutSeconds() {
-        String configured = System.getProperty(INITIALIZE_TIMEOUT_PROPERTY);
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv(INITIALIZE_TIMEOUT_ENV);
-        }
-        if (configured == null || configured.isBlank()) {
-            return DEFAULT_INITIALIZE_TIMEOUT_SECONDS;
-        }
-        try {
-            int seconds = Integer.parseInt(configured.trim());
-            return seconds > 0 ? seconds : DEFAULT_INITIALIZE_TIMEOUT_SECONDS;
-        } catch (NumberFormatException ignored) {
-            return DEFAULT_INITIALIZE_TIMEOUT_SECONDS;
-        }
+        int seconds = ConfigValueResolver.current().resolveInt(
+                INITIALIZE_TIMEOUT_PROPERTY, INITIALIZE_TIMEOUT_ENV, DEFAULT_INITIALIZE_TIMEOUT_SECONDS);
+        return seconds > 0 ? seconds : DEFAULT_INITIALIZE_TIMEOUT_SECONDS;
     }
 
     public boolean supportsResources() {

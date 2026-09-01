@@ -2,6 +2,7 @@ package com.mindcli.runtime.api;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.mindcli.platform.config.ConfigValueResolver;
 import com.mindcli.runtime.task.TaskRunner;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -39,11 +40,8 @@ public class RuntimeApiServer implements AutoCloseable {
     }
 
     public static String configuredApiKey() {
-        String configured = System.getProperty("mindcli.runtime.api.key");
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv("MINDCLI_RUNTIME_API_KEY");
-        }
-        return configured;
+        return ConfigValueResolver.current().resolve(
+                "mindcli.runtime.api.key", "MINDCLI_RUNTIME_API_KEY", null);
     }
 
     public void start() {

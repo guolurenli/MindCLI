@@ -1,5 +1,6 @@
 package com.mindcli.capability.memory;
 
+import com.mindcli.platform.config.ConfigValueResolver;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.platform.llm.context.ContextProfile;
@@ -545,17 +546,7 @@ public class MemoryManager {
     }
 
     static boolean isAutoExtractEnabled() {
-        String value = System.getProperty(AUTO_EXTRACT_PROPERTY);
-        if (value == null || value.isBlank()) {
-            value = System.getenv(AUTO_EXTRACT_ENV);
-        }
-        if (value == null) {
-            return false;
-        }
-        return switch (value.trim().toLowerCase()) {
-            case "true", "1", "yes", "on" -> true;
-            default -> false;
-        };
+        return ConfigValueResolver.current().resolveBoolean(AUTO_EXTRACT_PROPERTY, AUTO_EXTRACT_ENV, false);
     }
 
     private static String normalizeScope(String scope) {

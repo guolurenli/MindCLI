@@ -1,5 +1,6 @@
 package com.mindcli.platform.render;
 
+import com.mindcli.platform.config.ConfigValueResolver;
 import com.mindcli.platform.render.inline.InlineRenderer;
 import com.mindcli.platform.render.inline.TerminalCapabilities;
 import org.jline.terminal.Terminal;
@@ -27,15 +28,8 @@ public final class RendererFactory {
     }
 
     public static Mode resolveMode() {
-        String prop = System.getProperty("mindcli.renderer");
-        if (prop != null && !prop.isBlank()) {
-            return parse(prop);
-        }
-        String env = System.getenv("MINDCLI_RENDERER");
-        if (env != null && !env.isBlank()) {
-            return parse(env);
-        }
-        return Mode.INLINE;
+        return parse(ConfigValueResolver.current().resolve(
+                "mindcli.renderer", "MINDCLI_RENDERER", "inline"));
     }
 
     private static Mode parse(String raw) {

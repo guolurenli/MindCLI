@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
@@ -50,6 +51,36 @@ public final class ConfigValueResolver {
         }
         value = nonBlank(userDotEnv.get(environmentKey));
         return value == null ? defaultValue : value;
+    }
+
+    public boolean resolveBoolean(String propertyKey, String environmentKey, boolean defaultValue) {
+        String value = resolve(propertyKey, environmentKey, null);
+        if (value == null) {
+            return defaultValue;
+        }
+        return switch (value.toLowerCase(Locale.ROOT)) {
+            case "1", "true", "yes", "on" -> true;
+            case "0", "false", "no", "off" -> false;
+            default -> defaultValue;
+        };
+    }
+
+    public int resolveInt(String propertyKey, String environmentKey, int defaultValue) {
+        String value = resolve(propertyKey, environmentKey, null);
+        if (value == null) {
+            return defaultValue;
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException ignored) {
+            return defaultValue;
+        }
+    }
+
+    public static ConfigValueResolver current() {
+        return new ConfigValueResolver(
+                Path.of(System.getProperty("user.dir", ".")),
+                Path.of(System.getProperty("user.home", ".")));
     }
 
     private static Map<String, String> readDotEnv(Path file) {

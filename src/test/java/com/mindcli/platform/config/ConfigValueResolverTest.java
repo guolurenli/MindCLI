@@ -65,4 +65,16 @@ class ConfigValueResolverTest {
         assertNull(resolver.resolve("mindcli.other", "OTHER", null));
     }
 
+    @Test
+    void parsesBooleanAndIntegerUsingResolvedValue() throws Exception {
+        Path project = Files.createDirectory(tempDir.resolve("project"));
+        Path home = Files.createDirectory(tempDir.resolve("home"));
+        Files.writeString(project.resolve(".env"), "ENABLED=yes\nLIMIT=17\n");
+        ConfigValueResolver resolver = new ConfigValueResolver(project, home, key -> null, key -> null);
+
+        assertEquals(true, resolver.resolveBoolean("mindcli.enabled", "ENABLED", false));
+        assertEquals(17, resolver.resolveInt("mindcli.limit", "LIMIT", 5));
+        assertEquals(5, resolver.resolveInt("mindcli.missing", "MISSING", 5));
+    }
+
 }

@@ -1,5 +1,6 @@
 package com.mindcli.platform.render.inline;
 
+import com.mindcli.platform.config.ConfigValueResolver;
 import org.jline.terminal.Terminal;
 
 import java.io.IOException;
@@ -210,16 +211,8 @@ public final class TerminalMascotRenderer {
     }
 
     private static boolean mascotEnabled() {
-        String value = firstNonBlank(System.getProperty("mindcli.ui.mascot"),
-                System.getenv("MINDCLI_UI_MASCOT"));
-        return value == null || !"false".equalsIgnoreCase(value.trim());
-    }
-
-    private static String firstNonBlank(String first, String second) {
-        if (first != null && !first.isBlank()) {
-            return first;
-        }
-        return second == null || second.isBlank() ? null : second;
+        return ConfigValueResolver.current().resolveBoolean(
+                "mindcli.ui.mascot", "MINDCLI_UI_MASCOT", true);
     }
 
     @FunctionalInterface
@@ -263,10 +256,7 @@ public final class TerminalMascotRenderer {
     }
 
     private static List<String> command(int columns, int rows, Path image) {
-        String binary = firstNonBlank(System.getProperty(CHAFA_BIN_PROPERTY), System.getenv(CHAFA_BIN_ENV));
-        if (binary == null) {
-            binary = "chafa";
-        }
+        String binary = ConfigValueResolver.current().resolve(CHAFA_BIN_PROPERTY, CHAFA_BIN_ENV, "chafa");
         return List.of(binary, "-s", columns + "x" + rows,
                 "--dither", "ordered", image.toString());
     }

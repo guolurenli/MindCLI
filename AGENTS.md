@@ -68,6 +68,8 @@ MCP 动态工具：`mcp__{server}__{tool}`（+ resources 虚拟工具）。协�
 
 MCP 配置会合并用户级 `~/.mindcli/mcp.json` 与项目级 `.mindcli/mcp.json`；`${VAR}` 支持系统环境变量、系统属性、项目 `.env`、用户 `~/.env`。检测到 `STEP_API_KEY` 时会自动内置 `step_search` 远程 MCP（显式同名配置优先）。
 
+应用级运行配置统一通过 `platform/config/ConfigValueResolver` 读取，优先级固定为 `JVM system property > OS environment > 项目 .env > 用户 ~/.env > 默认值`；新增配置不要在业务模块重复实现 property/env/.env 解析。`user.home` / `user.dir` / `os.name`、JVM 编码和 `TERM` / `COLORTERM` / `COLUMNS` / `NO_COLOR` 等运行环境探测保留直接读取。
+
 DeepSeek V4 / Kimi thinking 模式下，assistant tool-call 消息的 `reasoning_content` 必须随下一轮请求历史带回；其他 provider 默认只把 reasoning 写日志 / 展示。
 DeepSeek SSE 调用默认强制 HTTP/1.1，避免部分网络/网关下 HTTP/2 长流被远端重置成 `stream was reset: INTERNAL_ERROR`。
 

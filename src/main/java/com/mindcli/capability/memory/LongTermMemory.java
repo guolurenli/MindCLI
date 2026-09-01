@@ -1,5 +1,6 @@
 package com.mindcli.capability.memory;
 
+import com.mindcli.platform.config.ConfigValueResolver;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.platform.text.MarkdownFrontmatterParser;
 import com.mindcli.platform.llm.LlmClient;
@@ -594,14 +595,10 @@ public class LongTermMemory implements MemoryStore {
     }
 
     private static File resolveStorageDir() {
-        String configuredDir = System.getProperty(STORAGE_DIR_PROPERTY);
-        if (configuredDir == null || configuredDir.isBlank()) {
-            configuredDir = System.getenv(STORAGE_DIR_ENV);
-        }
-        if (configuredDir != null && !configuredDir.isBlank()) {
-            return new File(configuredDir);
-        }
-        return new File(new File(System.getProperty("user.home"), ".mindcli"), "memory");
+        String configuredDir = ConfigValueResolver.current().resolve(
+                STORAGE_DIR_PROPERTY, STORAGE_DIR_ENV,
+                new File(new File(System.getProperty("user.home"), ".mindcli"), "memory").getPath());
+        return new File(configuredDir);
     }
 
     /**

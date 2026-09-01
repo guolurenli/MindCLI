@@ -1,5 +1,7 @@
 package com.mindcli.app.wechat;
 
+import com.mindcli.platform.config.ConfigValueResolver;
+
 import java.nio.file.Path;
 
 public final class WechatPaths {
@@ -7,13 +9,9 @@ public final class WechatPaths {
     }
 
     public static Path root() {
-        String configured = System.getProperty("mindcli.wechat.dir");
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv("MINDCLI_WECHAT_DIR");
-        }
-        if (configured == null || configured.isBlank()) {
-            configured = Path.of(System.getProperty("user.home"), ".mindcli", "wechat").toString();
-        }
+        String configured = ConfigValueResolver.current().resolve(
+                "mindcli.wechat.dir", "MINDCLI_WECHAT_DIR",
+                Path.of(System.getProperty("user.home"), ".mindcli", "wechat").toString());
         return Path.of(configured);
     }
 

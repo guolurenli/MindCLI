@@ -1,5 +1,6 @@
 package com.mindcli.capability.lsp;
 
+import com.mindcli.platform.config.ConfigValueResolver;
 import com.mindcli.platform.render.terminal.AnsiStyle;
 
 import java.util.List;
@@ -42,19 +43,9 @@ public final class LspDiagnosticFormatter {
     }
 
     static int maxDiagnostics() {
-        String property = System.getProperty("mindcli.lsp.max.diagnostics");
-        if (property == null || property.isBlank()) {
-            property = System.getenv("MINDCLI_LSP_MAX_DIAGNOSTICS");
-        }
-        if (property == null || property.isBlank()) {
-            return DEFAULT_MAX_DIAGNOSTICS;
-        }
-        try {
-            int parsed = Integer.parseInt(property.trim());
-            return parsed > 0 ? parsed : DEFAULT_MAX_DIAGNOSTICS;
-        } catch (NumberFormatException e) {
-            return DEFAULT_MAX_DIAGNOSTICS;
-        }
+        int parsed = ConfigValueResolver.current().resolveInt(
+                "mindcli.lsp.max.diagnostics", "MINDCLI_LSP_MAX_DIAGNOSTICS", DEFAULT_MAX_DIAGNOSTICS);
+        return parsed > 0 ? parsed : DEFAULT_MAX_DIAGNOSTICS;
     }
 
     private static String severityLabel(LspSeverity severity) {

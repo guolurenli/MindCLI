@@ -240,6 +240,8 @@ CLI 启动默认最多等待 MCP server 初始化 8 秒；超时后会先进入�
 
 模型配置可写入 `.env`、系统环境变量或 `~/.mindcli/config.json`。`/config provider ...` 会写 `~/.mindcli/config.json`；`.env` 适合本地开发快速启动。
 
+应用运行配置统一按 `JVM system property > OS environment > 项目 .env > 用户 ~/.env > 默认值` 解析；系统属性适合单次启动覆盖，项目 `.env` 优先于用户级通用配置。操作系统、JVM 编码和终端能力探测仍直接读取运行环境，不进入这条配置链。
+
 ```bash
 # 模型 API Key
 GLM_API_KEY=your_key

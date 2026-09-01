@@ -1,5 +1,6 @@
 package com.mindcli.platform.render.inline;
 
+import com.mindcli.platform.config.ConfigValueResolver;
 import org.jline.terminal.Size;
 import org.jline.terminal.Terminal;
 
@@ -75,10 +76,8 @@ public final class TerminalCapabilities {
         if (!supportsAnsi(terminal)) {
             return false;
         }
-        if (Boolean.parseBoolean(System.getenv("MINDCLI_NO_STATUSBAR"))) {
-            return false;
-        }
-        if (Boolean.parseBoolean(System.getProperty("mindcli.no.statusbar"))) {
+        if (ConfigValueResolver.current().resolveBoolean(
+                "mindcli.no.statusbar", "MINDCLI_NO_STATUSBAR", false)) {
             return false;
         }
         Size size = safeSize(terminal);

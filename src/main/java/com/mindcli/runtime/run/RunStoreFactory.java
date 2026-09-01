@@ -1,5 +1,6 @@
 package com.mindcli.runtime.run;
 
+import com.mindcli.platform.config.ConfigValueResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,13 +37,8 @@ public final class RunStoreFactory {
     }
 
     public static Path defaultRunsRoot() {
-        String configured = System.getProperty(RUNS_DIR_PROPERTY);
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv(RUNS_DIR_ENV);
-        }
-        if (configured == null || configured.isBlank()) {
-            configured = DEFAULT_RUNS_DIR;
-        }
+        String configured = ConfigValueResolver.current()
+                .resolve(RUNS_DIR_PROPERTY, RUNS_DIR_ENV, DEFAULT_RUNS_DIR);
         return Path.of(configured);
     }
 

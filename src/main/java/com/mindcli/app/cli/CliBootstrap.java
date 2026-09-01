@@ -55,19 +55,9 @@ final class CliBootstrap {
     }
 
     static Duration mcpStartupWait() {
-        String configured = System.getProperty("mindcli.mcp.startup.wait.seconds");
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv("MINDCLI_MCP_STARTUP_WAIT_SECONDS");
-        }
-        if (configured == null || configured.isBlank()) {
-            return Duration.ofSeconds(8);
-        }
-        try {
-            long seconds = Long.parseLong(configured.trim());
-            return seconds > 0 ? Duration.ofSeconds(seconds) : Duration.ofSeconds(8);
-        } catch (NumberFormatException ignored) {
-            return Duration.ofSeconds(8);
-        }
+        int seconds = resolver().resolveInt(
+                "mindcli.mcp.startup.wait.seconds", "MINDCLI_MCP_STARTUP_WAIT_SECONDS", 8);
+        return Duration.ofSeconds(seconds > 0 ? seconds : 8);
     }
 
     static String appendStartupNote(String current, String next) {
@@ -102,10 +92,7 @@ final class CliBootstrap {
     }
 
     private static void configureLogProperty(String propertyName, String envKey, String defaultValue) {
-        String configuredValue = System.getProperty(propertyName);
-        if (configuredValue == null || configuredValue.isBlank()) {
-            configuredValue = loadConfigValue(envKey, defaultValue);
-        }
+        String configuredValue = resolver().resolve(propertyName, envKey, defaultValue);
         if (configuredValue != null && !configuredValue.isBlank()) {
             if (LOG_DIR_PROPERTY.equals(propertyName)) {
                 configuredValue = expandHome(configuredValue.trim());
