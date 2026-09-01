@@ -4,6 +4,7 @@ import com.mindcli.capability.tool.ToolRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -23,10 +24,10 @@ class ToolResourceClassifierTest {
         List<ResourceKey> keys = classifier.classify(invocation("read_file", "{\"path\":\"src/Main.java\"}"), context);
 
         assertEquals(List.of(
-                new ResourceKey(ResourceScope.WORKSPACE, workspace.normalize().toString(), ResourceAccess.SHARED),
-                new ResourceKey(ResourceScope.DIRECTORY, workspace.normalize().toString(), ResourceAccess.SHARED),
-                new ResourceKey(ResourceScope.DIRECTORY, workspace.resolve("src").normalize().toString(), ResourceAccess.SHARED),
-                new ResourceKey(ResourceScope.FILE, workspace.resolve("src/Main.java").normalize().toString(), ResourceAccess.SHARED)
+                new ResourceKey(ResourceScope.WORKSPACE, canonicalWorkspace().toString(), ResourceAccess.SHARED),
+                new ResourceKey(ResourceScope.DIRECTORY, canonicalWorkspace().toString(), ResourceAccess.SHARED),
+                new ResourceKey(ResourceScope.DIRECTORY, canonicalWorkspace().resolve("src").toString(), ResourceAccess.SHARED),
+                new ResourceKey(ResourceScope.FILE, canonicalWorkspace().resolve(normalizeCase("src/Main.java")).toString(), ResourceAccess.SHARED)
         ), keys);
     }
 
@@ -37,10 +38,50 @@ class ToolResourceClassifierTest {
         List<ResourceKey> keys = classifier.classify(invocation("write_file", "{\"path\":\"README.md\",\"content\":\"x\"}"), context);
 
         assertEquals(List.of(
-                new ResourceKey(ResourceScope.WORKSPACE, workspace.normalize().toString(), ResourceAccess.SHARED),
-                new ResourceKey(ResourceScope.DIRECTORY, workspace.normalize().toString(), ResourceAccess.SHARED),
-                new ResourceKey(ResourceScope.FILE, workspace.resolve("README.md").normalize().toString(), ResourceAccess.EXCLUSIVE)
+                new ResourceKey(ResourceScope.WORKSPACE, canonicalWorkspace().toString(), ResourceAccess.SHARED),
+                new ResourceKey(ResourceScope.DIRECTORY, canonicalWorkspace().toString(), ResourceAccess.SHARED),
+                new ResourceKey(ResourceScope.FILE, canonicalWorkspace().resolve(normalizeCase("README.md")).toString(), ResourceAccess.EXCLUSIVE)
         ), keys);
+    }
+
+    @Test
+    void listDirUsesExclusiveDirectoryLock() {
+        AgentRunContext context = context();
+
+        List<ResourceKey> keys = classifier.classify(invocation("list_dir", "{\"path\":\"src\"}"), context);
+
+        assertTrue(keys.contains(new ResourceKey(ResourceScope.DIRECTORY,
+                canonicalWorkspace().resolve("src").toString(), ResourceAccess.EXCLUSIVE)));
+    }
+
+    @Test
+    void saveMemoryUsesExclusiveLongTermMemoryLock() {
+        AgentRunContext context = context();
+
+        List<ResourceKey> keys = classifier.classify(invocation("save_memory", "{\"fact\":\"x\"}"), context);
+
+        assertEquals(List.of(new ResourceKey(ResourceScope.MEMORY, "long-term", ResourceAccess.EXCLUSIVE)), keys);
+    }
+
+    @Test
+    void symlinkAndTargetFileShareTheSameFileLockWhenSupported() throws Exception {
+        Path target = workspace.resolve("target.txt");
+        Files.writeString(target, "x");
+        Path link = workspace.resolve("alias.txt");
+        try {
+            Files.createSymbolicLink(link, target.getFileName());
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException e) {
+            return;
+        }
+
+        ResourceKey targetKey = classifier.classify(
+                invocation("write_file", "{\"path\":\"target.txt\",\"content\":\"a\"}"), context())
+                .stream().filter(key -> key.scope() == ResourceScope.FILE).findFirst().orElseThrow();
+        ResourceKey linkKey = classifier.classify(
+                invocation("write_file", "{\"path\":\"alias.txt\",\"content\":\"b\"}"), context())
+                .stream().filter(key -> key.scope() == ResourceScope.FILE).findFirst().orElseThrow();
+
+        assertEquals(targetKey, linkKey);
     }
 
     @Test
@@ -49,7 +90,7 @@ class ToolResourceClassifierTest {
 
         List<ResourceKey> keys = classifier.classify(invocation("execute_command", "{\"command\":\"mvn test\"}"), context);
 
-        assertEquals(List.of(new ResourceKey(ResourceScope.WORKSPACE, workspace.normalize().toString(), ResourceAccess.EXCLUSIVE)), keys);
+        assertEquals(List.of(new ResourceKey(ResourceScope.WORKSPACE, canonicalWorkspace().toString(), ResourceAccess.EXCLUSIVE)), keys);
     }
 
     @Test
@@ -58,7 +99,7 @@ class ToolResourceClassifierTest {
 
         List<ResourceKey> keys = classifier.classify(invocation("execute_command", "{\"command\":\"git status --short\"}"), context);
 
-        assertEquals(List.of(new ResourceKey(ResourceScope.WORKSPACE, workspace.normalize().toString(), ResourceAccess.SHARED)), keys);
+        assertEquals(List.of(new ResourceKey(ResourceScope.WORKSPACE, canonicalWorkspace().toString(), ResourceAccess.SHARED)), keys);
     }
 
     @Test
@@ -68,7 +109,7 @@ class ToolResourceClassifierTest {
         List<ResourceKey> keys = classifier.classify(invocation("execute_command",
                 "{\"command\":\"git diff --output=changes.patch\"}"), context);
 
-        assertEquals(List.of(new ResourceKey(ResourceScope.WORKSPACE, workspace.normalize().toString(), ResourceAccess.EXCLUSIVE)), keys);
+        assertEquals(List.of(new ResourceKey(ResourceScope.WORKSPACE, canonicalWorkspace().toString(), ResourceAccess.EXCLUSIVE)), keys);
     }
 
     @Test
@@ -78,7 +119,7 @@ class ToolResourceClassifierTest {
         List<ResourceKey> keys = classifier.classify(invocation("execute_command",
                 "{\"command\":\"git diff --ext-diff\"}"), context);
 
-        assertEquals(List.of(new ResourceKey(ResourceScope.WORKSPACE, workspace.normalize().toString(), ResourceAccess.EXCLUSIVE)), keys);
+        assertEquals(List.of(new ResourceKey(ResourceScope.WORKSPACE, canonicalWorkspace().toString(), ResourceAccess.EXCLUSIVE)), keys);
     }
 
     @Test
@@ -88,7 +129,7 @@ class ToolResourceClassifierTest {
         List<ResourceKey> keys = classifier.classify(invocation("execute_command",
                 "{\"command\":\"git status | Out-File status.txt\"}"), context);
 
-        assertEquals(List.of(new ResourceKey(ResourceScope.WORKSPACE, workspace.normalize().toString(), ResourceAccess.EXCLUSIVE)), keys);
+        assertEquals(List.of(new ResourceKey(ResourceScope.WORKSPACE, canonicalWorkspace().toString(), ResourceAccess.EXCLUSIVE)), keys);
     }
 
     @Test
@@ -115,12 +156,26 @@ class ToolResourceClassifierTest {
 
         List<ResourceKey> keys = classifier.classify(invocation("custom_mutator", "{}"), context);
 
-        assertTrue(keys.contains(new ResourceKey(ResourceScope.WORKSPACE, workspace.normalize().toString(), ResourceAccess.EXCLUSIVE)));
+        assertTrue(keys.contains(new ResourceKey(ResourceScope.WORKSPACE, canonicalWorkspace().toString(), ResourceAccess.EXCLUSIVE)));
         assertTrue(keys.contains(new ResourceKey(ResourceScope.UNKNOWN, "custom_mutator", ResourceAccess.EXCLUSIVE)));
     }
 
     private AgentRunContext context() {
         return AgentRunContext.create(AgentMode.REACT, "test", workspace.toString());
+    }
+
+    private Path canonicalWorkspace() {
+        try {
+            return Path.of(normalizeCase(workspace.toRealPath().toString()));
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private static String normalizeCase(String value) {
+        return System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win")
+                ? value.toLowerCase(java.util.Locale.ROOT)
+                : value;
     }
 
     private static ToolRegistry.ToolInvocation invocation(String name, String args) {

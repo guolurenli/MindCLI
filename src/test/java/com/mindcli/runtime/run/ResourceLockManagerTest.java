@@ -8,6 +8,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -69,6 +70,33 @@ class ResourceLockManagerTest {
         assertTrue(first.get(3, TimeUnit.SECONDS));
         assertTrue(second.get(3, TimeUnit.SECONDS));
         executor.shutdownNow();
+    }
+
+    @Test
+    void interruptibleAcquisitionStopsWaitingWhenThreadIsInterrupted() throws Exception {
+        ResourceLockManager locks = new ResourceLockManager();
+        ResourceKey key = new ResourceKey(ResourceScope.FILE, "blocked.txt", ResourceAccess.EXCLUSIVE);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        CountDownLatch waiting = new CountDownLatch(1);
+        AtomicReference<Thread> waiter = new AtomicReference<>();
+
+        try (ResourceLockManager.LockLease ignored = locks.acquireAll(List.of(key))) {
+            Future<Boolean> interrupted = executor.submit(() -> {
+                try {
+                    waiter.set(Thread.currentThread());
+                    waiting.countDown();
+                    locks.acquireAllInterruptibly(List.of(key));
+                    return false;
+                } catch (InterruptedException e) {
+                    return true;
+                }
+            });
+            assertTrue(waiting.await(1, TimeUnit.SECONDS));
+            waiter.get().interrupt();
+            assertTrue(interrupted.get(1, TimeUnit.SECONDS));
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     private static boolean acquireAfterReady(ResourceLockManager locks, CountDownLatch ready,

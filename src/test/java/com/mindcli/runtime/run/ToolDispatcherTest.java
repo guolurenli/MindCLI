@@ -2,16 +2,20 @@ package com.mindcli.runtime.run;
 
 import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.capability.tool.ToolRegistry;
+import com.mindcli.platform.hitl.ApprovalPolicy;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -21,9 +25,9 @@ class ToolDispatcherTest {
 
     @Test
     void dispatchPreservesToolCallOrderAndArguments() {
-        List<ToolRegistry.ToolInvocation> seen = new ArrayList<>();
+        Map<String, ToolRegistry.ToolInvocation> seen = new java.util.concurrent.ConcurrentHashMap<>();
         ToolDispatcher dispatcher = new ToolDispatcher(invocations -> {
-            seen.addAll(invocations);
+            invocations.forEach(invocation -> seen.put(invocation.id(), invocation));
             return invocations.stream()
                     .map(invocation -> new ToolRegistry.ToolExecutionResult(
                             invocation.id(), invocation.name(), invocation.argumentsJson(),
@@ -37,8 +41,98 @@ class ToolDispatcherTest {
         ));
 
         assertEquals(List.of("call_1", "call_2"), outcomes.stream().map(ToolOutcome::id).toList());
-        assertEquals("{\"path\":\"a.txt\"}", seen.get(0).argumentsJson());
+        assertEquals("{\"path\":\"a.txt\"}", seen.get("call_1").argumentsJson());
+        assertEquals("{\"query\":\"Agent\"}", seen.get("call_2").argumentsJson());
         assertEquals("ok:grep_code", outcomes.get(1).text());
+    }
+
+    @Test
+    void dispatchPropagatesApprovalPolicyToToolWorkersAndSerializesApprovalPrompts() {
+        List<Boolean> approvalDecisions = java.util.Collections.synchronizedList(new ArrayList<>());
+        AtomicInteger active = new AtomicInteger();
+        AtomicInteger peak = new AtomicInteger();
+        ToolRegistry registry = new ToolRegistry() {
+            @Override
+            public String executeTool(String name, String argumentsJson) {
+                approvalDecisions.add(ApprovalPolicy.requiresApproval(name));
+                int current = active.incrementAndGet();
+                peak.updateAndGet(previous -> Math.max(previous, current));
+                try {
+                    Thread.sleep(150);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    active.decrementAndGet();
+                }
+                return "ok:" + name;
+            }
+        };
+        ToolDispatcher dispatcher = new ToolDispatcher(registry);
+        AgentRunContext context = AgentRunContext.create(
+                AgentMode.REACT, "test", "workspace", Map.of("approvalPolicy", "untrusted"));
+
+        List<ToolOutcome> outcomes = dispatcher.dispatch(List.of(
+                toolCall("call_1", "read_file", "{\"path\":\"a.txt\"}"),
+                toolCall("call_2", "read_file", "{\"path\":\"b.txt\"}")), context);
+
+        assertEquals(List.of(true, true), approvalDecisions);
+        assertEquals(1, peak.get(), "calls that require interactive approval must not prompt concurrently");
+        assertEquals(List.of("call_1", "call_2"), outcomes.stream().map(ToolOutcome::id).toList());
+    }
+
+    @Test
+    void timedOutToolKeepsItsResourceLockUntilWorkerActuallyStops() throws Exception {
+        CountDownLatch stubbornToolStarted = new CountDownLatch(1);
+        CountDownLatch stubbornToolFinished = new CountDownLatch(1);
+        CountDownLatch secondWriteEntered = new CountDownLatch(1);
+        ToolRegistry registry = new ToolRegistry() {
+            @Override
+            public String executeTool(String name, String argumentsJson) {
+                if (!"write_file".equals(name)) {
+                    return "fast";
+                }
+                stubbornToolStarted.countDown();
+                long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1_800);
+                while (System.nanoTime() < deadline) {
+                    try {
+                        Thread.sleep(50);
+                    } catch (InterruptedException ignored) {
+                        // Reproduce a third-party or external tool that does not cooperate with cancellation.
+                    }
+                }
+                stubbornToolFinished.countDown();
+                return "stopped";
+            }
+        };
+        setToolBatchTimeoutSeconds(registry, 1);
+        ToolDispatcher first = new ToolDispatcher(registry);
+        ToolDispatcher second = new ToolDispatcher(invocations -> {
+            secondWriteEntered.countDown();
+            return completed(invocations, "second");
+        });
+        AgentRunContext context = AgentRunContext.create(AgentMode.REACT, "test", "workspace");
+        ExecutorService callers = Executors.newFixedThreadPool(2);
+
+        try {
+            Future<List<ToolOutcome>> firstFuture = callers.submit(() -> first.dispatch(List.of(
+                    toolCall("call_1", "write_file", "{\"path\":\"shared.txt\",\"content\":\"a\"}"),
+                    toolCall("call_2", "read_file", "{\"path\":\"other.txt\"}")), context));
+            assertTrue(stubbornToolStarted.await(1, TimeUnit.SECONDS));
+            assertEquals(ToolOutcomeStatus.TIMED_OUT,
+                    firstFuture.get(2, TimeUnit.SECONDS).get(0).status());
+            assertEquals(1, stubbornToolFinished.getCount(), "the timed-out worker should still be running");
+
+            Future<List<ToolOutcome>> secondFuture = callers.submit(() -> second.dispatch(List.of(
+                    toolCall("call_3", "write_file", "{\"path\":\"shared.txt\",\"content\":\"b\"}")), context));
+
+            assertFalse(secondWriteEntered.await(250, TimeUnit.MILLISECONDS),
+                    "a timed-out worker must retain its lock until its code really exits");
+            assertTrue(stubbornToolFinished.await(2, TimeUnit.SECONDS));
+            assertEquals(ToolOutcomeStatus.COMPLETED,
+                    secondFuture.get(1, TimeUnit.SECONDS).get(0).status());
+        } finally {
+            callers.shutdownNow();
+        }
     }
 
     @Test
@@ -258,6 +352,44 @@ class ToolDispatcherTest {
         }
     }
 
+    @Test
+    void listDirSerializesWithWritesBelowThatDirectory() throws Exception {
+        AgentRunContext context = AgentRunContext.create(AgentMode.REACT, "test", "workspace");
+        CountDownLatch listEntered = new CountDownLatch(1);
+        CountDownLatch releaseList = new CountDownLatch(1);
+        CountDownLatch writeEntered = new CountDownLatch(1);
+        ToolDispatcher listDispatcher = new ToolDispatcher(invocations -> {
+            listEntered.countDown();
+            await(releaseList);
+            return completed(invocations, "list");
+        });
+        ToolDispatcher writeDispatcher = new ToolDispatcher(invocations -> {
+            writeEntered.countDown();
+            return completed(invocations, "write");
+        });
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+
+        try {
+            Future<List<ToolOutcome>> listFuture = executor.submit(() ->
+                    listDispatcher.dispatch(List.of(toolCall("call_1", "list_dir",
+                            "{\"path\":\"src\"}")), context));
+            assertTrue(listEntered.await(1, TimeUnit.SECONDS));
+
+            Future<List<ToolOutcome>> writeFuture = executor.submit(() ->
+                    writeDispatcher.dispatch(List.of(toolCall("call_2", "write_file",
+                            "{\"path\":\"src/A.java\",\"content\":\"class A {}\"}")), context));
+
+            assertFalse(writeEntered.await(250, TimeUnit.MILLISECONDS));
+            releaseList.countDown();
+
+            assertEquals(ToolOutcomeStatus.COMPLETED, listFuture.get(1, TimeUnit.SECONDS).get(0).status());
+            assertEquals(ToolOutcomeStatus.COMPLETED, writeFuture.get(1, TimeUnit.SECONDS).get(0).status());
+        } finally {
+            releaseList.countDown();
+            executor.shutdownNow();
+        }
+    }
+
     private static ToolDispatcher dispatcher(ToolBatchExecutor executor, HookManager hookManager) {
         return new ToolDispatcher(
                 executor,
@@ -277,6 +409,12 @@ class ToolDispatcherTest {
                         invocation.id(), invocation.name(), invocation.argumentsJson(),
                         prefix + ":" + invocation.name(), 1, false, List.of()))
                 .toList();
+    }
+
+    private static void setToolBatchTimeoutSeconds(ToolRegistry registry, long seconds) throws Exception {
+        Field field = ToolRegistry.class.getDeclaredField("toolBatchTimeoutSeconds");
+        field.setAccessible(true);
+        field.setLong(registry, seconds);
     }
 
     private static void await(CountDownLatch latch) {

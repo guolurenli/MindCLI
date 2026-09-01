@@ -14,6 +14,15 @@ public final class ResourceLockManager {
     private final ConcurrentHashMap<ResourceIdentity, ReentrantReadWriteLock> locks = new ConcurrentHashMap<>();
 
     public LockLease acquireAll(List<ResourceKey> keys) {
+        try {
+            return acquireAllInterruptibly(keys);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while waiting for resource lock", e);
+        }
+    }
+
+    public LockLease acquireAllInterruptibly(List<ResourceKey> keys) throws InterruptedException {
         List<LockRequest> requests = collapse(keys);
         if (requests.isEmpty()) {
             return () -> {
@@ -29,11 +38,11 @@ public final class ResourceLockManager {
                 Lock lock = request.access() == ResourceAccess.EXCLUSIVE
                         ? rwLock.writeLock()
                         : rwLock.readLock();
-                lock.lock();
+                lock.lockInterruptibly();
                 acquired.add(lock);
             }
             return new AcquiredLockLease(acquired);
-        } catch (RuntimeException e) {
+        } catch (InterruptedException | RuntimeException e) {
             releaseReverse(acquired);
             throw e;
         }

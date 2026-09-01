@@ -10,31 +10,54 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 public final class ToolDispatcher {
     private static final ResourceLockManager SHARED_LOCK_MANAGER = new ResourceLockManager();
+    private static final int MAX_PARALLEL_TOOLS = 4;
+    private static final long DEFAULT_BATCH_TIMEOUT_SECONDS = 90;
 
     private final ToolBatchExecutor executor;
     private final ToolResourceClassifier resourceClassifier;
     private final ResourceLockManager lockManager;
     private final HookManager hookManager;
+    private final long batchTimeoutSeconds;
 
     public ToolDispatcher(ToolRegistry toolRegistry) {
-        this(Objects.requireNonNull(toolRegistry, "toolRegistry")::executeTools);
+        this(Objects.requireNonNull(toolRegistry, "toolRegistry")::executeTools,
+                new ToolResourceClassifier(),
+                SHARED_LOCK_MANAGER,
+                HookManager.noop(),
+                toolRegistry.getToolBatchTimeoutSeconds());
     }
 
     ToolDispatcher(ToolBatchExecutor executor) {
-        this(executor, new ToolResourceClassifier(), SHARED_LOCK_MANAGER, HookManager.noop());
+        this(executor, new ToolResourceClassifier(), SHARED_LOCK_MANAGER, HookManager.noop(),
+                DEFAULT_BATCH_TIMEOUT_SECONDS);
     }
 
     ToolDispatcher(ToolBatchExecutor executor,
                    ToolResourceClassifier resourceClassifier,
                    ResourceLockManager lockManager,
                    HookManager hookManager) {
+        this(executor, resourceClassifier, lockManager, hookManager, DEFAULT_BATCH_TIMEOUT_SECONDS);
+    }
+
+    ToolDispatcher(ToolBatchExecutor executor,
+                   ToolResourceClassifier resourceClassifier,
+                   ResourceLockManager lockManager,
+                   HookManager hookManager,
+                   long batchTimeoutSeconds) {
         this.executor = Objects.requireNonNull(executor, "executor");
         this.resourceClassifier = Objects.requireNonNull(resourceClassifier, "resourceClassifier");
         this.lockManager = Objects.requireNonNull(lockManager, "lockManager");
         this.hookManager = hookManager == null ? HookManager.noop() : hookManager;
+        this.batchTimeoutSeconds = Math.max(1, batchTimeoutSeconds);
     }
 
     public List<ToolOutcome> dispatch(List<LlmClient.ToolCall> toolCalls) {
@@ -105,13 +128,9 @@ public final class ToolDispatcher {
             prepared.add(new PreparedInvocation(i, effectiveInvocation, resourceKeys, metadata));
         }
 
-        ApprovalPolicy.applyApprovalPolicy(effectiveContext.metadata().getOrDefault("approvalPolicy", "on-request"));
-        try {
-            for (List<PreparedInvocation> batch : batches(prepared)) {
-                executeBatch(batch, effectiveContext, outcomes);
-            }
-        } finally {
-            ApprovalPolicy.clearApprovalPolicy();
+        String approvalPolicy = effectiveContext.metadata().getOrDefault("approvalPolicy", "on-request");
+        for (List<PreparedInvocation> batch : batches(prepared, approvalPolicy)) {
+            executeBatch(batch, effectiveContext, approvalPolicy, outcomes);
         }
 
         return outcomes.stream()
@@ -123,53 +142,99 @@ public final class ToolDispatcher {
     }
 
     private void executeBatch(List<PreparedInvocation> batch, AgentRunContext context,
+                              String approvalPolicy,
                               List<ToolOutcome> outcomes) {
         if (batch.isEmpty()) {
             return;
         }
-        List<ResourceKey> batchKeys = batch.stream()
-                .flatMap(prepared -> prepared.resourceKeys().stream())
-                .toList();
+        int parallelism = Math.min(batch.size(), MAX_PARALLEL_TOOLS);
+        ExecutorService workers = Executors.newFixedThreadPool(parallelism, runnable -> {
+            Thread thread = new Thread(runnable, "mindcli-dispatch-worker");
+            thread.setDaemon(true);
+            return thread;
+        });
         try {
-            List<ToolRegistry.ToolExecutionResult> results;
-            try (ResourceLockManager.LockLease ignored = lockManager.acquireAll(batchKeys)) {
-                results = executor.execute(batch.stream()
-                        .map(PreparedInvocation::invocation)
-                        .toList());
-            }
-            if (results == null) {
-                for (PreparedInvocation prepared : batch) {
-                    ToolOutcome outcome = ToolOutcome.failed(
-                            prepared.invocation(),
-                            "Tool registry returned null result list",
-                            prepared.metadata());
-                    fireTerminalHook(context, prepared.invocation(), outcome);
-                    outcomes.set(prepared.index(), outcome);
-                }
-                return;
-            }
+            List<Callable<ToolRegistry.ToolExecutionResult>> tasks = batch.stream()
+                    .<Callable<ToolRegistry.ToolExecutionResult>>map(prepared ->
+                            () -> executeOne(prepared, approvalPolicy))
+                    .toList();
+            List<Future<ToolRegistry.ToolExecutionResult>> futures =
+                    workers.invokeAll(tasks, batchTimeoutSeconds, TimeUnit.SECONDS);
+
             for (int i = 0; i < batch.size(); i++) {
                 PreparedInvocation prepared = batch.get(i);
-                ToolOutcome outcome;
-                if (i >= results.size()) {
-                    outcome = ToolOutcome.failed(prepared.invocation(),
-                            "Tool registry returned too few results",
-                            prepared.metadata());
-                } else {
-                    outcome = ToolOutcome.fromLegacy(results.get(i))
-                            .withArgumentsJson(prepared.invocation().argumentsJson())
-                            .withMetadata(prepared.metadata());
-                }
+                ToolOutcome outcome = outcomeFromFuture(prepared, futures.get(i));
                 fireTerminalHook(context, prepared.invocation(), outcome);
                 outcomes.set(prepared.index(), outcome);
             }
-        } catch (Exception e) {
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             for (PreparedInvocation prepared : batch) {
-                ToolOutcome outcome = ToolOutcome.failed(prepared.invocation(), errorMessage(e), prepared.metadata());
-                hookManager.fire(HookEvent.withError(prepared.invocation(), context, e));
+                ToolOutcome outcome = new ToolOutcome(
+                        prepared.invocation().id(), prepared.invocation().name(),
+                        prepared.invocation().argumentsJson(), ToolOutcomeStatus.CANCELLED,
+                        "工具执行已取消: 批次执行被中断", 0,
+                        "批次执行被中断", "CANCELLED", List.of(), prepared.metadata());
+                fireTerminalHook(context, prepared.invocation(), outcome);
                 outcomes.set(prepared.index(), outcome);
             }
+        } finally {
+            workers.shutdownNow();
         }
+    }
+
+    private ToolRegistry.ToolExecutionResult executeOne(PreparedInvocation prepared,
+                                                        String approvalPolicy) throws Exception {
+        ApprovalPolicy.applyApprovalPolicy(approvalPolicy);
+        try (ResourceLockManager.LockLease ignored =
+                     lockManager.acquireAllInterruptibly(prepared.resourceKeys())) {
+            List<ToolRegistry.ToolExecutionResult> results = executor.execute(List.of(prepared.invocation()));
+            if (results == null) {
+                throw new IllegalStateException("Tool registry returned null result list");
+            }
+            if (results.isEmpty()) {
+                throw new IllegalStateException("Tool registry returned too few results");
+            }
+            return results.get(0);
+        } finally {
+            ApprovalPolicy.clearApprovalPolicy();
+        }
+    }
+
+    private ToolOutcome outcomeFromFuture(PreparedInvocation prepared,
+                                          Future<ToolRegistry.ToolExecutionResult> future) {
+        if (future.isCancelled()) {
+            return timedOut(prepared);
+        }
+        try {
+            return ToolOutcome.fromLegacy(future.get())
+                    .withArgumentsJson(prepared.invocation().argumentsJson())
+                    .withMetadata(prepared.metadata());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return cancelled(prepared, "收集工具结果时被中断");
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            String message = cause == null ? errorMessage(e) : errorMessage(cause);
+            return ToolOutcome.failed(prepared.invocation(), message, prepared.metadata());
+        }
+    }
+
+    private ToolOutcome timedOut(PreparedInvocation prepared) {
+        String text = "工具执行超时（" + batchTimeoutSeconds + "秒），已取消";
+        return new ToolOutcome(
+                prepared.invocation().id(), prepared.invocation().name(),
+                prepared.invocation().argumentsJson(), ToolOutcomeStatus.TIMED_OUT,
+                text, TimeUnit.SECONDS.toMillis(batchTimeoutSeconds), text,
+                "TIMEOUT", List.of(), prepared.metadata());
+    }
+
+    private static ToolOutcome cancelled(PreparedInvocation prepared, String reason) {
+        return new ToolOutcome(
+                prepared.invocation().id(), prepared.invocation().name(),
+                prepared.invocation().argumentsJson(), ToolOutcomeStatus.CANCELLED,
+                "工具执行已取消: " + reason, 0, reason,
+                "CANCELLED", List.of(), prepared.metadata());
     }
 
     private void fireTerminalHook(AgentRunContext context, ToolRegistry.ToolInvocation invocation,
@@ -194,10 +259,19 @@ public final class ToolDispatcher {
         return metadata;
     }
 
-    private static List<List<PreparedInvocation>> batches(List<PreparedInvocation> prepared) {
+    private static List<List<PreparedInvocation>> batches(List<PreparedInvocation> prepared,
+                                                          String approvalPolicy) {
         List<List<PreparedInvocation>> batches = new ArrayList<>();
         List<PreparedInvocation> current = new ArrayList<>();
         for (PreparedInvocation invocation : prepared) {
+            if (ApprovalPolicy.requiresApproval(invocation.invocation().name(), approvalPolicy)) {
+                if (!current.isEmpty()) {
+                    batches.add(List.copyOf(current));
+                    current.clear();
+                }
+                batches.add(List.of(invocation));
+                continue;
+            }
             if (!current.isEmpty() && conflicts(current, invocation)) {
                 batches.add(List.copyOf(current));
                 current.clear();
@@ -231,9 +305,9 @@ public final class ToolDispatcher {
                 function == null ? "" : function.arguments());
     }
 
-    private static String errorMessage(Exception e) {
-        String message = e.getMessage();
-        return message == null || message.isBlank() ? e.getClass().getSimpleName() : message;
+    private static String errorMessage(Throwable error) {
+        String message = error.getMessage();
+        return message == null || message.isBlank() ? error.getClass().getSimpleName() : message;
     }
 
     private static String formatResourceKeys(List<ResourceKey> keys) {

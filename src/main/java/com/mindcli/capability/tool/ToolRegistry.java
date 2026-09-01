@@ -1202,6 +1202,10 @@ public class ToolRegistry {
         return auditLog;
     }
 
+    public long getToolBatchTimeoutSeconds() {
+        return toolBatchTimeoutSeconds;
+    }
+
     /**
      * 并行执行同一轮 LLM 返回的多个工具调用。
      *

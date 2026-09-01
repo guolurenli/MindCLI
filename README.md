@@ -94,7 +94,7 @@ src/main/java/com/mindcli/
 |---|---|
 | 执行模式 | 默认 ReAct；`/plan` 进入计划审阅与执行；`/team` 由 orchestrator 内建规划 + explorer/worker 协作，worker/explorer 自审修复，多个无依赖写入步骤按一 Step 一 worktree 隔离并行，在临时 integration worktree 中合并，冲突不静默覆盖 |
 | Runtime 账本 | `JsonlRunStore` 按 run 写 JSONL 事件，投影 `run.meta.json` / `run.state.json`，支持 child run 摘要 |
-| 工具调度 | `ToolDispatcher` 统一进入 Hook、资源分类、资源锁与结构化 `ToolOutcome` |
+| 工具调度 | `ToolDispatcher` 统一进入 Hook、资源分类、资源锁与结构化 `ToolOutcome`；锁跟随实际工具线程生命周期，审批策略显式传播到工具线程，需要 HITL 的调用串行提示 |
 | 代码理解 | `glob_files` / `grep_code` / `read_file` 实时探索，按需逐步缩小范围 |
 | 记忆治理 | `/save` 手动长期记忆；自动提取只生成候选；`/memory approve/reject/export --audit` 管理审计链路 |
 | MCP | 基于官方 Model Context Protocol Java SDK 2.0.1，合并用户级 `~/.mindcli/mcp.json` 和项目级 `.mindcli/mcp.json`，支持 stdio 与 Streamable HTTP |
@@ -110,14 +110,14 @@ src/main/java/com/mindcli/
 |---|---|
 | `read_file` | 读取项目根内文件，支持 `offset` / `limit` 分段读取 |
 | `write_file` | 写入项目根内文件，单文件 5MB 上限，写后触发 diff / LSP 观察链路 |
-| `list_dir` | 列出项目根内目录 |
+| `list_dir` | 列出项目根内目录；枚举期间与该目录下文件写入互斥 |
 | `glob_files` | 按 glob 模式查找文件，默认忽略 `.git`、`target`、`node_modules` 等目录 |
 | `grep_code` | 按关键字或正则搜索代码，优先 ripgrep，失败时回退 Java 扫描 |
 | `execute_command` | 在项目目录执行短时 shell 命令，默认 60 秒超时 |
 | `create_project` | 创建 `java` / `python` / `node` 项目骨架 |
 | `web_search` / `web_fetch` | 联网搜索与 URL 正文抓取 |
 | `browser_connect` / `browser_disconnect` / `browser_status` | 管理 Chrome DevTools MCP 登录态复用 |
-| `save_memory` | 用户明确要求记住时写入长期记忆 |
+| `save_memory` | 用户明确要求记住时写入长期记忆；写入期间与长期记忆查询互斥 |
 | `search_memory` | 按关键词搜索当前项目可见的长期记忆候选，返回 ID、标题、短提示和读取指引；不自动裁决冲突 |
 | `read_memory` | 按记忆 ID 读取当前项目可见的单条长期记忆正文 |
 | `load_skill` | 加载匹配任务的 `SKILL.md` 全文 |

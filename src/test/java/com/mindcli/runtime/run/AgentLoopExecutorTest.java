@@ -72,10 +72,11 @@ class AgentLoopExecutorTest {
                 new LlmClient.ChatResponse("assistant", "", List.of(toolCall), 10, 2),
                 new LlmClient.ChatResponse("assistant", "final after tool", null, 8, 4)
         ));
+        ToolResourceClassifier classifier = new ToolResourceClassifier();
         ToolDispatcher dispatcher = new ToolDispatcher(
                 invocations -> List.of(new ToolRegistry.ToolExecutionResult(
                         "call_1", "read_file", "{\"path\":\"a.txt\"}", "file text", 7, false, List.of())),
-                new ToolResourceClassifier(),
+                classifier,
                 new ResourceLockManager(),
                 HookManager.noop());
         InMemoryRunStore runStore = new InMemoryRunStore();
@@ -89,7 +90,10 @@ class AgentLoopExecutorTest {
                 .findFirst()
                 .orElseThrow();
         assertEquals("COMPLETED", outcome.attributes().get("status"));
-        assertTrue(outcome.attributes().get("lockKeys").contains("WORKSPACE:workspace:SHARED"));
+        String expectedLockKeys = String.join(",", classifier.classify(
+                        new ToolRegistry.ToolInvocation("call_1", "read_file", "{\"path\":\"a.txt\"}"), runContext)
+                .stream().sorted().map(ResourceKey::toString).toList());
+        assertEquals(expectedLockKeys, outcome.attributes().get("lockKeys"));
         assertEquals("ALLOW", outcome.attributes().get("hookDecision"));
     }
 

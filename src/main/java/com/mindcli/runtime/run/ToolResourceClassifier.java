@@ -6,6 +6,7 @@ import com.mindcli.platform.hitl.ApprovalPolicy;
 import com.mindcli.capability.tool.ToolRegistry;
 
 import java.nio.file.Path;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
@@ -34,11 +35,13 @@ public final class ToolResourceClassifier {
         return switch (name) {
             case "read_file" -> fileAccess(effectiveContext, args.get("path"), ResourceAccess.SHARED);
             case "write_file" -> fileAccess(effectiveContext, args.get("path"), ResourceAccess.EXCLUSIVE);
-            case "list_dir" -> directoryAccess(effectiveContext, args.get("path"), ResourceAccess.SHARED);
+            case "list_dir" -> directoryAccess(effectiveContext, args.get("path"), ResourceAccess.EXCLUSIVE);
             case "glob_files", "grep_code" ->
                     List.of(workspace(effectiveContext, ResourceAccess.SHARED));
             case "search_memory", "read_memory" ->
                     List.of(new ResourceKey(ResourceScope.MEMORY, "long-term", ResourceAccess.SHARED));
+            case "save_memory" ->
+                    List.of(new ResourceKey(ResourceScope.MEMORY, "long-term", ResourceAccess.EXCLUSIVE));
             case "web_search", "web_fetch" ->
                     List.of(new ResourceKey(ResourceScope.NETWORK, "web", ResourceAccess.SHARED));
             case "create_project" -> createProjectAccess(effectiveContext, args);
@@ -130,7 +133,7 @@ public final class ToolResourceClassifier {
         if (workspace == null || workspace.isBlank()) {
             workspace = System.getProperty("user.dir", "");
         }
-        return Path.of(workspace).normalize().toString();
+        return canonicalize(Path.of(workspace)).toString();
     }
 
     private static String resolve(AgentRunContext context, String rawPath) {
@@ -142,7 +145,35 @@ public final class ToolResourceClassifier {
         if (!candidate.isAbsolute()) {
             candidate = Path.of(workspaceName(context)).resolve(candidate);
         }
-        return candidate.normalize();
+        return canonicalize(candidate);
+    }
+
+    private static Path canonicalize(Path candidate) {
+        Path normalized = candidate.toAbsolutePath().normalize();
+        try {
+            return normalizeCase(normalized.toRealPath());
+        } catch (IOException ignored) {
+            Path existing = normalized;
+            while (existing != null && !java.nio.file.Files.exists(existing)) {
+                existing = existing.getParent();
+            }
+            if (existing == null) {
+                return normalizeCase(normalized);
+            }
+            try {
+                return normalizeCase(existing.toRealPath()
+                        .resolve(existing.relativize(normalized)).normalize());
+            } catch (IOException ignoredAgain) {
+                return normalizeCase(normalized);
+            }
+        }
+    }
+
+    private static Path normalizeCase(Path path) {
+        if (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win")) {
+            return Path.of(path.toString().toLowerCase(Locale.ROOT));
+        }
+        return path;
     }
 
     private static List<ResourceKey> directoryHierarchy(AgentRunContext context, Path target,
