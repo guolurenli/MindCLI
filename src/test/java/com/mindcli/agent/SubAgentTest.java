@@ -10,7 +10,6 @@ import com.mindcli.runtime.run.AgentRunContext;
 import com.mindcli.runtime.run.RunStore;
 import com.mindcli.runtime.run.ToolDispatcher;
 import com.mindcli.capability.tool.ToolRegistry;
-import com.mindcli.capability.tool.ToolRegistry.ToolExecutionResult;
 import com.mindcli.capability.tool.ToolRegistry.ToolInvocation;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -118,12 +117,11 @@ class SubAgentTest {
         List<String> dispatched = new java.util.ArrayList<>();
         ToolRegistry registry = new ToolRegistry() {
             @Override
-            public List<ToolExecutionResult> executeTools(List<ToolInvocation> invocations) {
-                invocations.forEach(i -> dispatched.add(i.name()));
-                return invocations.stream()
-                        .map(i -> new ToolExecutionResult(i.id(), i.name(), i.argumentsJson(),
-                                "ok", 1, false, List.of()))
-                        .toList();
+            public com.mindcli.capability.tool.ToolExecution executeToolExecution(
+                    String name, String argumentsJson) {
+                dispatched.add(name);
+                return com.mindcli.capability.tool.ToolExecution.completed(
+                        com.mindcli.capability.tool.ToolOutput.text("ok"), argumentsJson);
             }
         };
         registry.setProjectPath(tempDir.toString());
@@ -421,18 +419,15 @@ class SubAgentTest {
         }
 
         @Override
-        public List<ToolExecutionResult> executeTools(List<ToolInvocation> invocations) {
+        public com.mindcli.capability.tool.ToolExecution executeToolExecution(String name, String argumentsJson) {
             lockEntered.countDown();
             try {
                 releaseLock.await(30, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            return invocations.stream()
-                    .map(invocation -> new ToolExecutionResult(
-                            invocation.id(), invocation.name(), invocation.argumentsJson(),
-                            "lock released", 1, false, List.of()))
-                    .toList();
+            return com.mindcli.capability.tool.ToolExecution.completed(
+                    com.mindcli.capability.tool.ToolOutput.text("lock released"), argumentsJson);
         }
     }
 

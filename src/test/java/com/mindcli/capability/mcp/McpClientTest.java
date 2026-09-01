@@ -4,6 +4,8 @@ import com.mindcli.capability.image.ImageReferenceParser;
 import com.mindcli.capability.mcp.resources.McpResourceContent;
 import com.mindcli.capability.mcp.resources.McpResourceDescriptor;
 import com.mindcli.capability.tool.ToolOutput;
+import com.mindcli.capability.tool.ToolExecution;
+import com.mindcli.capability.tool.ToolExecutionStatus;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpClientTransport;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -165,8 +167,10 @@ class McpClientTest {
                         true, null, null));
         McpClient client = new McpClient("demo", sdkClient, null, null);
 
-        String output = client.callTool("read_file", "{}");
+        ToolExecution execution = client.callToolExecution("read_file", "{}");
+        String output = execution.output().text();
 
+        assertEquals(ToolExecutionStatus.FAILED, execution.status());
         assertTrue(output.startsWith("MCP 工具返回错误"));
         assertTrue(output.contains("no such file"));
     }

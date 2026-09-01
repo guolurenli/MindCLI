@@ -9,6 +9,7 @@ import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
 import com.mindcli.capability.mcp.resources.McpResourceContent;
 import com.mindcli.capability.mcp.resources.McpResourceDescriptor;
 import com.mindcli.capability.tool.ToolOutput;
+import com.mindcli.capability.tool.ToolExecution;
 import com.mindcli.platform.llm.LlmClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpClientTransport;
@@ -99,6 +100,10 @@ public class McpClient implements AutoCloseable {
     }
 
     public ToolOutput callToolOutput(String toolName, String argumentsJson) throws IOException {
+        return callToolExecution(toolName, argumentsJson).output();
+    }
+
+    public ToolExecution callToolExecution(String toolName, String argumentsJson) throws IOException {
         try {
             Map<String, Object> arguments = argumentsJson == null || argumentsJson.isBlank()
                     ? Map.of()
@@ -107,9 +112,11 @@ public class McpClient implements AutoCloseable {
                     new McpSchema.CallToolRequest(toolName, arguments));
             ToolOutput output = toToolOutput(result);
             if (Boolean.TRUE.equals(result.isError())) {
-                return new ToolOutput("MCP 工具返回错误: " + output.text(), output.imageParts());
+                ToolOutput failedOutput = new ToolOutput(
+                        "MCP 工具返回错误: " + output.text(), output.imageParts());
+                return ToolExecution.failed(failedOutput, argumentsJson, output.text(), "MCP_TOOL_ERROR");
             }
-            return output;
+            return ToolExecution.completed(output, argumentsJson);
         } catch (RuntimeException e) {
             throw asIoException(e);
         }
@@ -231,10 +238,6 @@ public class McpClient implements AutoCloseable {
 
     public List<String> stderrLines() {
         return List.copyOf(officialStderr.get());
-    }
-
-    public Long processId() {
-        return null;
     }
 
     public String transportName() {

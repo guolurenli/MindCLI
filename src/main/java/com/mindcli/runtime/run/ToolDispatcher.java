@@ -2,6 +2,7 @@ package com.mindcli.runtime.run;
 
 import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.agent.profile.AgentToolPolicy;
+import com.mindcli.capability.tool.ToolExecution;
 import com.mindcli.capability.tool.ToolRegistry;
 import com.mindcli.platform.hitl.ApprovalPolicy;
 
@@ -22,33 +23,34 @@ public final class ToolDispatcher {
     private static final int MAX_PARALLEL_TOOLS = 4;
     private static final long DEFAULT_BATCH_TIMEOUT_SECONDS = 90;
 
-    private final ToolBatchExecutor executor;
+    private final ToolInvocationExecutor executor;
     private final ToolResourceClassifier resourceClassifier;
     private final ResourceLockManager lockManager;
     private final HookManager hookManager;
     private final long batchTimeoutSeconds;
 
     public ToolDispatcher(ToolRegistry toolRegistry) {
-        this(Objects.requireNonNull(toolRegistry, "toolRegistry")::executeTools,
+        this((ToolInvocationExecutor) invocation -> Objects.requireNonNull(toolRegistry, "toolRegistry")
+                        .executeToolExecution(invocation.name(), invocation.argumentsJson()),
                 new ToolResourceClassifier(),
                 SHARED_LOCK_MANAGER,
                 HookManager.noop(),
                 toolRegistry.getToolBatchTimeoutSeconds());
     }
 
-    ToolDispatcher(ToolBatchExecutor executor) {
+    ToolDispatcher(ToolInvocationExecutor executor) {
         this(executor, new ToolResourceClassifier(), SHARED_LOCK_MANAGER, HookManager.noop(),
                 DEFAULT_BATCH_TIMEOUT_SECONDS);
     }
 
-    ToolDispatcher(ToolBatchExecutor executor,
+    ToolDispatcher(ToolInvocationExecutor executor,
                    ToolResourceClassifier resourceClassifier,
                    ResourceLockManager lockManager,
                    HookManager hookManager) {
         this(executor, resourceClassifier, lockManager, hookManager, DEFAULT_BATCH_TIMEOUT_SECONDS);
     }
 
-    ToolDispatcher(ToolBatchExecutor executor,
+    ToolDispatcher(ToolInvocationExecutor executor,
                    ToolResourceClassifier resourceClassifier,
                    ResourceLockManager lockManager,
                    HookManager hookManager,
@@ -154,11 +156,11 @@ public final class ToolDispatcher {
             return thread;
         });
         try {
-            List<Callable<ToolRegistry.ToolExecutionResult>> tasks = batch.stream()
-                    .<Callable<ToolRegistry.ToolExecutionResult>>map(prepared ->
+            List<Callable<ToolExecution>> tasks = batch.stream()
+                    .<Callable<ToolExecution>>map(prepared ->
                             () -> executeOne(prepared, approvalPolicy))
                     .toList();
-            List<Future<ToolRegistry.ToolExecutionResult>> futures =
+            List<Future<ToolExecution>> futures =
                     workers.invokeAll(tasks, batchTimeoutSeconds, TimeUnit.SECONDS);
 
             for (int i = 0; i < batch.size(); i++) {
@@ -183,33 +185,60 @@ public final class ToolDispatcher {
         }
     }
 
-    private ToolRegistry.ToolExecutionResult executeOne(PreparedInvocation prepared,
-                                                        String approvalPolicy) throws Exception {
+    private ToolExecution executeOne(PreparedInvocation prepared,
+                                     String approvalPolicy) throws Exception {
         ApprovalPolicy.applyApprovalPolicy(approvalPolicy);
         try (ResourceLockManager.LockLease ignored =
                      lockManager.acquireAllInterruptibly(prepared.resourceKeys())) {
-            List<ToolRegistry.ToolExecutionResult> results = executor.execute(List.of(prepared.invocation()));
-            if (results == null) {
-                throw new IllegalStateException("Tool registry returned null result list");
+            ToolExecution execution = executor.execute(prepared.invocation());
+            if (execution == null) {
+                throw new IllegalStateException("Tool executor returned null result");
             }
-            if (results.isEmpty()) {
-                throw new IllegalStateException("Tool registry returned too few results");
-            }
-            return results.get(0);
+            return execution;
         } finally {
             ApprovalPolicy.clearApprovalPolicy();
         }
     }
 
     private ToolOutcome outcomeFromFuture(PreparedInvocation prepared,
-                                          Future<ToolRegistry.ToolExecutionResult> future) {
+                                          Future<ToolExecution> future) {
         if (future.isCancelled()) {
             return timedOut(prepared);
         }
         try {
-            return ToolOutcome.fromLegacy(future.get())
-                    .withArgumentsJson(prepared.invocation().argumentsJson())
-                    .withMetadata(prepared.metadata());
+            ToolExecution execution = future.get();
+            ToolOutcomeStatus status = switch (execution.status()) {
+                case COMPLETED -> ToolOutcomeStatus.COMPLETED;
+                case PARTIAL -> ToolOutcomeStatus.PARTIAL;
+                case DENIED_BY_POLICY -> ToolOutcomeStatus.DENIED_BY_POLICY;
+                case DENIED_BY_USER -> ToolOutcomeStatus.DENIED_BY_USER;
+                case TIMED_OUT -> ToolOutcomeStatus.TIMED_OUT;
+                case CANCELLED -> ToolOutcomeStatus.CANCELLED;
+                case FAILED -> ToolOutcomeStatus.FAILED;
+            };
+            String text = execution.output().text();
+            String errorMessage = execution.errorMessage();
+            if (errorMessage.isBlank() && status != ToolOutcomeStatus.COMPLETED
+                    && status != ToolOutcomeStatus.PARTIAL) {
+                errorMessage = text;
+            }
+            String category = execution.errorCategory();
+            if (category.isBlank()) {
+                category = switch (status) {
+                    case DENIED_BY_POLICY -> "POLICY_DENIED";
+                    case DENIED_BY_USER -> "USER_DENIED";
+                    case TIMED_OUT -> "TIMEOUT";
+                    case CANCELLED -> "CANCELLED";
+                    case FAILED -> "TOOL_FAILED";
+                    case PARTIAL -> "PARTIAL";
+                    case COMPLETED -> "";
+                };
+            }
+            return new ToolOutcome(prepared.invocation().id(), prepared.invocation().name(),
+                    execution.effectiveArgumentsJson().isBlank()
+                            ? prepared.invocation().argumentsJson() : execution.effectiveArgumentsJson(),
+                    status, text, 0, errorMessage, category, execution.output().imageParts(),
+                    prepared.metadata());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return cancelled(prepared, "收集工具结果时被中断");

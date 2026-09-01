@@ -3,6 +3,7 @@ package com.mindcli.capability.tool.namespace;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
 import com.mindcli.capability.tool.ToolOutput;
+import com.mindcli.capability.tool.ToolExecution;
 import com.mindcli.capability.tool.ToolRegistry;
 
 import java.util.List;
@@ -20,6 +21,11 @@ public class McpToolNamespace {
     }
 
     public synchronized void registerToolOutput(McpToolDescriptor descriptor, Function<String, ToolOutput> invoker) {
+        registerToolExecution(descriptor, args -> ToolExecution.completed(invoker.apply(args), args));
+    }
+
+    public synchronized void registerToolExecution(McpToolDescriptor descriptor,
+                                                   Function<String, ToolExecution> invoker) {
         Objects.requireNonNull(descriptor, "descriptor");
         Objects.requireNonNull(invoker, "invoker");
         String toolName = descriptor.namespacedName();
@@ -42,6 +48,14 @@ public class McpToolNamespace {
 
     public synchronized void replaceToolOutputsForServer(String serverName, List<McpToolDescriptor> newTools,
                                                          Function<McpToolDescriptor, Function<String, ToolOutput>> invokerFactory) {
+        replaceToolExecutionsForServer(serverName, newTools,
+                descriptor -> args -> ToolExecution.completed(invokerFactory.apply(descriptor).apply(args), args));
+    }
+
+    public synchronized void replaceToolExecutionsForServer(
+            String serverName,
+            List<McpToolDescriptor> newTools,
+            Function<McpToolDescriptor, Function<String, ToolExecution>> invokerFactory) {
         Objects.requireNonNull(serverName, "serverName");
         Objects.requireNonNull(newTools, "newTools");
         Objects.requireNonNull(invokerFactory, "invokerFactory");
@@ -54,7 +68,7 @@ public class McpToolNamespace {
             visibleTools.remove(toolName);
         }
         for (McpToolDescriptor descriptor : newTools) {
-            registerToolOutput(descriptor, invokerFactory.apply(descriptor));
+            registerToolExecution(descriptor, invokerFactory.apply(descriptor));
         }
     }
 
@@ -78,5 +92,5 @@ public class McpToolNamespace {
         return base + " (MCP server: " + descriptor.serverName() + ", tool: " + descriptor.name() + ")";
     }
 
-    public record RegisteredTool(McpToolDescriptor descriptor, Function<String, ToolOutput> invoker) {}
+    public record RegisteredTool(McpToolDescriptor descriptor, Function<String, ToolExecution> invoker) {}
 }

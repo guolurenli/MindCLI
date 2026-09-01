@@ -79,10 +79,6 @@ public class McpServer {
         return Duration.between(startedAt, Instant.now());
     }
 
-    public Long processId() {
-        return client == null ? null : client.processId();
-    }
-
     public String transportName() {
         if (client != null) {
             return client.transportName();

@@ -87,13 +87,6 @@
             <version>3.5.3</version>
         </dependency>
 
-        <!-- 中文分词 -->
-        <dependency>
-            <groupId>com.huaban</groupId>
-            <artifactId>jieba-analysis</artifactId>
-            <version>1.0.2</version>
-        </dependency>
-
         <!-- SQLite -->
         <dependency>
             <groupId>org.xerial</groupId>

@@ -24,7 +24,6 @@ import com.mindcli.runtime.run.ToolOutcomeStatus;
 import com.mindcli.capability.skill.SkillIndexFormatter;
 import com.mindcli.capability.skill.SkillRegistry;
 import com.mindcli.capability.tool.ToolRegistry;
-import com.mindcli.capability.tool.ToolRegistry.ToolExecutionResult;
 import com.mindcli.capability.tool.ToolRegistry.ToolInvocation;
 import com.mindcli.platform.render.terminal.AnsiStyle;
 import com.mindcli.platform.render.terminal.TerminalMarkdownRenderer;
@@ -324,9 +323,9 @@ public class SubAgent {
                     // 没有换行的 pending 内容会被 HITL 提示"跨过"导致标题错位。
                     streamRenderer.resetBetweenIterations();
 
-                    List<ToolExecutionResult> toolResults = executeToolCalls(response.toolCalls());
-                    for (ToolExecutionResult toolResult : toolResults) {
-                        conversationHistory.add(LlmClient.Message.tool(toolResult.id(), toolResult.result()));
+                    List<ToolOutcome> toolResults = executeToolCalls(response.toolCalls());
+                    for (ToolOutcome toolResult : toolResults) {
+                        conversationHistory.add(toolResult.toToolMessage());
                     }
                     appendImageToolMessages(toolResults);
                     continue;
@@ -556,9 +555,9 @@ public class SubAgent {
         log.info("[{}] injected LSP diagnostics into sub-agent conversation", name);
     }
 
-    private List<ToolExecutionResult> executeToolCalls(List<LlmClient.ToolCall> toolCalls) {
+    private List<ToolOutcome> executeToolCalls(List<LlmClient.ToolCall> toolCalls) {
         List<ToolInvocation> invocations = new ArrayList<>();
-        List<ToolExecutionResult> ordered = new ArrayList<>(Collections.nCopies(toolCalls.size(), null));
+        List<ToolOutcome> ordered = new ArrayList<>(Collections.nCopies(toolCalls.size(), null));
         List<Integer> dispatchIndices = new ArrayList<>();
 
         for (int i = 0; i < toolCalls.size(); i++) {
@@ -569,8 +568,10 @@ public class SubAgent {
             log.debug("[{}] tool args [{}]: {}", name, toolName, toolArgs);
             if (readOnly && isMutatingTool(toolName)) {
                 log.info("[{}] readOnly 拦截副作用工具: {}", name, toolName);
-                ordered.set(i, new ToolExecutionResult(toolCall.id(), toolName, toolArgs,
-                        "🛡️ 自审阶段禁止调用有副作用的工具: " + toolName, 0, false, List.of()));
+                ordered.set(i, new ToolOutcome(toolCall.id(), toolName, toolArgs,
+                        ToolOutcomeStatus.DENIED_BY_POLICY,
+                        "🛡️ 自审阶段禁止调用有副作用的工具: " + toolName, 0,
+                        "自审阶段禁止调用有副作用的工具", "POLICY_DENIED", List.of(), Map.of()));
                 continue;
             }
             invocations.add(new ToolInvocation(toolCall.id(), toolName, toolArgs));
@@ -585,7 +586,7 @@ public class SubAgent {
             List<ToolOutcome> outcomes = toolDispatcher.dispatchInvocations(invocations, dispatchContext);
             appendToolOutcomeEvents(dispatchContext, outcomes);
             for (int j = 0; j < outcomes.size(); j++) {
-                ordered.set(dispatchIndices.get(j), SubAgent.toLegacyResult(outcomes.get(j)));
+                ordered.set(dispatchIndices.get(j), outcomes.get(j));
             }
         }
         return ordered;
@@ -628,22 +629,11 @@ public class SubAgent {
         }
     }
 
-    private static ToolExecutionResult toLegacyResult(ToolOutcome outcome) {
-        return new ToolExecutionResult(
-                outcome.id(),
-                outcome.name(),
-                outcome.argumentsJson(),
-                outcome.text(),
-                outcome.elapsedMillis(),
-                outcome.status() == ToolOutcomeStatus.TIMED_OUT,
-                outcome.imageParts());
-    }
-
-    private void appendImageToolMessages(List<ToolExecutionResult> toolResults) {
+    private void appendImageToolMessages(List<ToolOutcome> toolResults) {
         if (toolResults == null || toolResults.isEmpty()) {
             return;
         }
-        for (ToolExecutionResult result : toolResults) {
+        for (ToolOutcome result : toolResults) {
             if (!result.hasImageParts()) {
                 continue;
             }

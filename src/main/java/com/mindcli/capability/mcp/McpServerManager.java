@@ -10,6 +10,7 @@ import com.mindcli.capability.mcp.resources.McpResourceTool;
 import com.mindcli.platform.security.AuditLog;
 import com.mindcli.capability.mcp.transport.MindCliStdioClientTransport;
 import com.mindcli.capability.tool.ToolOutput;
+import com.mindcli.capability.tool.ToolExecution;
 import com.mindcli.capability.tool.ToolRegistry;
 
 import java.io.IOException;
@@ -280,12 +281,11 @@ public class McpServerManager implements AutoCloseable {
                     ? server.tools().size() + (server.tools().size() == 1 ? " tool" : " tools")
                     : "—";
             String uptime = server.status() == McpServerStatus.READY ? "uptime " + formatDuration(server.uptime()) : "";
-            String pid = server.processId() == null ? "" : "pid " + server.processId();
             String error = server.status() == McpServerStatus.ERROR && server.errorMessage() != null
                     ? server.errorMessage()
                     : "";
-            sb.append(String.format("  %-14s %-11s %-6s %-9s %-10s %s %s%n",
-                    server.name(), status, server.transportName(), tools, uptime, pid, error));
+            sb.append(String.format("  %-14s %-11s %-6s %-9s %-10s %s%n",
+                    server.name(), status, server.transportName(), tools, uptime, error));
         }
         return sb.toString().trim();
     }
@@ -456,10 +456,11 @@ public class McpServerManager implements AutoCloseable {
     }
 
     private void replaceTools(McpServer server, McpClient client, List<McpToolDescriptor> tools) {
-        toolRegistry.replaceMcpToolOutputsForServer(server.name(), tools,
+        toolRegistry.replaceMcpToolExecutionsForServer(server.name(), tools,
                 descriptor -> isResourceVirtualTool(descriptor)
-                        ? args -> ToolOutput.text(McpResourceTool.invoker(client, descriptor).apply(args))
-                        : args -> invokeMcpToolOutput(client, descriptor, args));
+                        ? args -> ToolExecution.completed(
+                                ToolOutput.text(McpResourceTool.invoker(client, descriptor).apply(args)), args)
+                        : args -> invokeMcpTool(client, descriptor, args));
     }
 
     private boolean isResourceVirtualTool(McpToolDescriptor descriptor) {
@@ -480,12 +481,13 @@ public class McpServerManager implements AutoCloseable {
      * MCP 工具执行入口：把 LLM 给的 JSON 参数透传给 server 的 tools/call，并把异常转成 LLM 可读字符串。
      * 提取成独立方法是为了让 server 维度的错误信息（serverName/toolName）在堆栈和日志里清晰可见。
      */
-    private static ToolOutput invokeMcpToolOutput(McpClient client, McpToolDescriptor descriptor, String argumentsJson) {
+    private static ToolExecution invokeMcpTool(McpClient client, McpToolDescriptor descriptor, String argumentsJson) {
         try {
-            return client.callToolOutput(descriptor.name(), argumentsJson);
+            return client.callToolExecution(descriptor.name(), argumentsJson);
         } catch (Exception e) {
-            return ToolOutput.text("MCP 工具调用失败 (" + descriptor.serverName() + "/" + descriptor.name() + "): "
-                    + e.getMessage());
+            String text = "MCP 工具调用失败 (" + descriptor.serverName() + "/" + descriptor.name() + "): "
+                    + e.getMessage();
+            return ToolExecution.failed(ToolOutput.text(text), argumentsJson, e.getMessage(), "MCP_CALL_FAILED");
         }
     }
 

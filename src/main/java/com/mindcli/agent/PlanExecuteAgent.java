@@ -23,12 +23,10 @@ import com.mindcli.runtime.run.SessionContext;
 import com.mindcli.runtime.run.ToolDispatcher;
 import com.mindcli.runtime.run.ToolOutcome;
 import com.mindcli.runtime.run.ToolOutcomeEventFactory;
-import com.mindcli.runtime.run.ToolOutcomeStatus;
 import com.mindcli.capability.skill.SkillIndexFormatter;
 import com.mindcli.capability.skill.SkillRegistry;
 import com.mindcli.platform.render.terminal.AnsiStyle;
 import com.mindcli.capability.tool.ToolRegistry;
-import com.mindcli.capability.tool.ToolRegistry.ToolExecutionResult;
 import com.mindcli.capability.tool.ToolRegistry.ToolInvocation;
 import com.mindcli.platform.render.terminal.TerminalMarkdownRenderer;
 import com.mindcli.capability.image.ImageReferenceParser;
@@ -747,10 +745,10 @@ public class PlanExecuteAgent {
             // 被 HITL 提示"跨过"导致 🧠 / 🤖 标题与内容错位
             streamRenderer.resetBetweenIterations();
 
-            List<ToolExecutionResult> toolResults = executeToolCalls(task.getId(), response.toolCalls());
-            for (ToolExecutionResult toolResult : toolResults) {
-                allResults.append(toolResult.result()).append("\n");
-                messages.add(LlmClient.Message.tool(toolResult.id(), toolResult.result()));
+            List<ToolOutcome> toolResults = executeToolCalls(task.getId(), response.toolCalls());
+            for (ToolOutcome toolResult : toolResults) {
+                allResults.append(toolResult.text()).append("\n");
+                messages.add(toolResult.toToolMessage());
             }
             appendImageToolMessages(messages, toolResults);
         }
@@ -803,7 +801,7 @@ public class PlanExecuteAgent {
         return normalized.substring(0, maxLength) + "...";
     }
 
-    private List<ToolExecutionResult> executeToolCalls(String taskId, List<LlmClient.ToolCall> toolCalls) {
+    private List<ToolOutcome> executeToolCalls(String taskId, List<LlmClient.ToolCall> toolCalls) {
         List<ToolInvocation> invocations = new ArrayList<>();
         for (LlmClient.ToolCall toolCall : toolCalls) {
             String toolName = toolCall.function().name();
@@ -819,13 +817,10 @@ public class PlanExecuteAgent {
         AgentRunContext dispatchContext = toolDispatchContext(taskId);
         List<ToolOutcome> outcomes = toolDispatcher.dispatchInvocations(invocations, dispatchContext);
         appendToolOutcomeEvents(dispatchContext, outcomes);
-        List<ToolExecutionResult> results = outcomes.stream()
-                .map(PlanExecuteAgent::toLegacyResult)
-                .toList();
-        for (ToolExecutionResult result : results) {
-            log.debug("Task {} tool result preview [{}]: {}", taskId, result.name(), preview(result.result(), 300));
+        for (ToolOutcome result : outcomes) {
+            log.debug("Task {} tool result preview [{}]: {}", taskId, result.name(), preview(result.text(), 300));
         }
-        return results;
+        return outcomes;
     }
 
     private AgentRunContext toolDispatchContext(String taskId) {
@@ -855,22 +850,11 @@ public class PlanExecuteAgent {
         }
     }
 
-    private static ToolExecutionResult toLegacyResult(ToolOutcome outcome) {
-        return new ToolExecutionResult(
-                outcome.id(),
-                outcome.name(),
-                outcome.argumentsJson(),
-                outcome.text(),
-                outcome.elapsedMillis(),
-                outcome.status() == ToolOutcomeStatus.TIMED_OUT,
-                outcome.imageParts());
-    }
-
-    private void appendImageToolMessages(List<LlmClient.Message> messages, List<ToolExecutionResult> toolResults) {
+    private void appendImageToolMessages(List<LlmClient.Message> messages, List<ToolOutcome> toolResults) {
         if (toolResults == null || toolResults.isEmpty()) {
             return;
         }
-        for (ToolExecutionResult result : toolResults) {
+        for (ToolOutcome result : toolResults) {
             if (!result.hasImageParts()) {
                 continue;
             }

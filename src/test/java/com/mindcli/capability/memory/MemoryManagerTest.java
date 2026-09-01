@@ -320,26 +320,6 @@ class MemoryManagerTest {
     }
 
     @Test
-    void shouldAppendMemoryContextBuiltEventWhenAudited() {
-        LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
-        MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 128000, longTermMemory);
-        memoryManager.setProjectPath("/repo/current");
-        memoryManager.storeFact("当前项目使用 Java 17");
-        InMemoryRunStore runStore = new InMemoryRunStore();
-        AgentRunContext runContext = AgentRunContext.create(AgentMode.REACT, "Java", "/repo/current");
-
-        String context = memoryManager.buildContextForQuery("Java", 200, runContext, runStore);
-
-        assertTrue(context.contains("Java 17"));
-        AgentRunEvent event = runStore.events(runContext.runId()).get(0);
-        assertEquals(AgentRunEventType.MEMORY_CONTEXT_BUILT, event.type());
-        assertEquals("true", event.attributes().get("injected"));
-        assertEquals("200", event.attributes().get("maxTokens"));
-        assertTrue(runStore.events(runContext.runId()).stream()
-                .anyMatch(item -> item.type() == AgentRunEventType.MEMORY_INJECTED));
-    }
-
-    @Test
     void shouldAuditManualWriteAndPolicyDenialWhenRunContextExists() {
         LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
         MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 128000, longTermMemory);

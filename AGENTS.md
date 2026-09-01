@@ -144,7 +144,7 @@ src/main/java/com/mindcli/
 
 ### 并行工具
 
-- 工具调度统一从 `ToolDispatcher` 进入；ReAct、Plan、Multi-Agent 的实际工具执行都使用 context-aware dispatcher，并把结构化 `TOOL_OUTCOME` 写入同一 run ledger
+- 工具调度统一从 `ToolDispatcher` 进入；ReAct、Plan、Multi-Agent 的实际工具执行都使用 context-aware dispatcher，并把结构化 `TOOL_OUTCOME` 写入同一 run ledger。`ToolDispatcher` 是唯一的并行、批超时、资源锁和结果顺序控制者；`ToolRegistry` 只负责单个工具执行并返回结构化 `ToolExecution`。
 - `ToolOutcomeStatus` 结构化表达 `COMPLETED` / `PARTIAL` / `DENIED_BY_POLICY` / `DENIED_BY_USER` / `TIMED_OUT` / `CANCELLED` / `FAILED`，运行时不要解析自然语言当唯一控制信号
 - `ToolResourceClassifier` 会为工具推导资源锁：文件读 shared、文件写 exclusive，文件访问补充祖先目录 shared 锁；`list_dir` 对目标目录 exclusive，使目录枚举与该目录下文件写入互斥，但同目录不同文件仍可并行写；长期记忆读取 shared、`save_memory` exclusive；workspace 命令默认 exclusive，已知只读命令 shared，但含管道、重定向、命令连接符或外部 diff / output 选项时降级为 exclusive；browser MCP session exclusive、普通 MCP server exclusive、未知副作用工具 workspace exclusive
 - `ResourceLockManager` 对规范化真实路径按排序后的资源 key 获取 shared / exclusive 锁，避免死锁；锁由实际工具工作线程持有，超时取消后也必须等工具代码真正退出才能释放；等待锁可被线程中断，dispatcher 将其映射为 `CANCELLED`；结果必须保持原始 tool_call 顺序

@@ -69,7 +69,7 @@ public class MemoryManager {
         this.contextProfile = contextProfile;
         this.longTermMemory = longTermMemory != null ? longTermMemory : new LongTermMemory();
         this.extractor = new MemoryExtractor(llmClient, this.longTermMemory);
-        this.retriever = new MemoryRetriever(llmClient, this.longTermMemory);
+        this.retriever = new MemoryRetriever(this.longTermMemory);
         this.proposalStore = new JsonlMemoryProposalStore(resolveProposalStorePath(this.longTermMemory));
         this.policyEngine = new MemoryPolicyEngine();
         this.auditService = new MemoryAuditService(resolveAuditStorePath(this.longTermMemory));
@@ -317,46 +317,6 @@ public class MemoryManager {
     }
 
     /**
-     * 构建用于 LLM 的记忆上下文。
-     *
-     * @deprecated 生产 Agent 使用 MEMORY.md 目录 + search_memory/read_memory
-     * 分层读取；此方法仅为旧调用方保留，避免破坏 API。
-     */
-    @Deprecated
-    public String buildContextForQuery(String query, int maxTokens) {
-        return buildContextForQuery(query, maxTokens, Set.of(), null, null);
-    }
-
-    public String buildContextForQuery(String query, int maxTokens, AgentRunContext runContext, RunStore runStore) {
-        return buildContextForQuery(query, maxTokens, Set.of(), runContext, runStore);
-    }
-
-    /**
-     * 构建用于 LLM 的记忆上下文，支持工具感知过滤。
-     */
-    public String buildContextForQuery(String query, int maxTokens, Set<String> activeToolNames) {
-        return buildContextForQuery(query, maxTokens, activeToolNames, null, null);
-    }
-
-    public String buildContextForQuery(String query, int maxTokens, Set<String> activeToolNames,
-                                       AgentRunContext runContext, RunStore runStore) {
-        Set<String> effectiveToolNames = activeToolNames == null ? Set.of() : activeToolNames;
-        String context = retriever.buildContextForQuery(query, maxTokens, currentProject, effectiveToolNames);
-        Map<String, String> attributes = Map.of(
-                "queryLength", String.valueOf(query == null ? 0 : query.length()),
-                "maxTokens", String.valueOf(maxTokens),
-                "activeToolCount", String.valueOf(effectiveToolNames.size()),
-                "contextChars", String.valueOf(context.length()),
-                "injected", String.valueOf(!context.isBlank())
-        );
-        recordMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_CONTEXT_BUILT, attributes);
-        if (!context.isBlank()) {
-            recordMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_INJECTED, attributes);
-        }
-        return context;
-    }
-
-    /**
      * 记录 token 使用
      */
     public void recordTokenUsage(int inputTokens, int outputTokens) {
@@ -420,7 +380,6 @@ public class MemoryManager {
     // Getters
     public LongTermMemory getLongTermMemory() { return longTermMemory; }
     public MemoryStore getMemoryStore() { return longTermMemory; }
-    public MemoryRetriever getMemoryRetriever() { return retriever; }
     public MemoryAuditService getMemoryAuditService() { return auditService; }
     public TokenBudget getTokenBudget() { return tokenBudget; }
     public ContextProfile getContextProfile() { return contextProfile; }

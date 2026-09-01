@@ -2,6 +2,8 @@ package com.mindcli.runtime.run;
 
 import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.capability.tool.ToolRegistry;
+import com.mindcli.capability.tool.ToolExecution;
+import com.mindcli.capability.tool.ToolOutput;
 import com.mindcli.platform.hitl.ApprovalPolicy;
 import org.junit.jupiter.api.Test;
 
@@ -26,13 +28,9 @@ class ToolDispatcherTest {
     @Test
     void dispatchPreservesToolCallOrderAndArguments() {
         Map<String, ToolRegistry.ToolInvocation> seen = new java.util.concurrent.ConcurrentHashMap<>();
-        ToolDispatcher dispatcher = new ToolDispatcher(invocations -> {
-            invocations.forEach(invocation -> seen.put(invocation.id(), invocation));
-            return invocations.stream()
-                    .map(invocation -> new ToolRegistry.ToolExecutionResult(
-                            invocation.id(), invocation.name(), invocation.argumentsJson(),
-                            "ok:" + invocation.name(), 5, false, List.of()))
-                    .toList();
+        ToolDispatcher dispatcher = new ToolDispatcher(invocation -> {
+            seen.put(invocation.id(), invocation);
+            return completed(invocation, "ok");
         });
 
         List<ToolOutcome> outcomes = dispatcher.dispatch(List.of(
@@ -51,9 +49,8 @@ class ToolDispatcherTest {
         List<Boolean> approvalDecisions = java.util.Collections.synchronizedList(new ArrayList<>());
         AtomicInteger active = new AtomicInteger();
         AtomicInteger peak = new AtomicInteger();
-        ToolRegistry registry = new ToolRegistry() {
-            @Override
-            public String executeTool(String name, String argumentsJson) {
+        ToolDispatcher dispatcher = new ToolDispatcher(invocation -> {
+                String name = invocation.name();
                 approvalDecisions.add(ApprovalPolicy.requiresApproval(name));
                 int current = active.incrementAndGet();
                 peak.updateAndGet(previous -> Math.max(previous, current));
@@ -64,10 +61,8 @@ class ToolDispatcherTest {
                 } finally {
                     active.decrementAndGet();
                 }
-                return "ok:" + name;
-            }
-        };
-        ToolDispatcher dispatcher = new ToolDispatcher(registry);
+                return completed(invocation, "ok");
+        });
         AgentRunContext context = AgentRunContext.create(
                 AgentMode.REACT, "test", "workspace", Map.of("approvalPolicy", "untrusted"));
 
@@ -85,11 +80,10 @@ class ToolDispatcherTest {
         CountDownLatch stubbornToolStarted = new CountDownLatch(1);
         CountDownLatch stubbornToolFinished = new CountDownLatch(1);
         CountDownLatch secondWriteEntered = new CountDownLatch(1);
-        ToolRegistry registry = new ToolRegistry() {
-            @Override
-            public String executeTool(String name, String argumentsJson) {
+        ToolInvocationExecutor stubbornExecutor = invocation -> {
+                String name = invocation.name();
                 if (!"write_file".equals(name)) {
-                    return "fast";
+                    return completed(invocation, "fast");
                 }
                 stubbornToolStarted.countDown();
                 long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1_800);
@@ -101,15 +95,14 @@ class ToolDispatcherTest {
                     }
                 }
                 stubbornToolFinished.countDown();
-                return "stopped";
-            }
+                return completed(invocation, "stopped");
         };
-        setToolBatchTimeoutSeconds(registry, 1);
-        ToolDispatcher first = new ToolDispatcher(registry);
-        ToolDispatcher second = new ToolDispatcher(invocations -> {
+        ResourceLockManager lockManager = new ResourceLockManager();
+        ToolDispatcher first = dispatcher(stubbornExecutor, HookManager.noop(), lockManager, 1);
+        ToolDispatcher second = dispatcher(invocation -> {
             secondWriteEntered.countDown();
-            return completed(invocations, "second");
-        });
+            return completed(invocation, "second");
+        }, HookManager.noop(), lockManager, 90);
         AgentRunContext context = AgentRunContext.create(AgentMode.REACT, "test", "workspace");
         ExecutorService callers = Executors.newFixedThreadPool(2);
 
@@ -137,7 +130,7 @@ class ToolDispatcherTest {
 
     @Test
     void dispatchReturnsFailedOutcomeForEachToolCallWhenRegistryThrows() {
-        ToolDispatcher dispatcher = new ToolDispatcher(invocations -> {
+        ToolDispatcher dispatcher = new ToolDispatcher(invocation -> {
             throw new IllegalStateException("registry down");
         });
 
@@ -155,7 +148,7 @@ class ToolDispatcherTest {
 
     @Test
     void dispatchEmptyToolCallsReturnsEmptyList() {
-        ToolDispatcher dispatcher = new ToolDispatcher(invocations -> {
+        ToolDispatcher dispatcher = new ToolDispatcher(invocation -> {
             throw new AssertionError("should not call registry");
         });
 
@@ -165,9 +158,9 @@ class ToolDispatcherTest {
     @Test
     void contextDispatchReturnsDeniedOutcomeWhenPreHookRejects() {
         AtomicBoolean executorCalled = new AtomicBoolean(false);
-        ToolDispatcher dispatcher = dispatcher(invocations -> {
+        ToolDispatcher dispatcher = dispatcher(invocation -> {
             executorCalled.set(true);
-            return List.of();
+            return completed(invocation, "unexpected");
         }, new HookManager(List.of(event -> HookDecision.denyByPolicy("blocked by policy"))));
 
         List<ToolOutcome> outcomes = dispatcher.dispatch(List.of(
@@ -184,9 +177,9 @@ class ToolDispatcherTest {
     @Test
     void contextDispatchReturnsDeniedOutcomeWhenProfilePolicyRejects() {
         AtomicBoolean executorCalled = new AtomicBoolean(false);
-        ToolDispatcher dispatcher = dispatcher(invocations -> {
+        ToolDispatcher dispatcher = dispatcher(invocation -> {
             executorCalled.set(true);
-            return List.of();
+            return completed(invocation, "unexpected");
         }, new HookManager(List.of(event -> HookDecision.allow())));
         AgentRunContext context = AgentRunContext.create(AgentMode.TEAM, "test", "workspace", java.util.Map.of(
                 "profileName", "code-reader",
@@ -216,7 +209,7 @@ class ToolDispatcherTest {
             }
             return HookDecision.allow();
         }));
-        ToolDispatcher dispatcher = dispatcher(invocations -> {
+        ToolDispatcher dispatcher = dispatcher(invocation -> {
             throw new AssertionError("executor should not run");
         }, hookManager);
 
@@ -230,13 +223,9 @@ class ToolDispatcherTest {
     @Test
     void contextDispatchUsesModifiedArgumentsFromPreHook() {
         List<ToolRegistry.ToolInvocation> seen = new ArrayList<>();
-        ToolDispatcher dispatcher = dispatcher(invocations -> {
-            seen.addAll(invocations);
-            return invocations.stream()
-                    .map(invocation -> new ToolRegistry.ToolExecutionResult(
-                            invocation.id(), invocation.name(), invocation.argumentsJson(),
-                            "ok", 1, false, List.of()))
-                    .toList();
+        ToolDispatcher dispatcher = dispatcher(invocation -> {
+            seen.add(invocation);
+            return ToolExecution.completed(ToolOutput.text("ok"), invocation.argumentsJson());
         }, new HookManager(List.of(event -> HookDecision.modifyArguments("{\"path\":\"safe.txt\"}"))));
 
         List<ToolOutcome> outcomes = dispatcher.dispatch(List.of(
@@ -250,11 +239,8 @@ class ToolDispatcherTest {
 
     @Test
     void contextDispatchKeepsOriginalOrderWhenSomeToolsAreDenied() {
-        ToolDispatcher dispatcher = dispatcher(invocations -> invocations.stream()
-                .map(invocation -> new ToolRegistry.ToolExecutionResult(
-                        invocation.id(), invocation.name(), invocation.argumentsJson(),
-                        "ok:" + invocation.name(), 1, false, List.of()))
-                .toList(), new HookManager(List.of(event -> {
+        ToolDispatcher dispatcher = dispatcher(invocation -> completed(invocation, "ok"),
+                new HookManager(List.of(event -> {
             if ("write_file".equals(event.invocation().name())) {
                 return HookDecision.denyByUser("not now");
             }
@@ -278,14 +264,14 @@ class ToolDispatcherTest {
         CountDownLatch firstToolEntered = new CountDownLatch(1);
         CountDownLatch releaseFirstTool = new CountDownLatch(1);
         CountDownLatch secondToolEntered = new CountDownLatch(1);
-        ToolDispatcher first = new ToolDispatcher(invocations -> {
+        ToolDispatcher first = new ToolDispatcher(invocation -> {
             firstToolEntered.countDown();
             await(releaseFirstTool);
-            return completed(invocations, "first");
+            return completed(invocation, "first");
         });
-        ToolDispatcher second = new ToolDispatcher(invocations -> {
+        ToolDispatcher second = new ToolDispatcher(invocation -> {
             secondToolEntered.countDown();
-            return completed(invocations, "second");
+            return completed(invocation, "second");
         });
         ExecutorService executor = Executors.newFixedThreadPool(2);
 
@@ -318,14 +304,14 @@ class ToolDispatcherTest {
         CountDownLatch directoryToolEntered = new CountDownLatch(1);
         CountDownLatch releaseDirectoryTool = new CountDownLatch(1);
         CountDownLatch fileToolEntered = new CountDownLatch(1);
-        ToolDispatcher directoryDispatcher = new ToolDispatcher(invocations -> {
+        ToolDispatcher directoryDispatcher = new ToolDispatcher(invocation -> {
             directoryToolEntered.countDown();
             await(releaseDirectoryTool);
-            return completed(invocations, "directory");
+            return completed(invocation, "directory");
         });
-        ToolDispatcher fileDispatcher = new ToolDispatcher(invocations -> {
+        ToolDispatcher fileDispatcher = new ToolDispatcher(invocation -> {
             fileToolEntered.countDown();
-            return completed(invocations, "file");
+            return completed(invocation, "file");
         });
         ExecutorService executor = Executors.newFixedThreadPool(2);
 
@@ -358,14 +344,14 @@ class ToolDispatcherTest {
         CountDownLatch listEntered = new CountDownLatch(1);
         CountDownLatch releaseList = new CountDownLatch(1);
         CountDownLatch writeEntered = new CountDownLatch(1);
-        ToolDispatcher listDispatcher = new ToolDispatcher(invocations -> {
+        ToolDispatcher listDispatcher = new ToolDispatcher(invocation -> {
             listEntered.countDown();
             await(releaseList);
-            return completed(invocations, "list");
+            return completed(invocation, "list");
         });
-        ToolDispatcher writeDispatcher = new ToolDispatcher(invocations -> {
+        ToolDispatcher writeDispatcher = new ToolDispatcher(invocation -> {
             writeEntered.countDown();
-            return completed(invocations, "write");
+            return completed(invocation, "write");
         });
         ExecutorService executor = Executors.newFixedThreadPool(2);
 
@@ -390,7 +376,7 @@ class ToolDispatcherTest {
         }
     }
 
-    private static ToolDispatcher dispatcher(ToolBatchExecutor executor, HookManager hookManager) {
+    private static ToolDispatcher dispatcher(ToolInvocationExecutor executor, HookManager hookManager) {
         return new ToolDispatcher(
                 executor,
                 new ToolResourceClassifier(),
@@ -398,23 +384,23 @@ class ToolDispatcherTest {
                 hookManager);
     }
 
+    private static ToolDispatcher dispatcher(ToolInvocationExecutor executor, HookManager hookManager,
+                                             ResourceLockManager lockManager, long timeoutSeconds) {
+        return new ToolDispatcher(
+                executor,
+                new ToolResourceClassifier(),
+                lockManager,
+                hookManager,
+                timeoutSeconds);
+    }
+
     private static LlmClient.ToolCall toolCall(String id, String name, String args) {
         return new LlmClient.ToolCall(id, new LlmClient.ToolCall.Function(name, args));
     }
 
-    private static List<ToolRegistry.ToolExecutionResult> completed(List<ToolRegistry.ToolInvocation> invocations,
-                                                                    String prefix) {
-        return invocations.stream()
-                .map(invocation -> new ToolRegistry.ToolExecutionResult(
-                        invocation.id(), invocation.name(), invocation.argumentsJson(),
-                        prefix + ":" + invocation.name(), 1, false, List.of()))
-                .toList();
-    }
-
-    private static void setToolBatchTimeoutSeconds(ToolRegistry registry, long seconds) throws Exception {
-        Field field = ToolRegistry.class.getDeclaredField("toolBatchTimeoutSeconds");
-        field.setAccessible(true);
-        field.setLong(registry, seconds);
+    private static ToolExecution completed(ToolRegistry.ToolInvocation invocation, String prefix) {
+        return ToolExecution.completed(
+                ToolOutput.text(prefix + ":" + invocation.name()), invocation.argumentsJson());
     }
 
     private static void await(CountDownLatch latch) {

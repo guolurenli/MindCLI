@@ -14,7 +14,6 @@ import com.mindcli.runtime.run.AgentRunEventType;
 import com.mindcli.runtime.run.InMemoryRunStore;
 import com.mindcli.runtime.run.ToolDispatcher;
 import com.mindcli.capability.tool.ToolRegistry;
-import com.mindcli.capability.tool.ToolRegistry.ToolExecutionResult;
 import com.mindcli.capability.tool.ToolRegistry.ToolInvocation;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -371,18 +370,15 @@ class PlanExecuteAgentTest {
         }
 
         @Override
-        public List<ToolExecutionResult> executeTools(List<ToolInvocation> invocations) {
+        public com.mindcli.capability.tool.ToolExecution executeToolExecution(String name, String argumentsJson) {
             lockEntered.countDown();
             try {
                 releaseLock.await(30, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            return invocations.stream()
-                    .map(invocation -> new ToolExecutionResult(
-                            invocation.id(), invocation.name(), invocation.argumentsJson(),
-                            "lock released", 1, false, List.of()))
-                    .toList();
+            return com.mindcli.capability.tool.ToolExecution.completed(
+                    com.mindcli.capability.tool.ToolOutput.text("lock released"), argumentsJson);
         }
     }
 

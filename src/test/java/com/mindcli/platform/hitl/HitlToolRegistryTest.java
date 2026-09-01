@@ -9,6 +9,8 @@ import com.mindcli.capability.browser.BrowserSession;
 import com.mindcli.capability.browser.SensitivePagePolicy;
 import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
 import com.mindcli.capability.tool.ToolRegistry;
+import com.mindcli.capability.tool.ToolExecution;
+import com.mindcli.capability.tool.ToolExecutionStatus;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -78,9 +80,11 @@ class HitlToolRegistryTest {
         StubHandler stub = new StubHandler(req -> ApprovalResult.reject("too risky"));
         HitlToolRegistry registry = new HitlToolRegistry(stub);
 
-        String result = registry.executeTool("write_file",
+        ToolExecution execution = registry.executeToolExecution("write_file",
                 "{\"path\":\"" + target.toString().replace("\\", "\\\\") + "\",\"content\":\"x\"}");
+        String result = execution.output().text();
 
+        assertEquals(ToolExecutionStatus.DENIED_BY_USER, execution.status());
         assertTrue(result.startsWith("[HITL]"), "结果应为 HITL 拒绝消息: " + result);
         assertTrue(result.contains("too risky"));
         assertFalse(Files.exists(target), "拒绝后文件不应被创建");

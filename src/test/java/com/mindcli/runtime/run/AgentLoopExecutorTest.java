@@ -3,6 +3,7 @@ package com.mindcli.runtime.run;
 import com.mindcli.agent.AgentBudget;
 import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.capability.tool.ToolRegistry;
+import com.mindcli.capability.tool.ToolExecution;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -22,7 +23,7 @@ class AgentLoopExecutorTest {
                 new LlmClient.ChatResponse("assistant", "final", null, 10, 3)
         ));
         InMemoryRunStore runStore = new InMemoryRunStore();
-        AgentLoopExecutor executor = new AgentLoopExecutor(llm, new ToolDispatcher(invocations -> List.of()), runStore);
+        AgentLoopExecutor executor = new AgentLoopExecutor(llm, new ToolDispatcher(invocation -> ToolExecution.completed(com.mindcli.capability.tool.ToolOutput.text(""), invocation.argumentsJson())), runStore);
         AgentRunContext runContext = AgentRunContext.create(AgentMode.REACT, "hello", "workspace");
         List<LlmClient.Message> messages = new ArrayList<>(List.of(LlmClient.Message.user("hello")));
 
@@ -42,10 +43,8 @@ class AgentLoopExecutorTest {
                 new LlmClient.ChatResponse("assistant", "", List.of(toolCall), 10, 2),
                 new LlmClient.ChatResponse("assistant", "final after tool", null, 8, 4)
         ));
-        ToolDispatcher dispatcher = new ToolDispatcher(invocations -> List.of(
-                new ToolRegistry.ToolExecutionResult("call_1", "read_file", "{\"path\":\"a.txt\"}",
-                        "file text", 7, false, List.of())
-        ));
+        ToolDispatcher dispatcher = new ToolDispatcher(invocation -> ToolExecution.completed(
+                com.mindcli.capability.tool.ToolOutput.text("file text"), invocation.argumentsJson()));
         InMemoryRunStore runStore = new InMemoryRunStore();
         AgentLoopExecutor executor = new AgentLoopExecutor(llm, dispatcher, runStore);
         AgentRunContext runContext = AgentRunContext.create(AgentMode.REACT, "hello", "workspace");
@@ -74,8 +73,7 @@ class AgentLoopExecutorTest {
         ));
         ToolResourceClassifier classifier = new ToolResourceClassifier();
         ToolDispatcher dispatcher = new ToolDispatcher(
-                invocations -> List.of(new ToolRegistry.ToolExecutionResult(
-                        "call_1", "read_file", "{\"path\":\"a.txt\"}", "file text", 7, false, List.of())),
+                invocation -> ToolExecution.completed(com.mindcli.capability.tool.ToolOutput.text("file text"), invocation.argumentsJson()),
                 classifier,
                 new ResourceLockManager(),
                 HookManager.noop());
@@ -101,7 +99,7 @@ class AgentLoopExecutorTest {
     void returnsBudgetExhaustedWhenBudgetStopsBeforeModelCall() {
         FakeLlmClient llm = new FakeLlmClient(List.of());
         InMemoryRunStore runStore = new InMemoryRunStore();
-        AgentLoopExecutor executor = new AgentLoopExecutor(llm, new ToolDispatcher(invocations -> List.of()), runStore);
+        AgentLoopExecutor executor = new AgentLoopExecutor(llm, new ToolDispatcher(invocation -> ToolExecution.completed(com.mindcli.capability.tool.ToolOutput.text(""), invocation.argumentsJson())), runStore);
         AgentRunContext runContext = AgentRunContext.create(AgentMode.REACT, "hello", "workspace");
         AgentBudget budget = new AgentBudget(100, 3, 1);
         budget.beginIteration();
@@ -123,7 +121,7 @@ class AgentLoopExecutorTest {
     void returnsFailedWhenLlmCallFails() {
         FakeLlmClient llm = new FakeLlmClient(new IOException("llm down"));
         InMemoryRunStore runStore = new InMemoryRunStore();
-        AgentLoopExecutor executor = new AgentLoopExecutor(llm, new ToolDispatcher(invocations -> List.of()), runStore);
+        AgentLoopExecutor executor = new AgentLoopExecutor(llm, new ToolDispatcher(invocation -> ToolExecution.completed(com.mindcli.capability.tool.ToolOutput.text(""), invocation.argumentsJson())), runStore);
         AgentRunContext runContext = AgentRunContext.create(AgentMode.REACT, "hello", "workspace");
 
         AgentLoopResult result = executor.execute(loopContext(runContext,
