@@ -95,7 +95,7 @@ src/main/java/com/mindcli/
 |---|---|
 | 执行模式 | 默认 ReAct；`/plan` 进入计划审阅与执行；`/team` 由 orchestrator 内建规划 + explorer/worker 协作，worker/explorer 自审修复，多个无依赖写入步骤按一 Step 一 worktree 隔离并行，在临时 integration worktree 中合并，冲突不静默覆盖 |
 | Runtime 账本 | `JsonlRunStore` 按 run 写 JSONL 事件，单次加载完成 seq 分配、坏尾修复与状态投影，生成 `run.meta.json` / `run.state.json` 并支持 child run 摘要 |
-| 工具调度 | `ToolDispatcher` 统一负责并行、批超时、Hook、资源分类、资源锁、结果顺序与结构化 `ToolOutcome`；`ToolRegistry` 只执行单个工具并返回 `ToolExecution`，锁跟随实际工具线程生命周期，审批策略显式传播到工具线程，需要 HITL 的调用串行提示 |
+| 工具调度 | `ToolDispatcher` 统一负责并行、批超时、Hook、资源分类、资源锁、结果顺序与结构化 `ToolOutcome`；`ToolRegistry` 只执行单个工具并返回 `ToolExecution`，文件读写/目录枚举由 `FileToolExecutor`、代码搜索由 `CodeSearchToolExecutor`、Web 访问由 `WebToolExecutor`、Memory 访问由 `MemoryToolExecutor`、Shell 进程执行由 `ShellCommandExecutor` 承担，锁跟随实际工具线程生命周期，审批策略显式传播到工具线程，需要 HITL 的调用串行提示 |
 | 代码理解 | `glob_files` / `grep_code` / `read_file` 实时探索，按需逐步缩小范围 |
 | 记忆治理 | `/save` 手动长期记忆；自动提取只生成候选；`/memory approve/reject/export --audit` 管理审计链路 |
 | MCP | 仅使用官方 Model Context Protocol Java SDK 2.0.1，合并用户级 `~/.mindcli/mcp.json` 和项目级 `.mindcli/mcp.json`，支持 stdio 与 Streamable HTTP |

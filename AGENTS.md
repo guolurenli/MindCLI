@@ -60,7 +60,7 @@ Agent Runtime 账本默认通过 `RunStoreFactory` 写到 `~/.mindcli/runs`（�
 
 核心内置工具 13 个：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `create_project` / `web_search` / `web_fetch` / `save_memory` / `search_memory` / `read_memory` / `revert_turn`
 
-`ToolRegistry` 是工具对外 facade；内置工具的名称、描述、参数 schema 由 `capability/tool/builtin/*ToolRegistrar.java` 维护，通过 `capability/tool/registry/ToolRegistrar` / `ToolRegistrationContext` 注册。MCP 动态工具状态由 `capability/tool/namespace/McpToolNamespace.java` 管理，`ToolRegistry` 继续保留原有 `registerMcpTool*` / `replaceMcpTool*` 兼容入口。
+`ToolRegistry` 是工具对外 facade；内置工具的名称、描述、参数 schema 由 `capability/tool/builtin/*ToolRegistrar.java` 维护，通过 `capability/tool/registry/ToolRegistrar` / `ToolRegistrationContext` 注册。文件读取、写入、目录枚举由 `capability/tool/builtin/FileToolExecutor` 承担；`glob_files` / `grep_code` 的参数解析、实时扫描调用和结果预算由 `capability/tool/CodeSearchToolExecutor` 承担；Web 搜索、抓取、网络策略与 StepSearch bridge 由 `capability/tool/WebToolExecutor` 承担；Memory 工具由 `capability/tool/MemoryToolExecutor` 承担；Shell 命令的进程启动、超时和输出截断由 `ShellCommandExecutor` 承担，`ToolRegistry` 仅保留兼容入口和跨工具依赖编排。MCP 动态工具状态由 `capability/tool/namespace/McpToolNamespace.java` 管理，`ToolRegistry` 继续保留原有 `registerMcpTool*` / `replaceMcpTool*` 兼容入口。
 
 代码库理解默认走 Claude Code 式实时探索：`glob_files` 找候选文件、`grep_code` 精确定位符号或字符串、`read_file` 按需读取具体行段。长期记忆只在 session 注入受当前项目 scope/status/expiry 过滤的 `MEMORY.md` 短目录，正文通过 `search_memory` 查询后再用 `read_memory(id)` 按需读取；不得让模型直接读取用户目录下的记忆文件。`grep_code` 优先使用本机 `ripgrep`，不可用时回退到 Java 扫描；结果受 `max_results` / `head_limit` / `max_chars` 预算约束，返回 `partial: true` 或 `suggested_reads` 时应继续缩小搜索范围或按建议读取行段。
 
@@ -233,7 +233,7 @@ src/main/java/com/mindcli/
 | 规划/DAG | Agent.java + PlanExecuteAgent.java + agent/plan/Planner.java + agent/plan/ExecutionPlan.java |
 | 工具调用 | capability/tool/ToolRegistry.java + capability/tool/builtin/* + capability/tool/namespace/McpToolNamespace.java + runtime/run/ToolDispatcher.java + runtime/run/ToolOutcome.java |
 | ReAct loop | Agent.java + runtime/run/AgentLoopExecutor.java |
-| 代码搜索 | capability/tool/builtin/FileToolRegistrar.java + ToolRegistry.java (`glob_files` / `grep_code` / `read_file`) |
+| 代码搜索 | capability/tool/builtin/FileToolRegistrar.java + capability/tool/CodeSearchToolExecutor.java + ToolRegistry.java 兼容入口 (`glob_files` / `grep_code` / `read_file`) |
 | 模型/API | platform/llm/*Client.java + LlmClientFactory.java |
 | Multi-Agent | AgentOrchestrator.java + SubAgent.java + agent/profile/* |
 | MCP | capability/mcp/McpServerManager.java + McpClient.java |
