@@ -108,7 +108,7 @@ src/main/java/com/mindcli/
 - 启动期会加载 `~/.mindcli/MIND.md`、项目根 `MIND.md`、项目根 `.mindcli/MIND.md`、`MIND.local.md`、`.mindcli/MIND.local.md`，按此顺序注入 Project Context；`@relative/path.md` 可导入项目根内文件，总注入内容有字符预算，避免项目记忆变成 token 噪音。
 - `/init` 会根据当前项目生成短 `MIND.md`，只放 commands / project positioning / architecture / pitfalls / don'ts；默认不覆盖已有文件。
 - `/export` 导出当前 ReAct `conversationHistory` 为 Markdown 到 `~/.mindcli/exports/session-*.md`；只支持无参数命令，包含完整 system prompt，便于检查 LLM 实际接收前的指令。
-- `Main.java` 是 CLI 入口 facade，当前包路径为 `app/cli/Main.java`；启动前置配置 helper 由 `CliBootstrap` 承接，启动首屏和状态摘要由 `CliStartupView` 承接；低风险 slash command 的格式化和编排优先沉到 `app/cli/command/*`，当前 `/browser`、`/config`、`/export`、`/memory`、`/save`、`/snapshot`、`/restore`、`/run inspect`、`/wechat` 已由专门 handler 承接。
+- `Main.java` 是 CLI 入口 facade，当前包路径为 `app/cli/Main.java`；启动前置配置 helper 由 `CliBootstrap` 承接，启动首屏和状态摘要由 `CliStartupView` 承接；`CliCommandRouter` 统一分发低风险 slash command 到 `app/cli/command/*`，当前 `/export`、`/memory`、`/save`、`/snapshot`、`/restore`、`/run inspect`、MCP、Task、Skill、Wechat 已从 `Main` 主循环移出；模型/模式切换和交互生命周期仍由 `Main` facade 管理。
 - JLine 交互升级计划记录在 `docs/phase-22-jline-interaction-upgrade.md`。
 
 ## 关键行为约束（Agent 必读）
@@ -217,7 +217,7 @@ src/main/java/com/mindcli/
 | 场景 | 命令 |
 |------|------|
 | 代码搜索工具 | `mvn test -Dtest=ToolRegistryTest,CodeSearchGoldenSetTest,ApprovalPolicyTest` |
-| 命令解析 | `mvn test -Dtest=CliCommandParserTest,PlanReviewInputParserTest,MainInputNormalizationTest,MainCliBootstrapRefactorTest,MainCliStartupViewRefactorTest,MainMemoryCommandHandlerRefactorTest,MainCommandHandlerRefactorTest,MainConfigCommandHandlerRefactorTest,MainWechatCommandHandlerRefactorTest` |
+| 命令解析 | `mvn test -Dtest=CliCommandParserTest,CliCommandRouterTest,PlanReviewInputParserTest,MainInputNormalizationTest,MainCliBootstrapRefactorTest,MainCliStartupViewRefactorTest,MainMemoryCommandHandlerRefactorTest,MainCommandHandlerRefactorTest,MainConfigCommandHandlerRefactorTest,MainWechatCommandHandlerRefactorTest` |
 | DAG/Plan | `mvn test -Dtest=ExecutionPlanTest` |
 | Multi-Agent | `mvn test -Dtest=AgentRoleTest,AgentMessageTest,SubAgentTest,AgentProfileLoaderTest,AgentOrchestratorTest` |
 | 终端/渲染 | `mvn test -Pphase16-smoke` |

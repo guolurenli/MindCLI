@@ -6,19 +6,15 @@ import com.mindcli.agent.PlanExecuteAgent;
 import com.mindcli.agent.SubAgent;
 import com.mindcli.agent.profile.AgentProfile;
 import com.mindcli.agent.profile.AgentProfileLoader;
-import com.mindcli.capability.browser.BrowserAuditMetadata;
 import com.mindcli.capability.browser.BrowserGuard;
 import com.mindcli.capability.browser.BrowserSession;
 import com.mindcli.capability.browser.SensitivePagePolicy;
 import com.mindcli.app.cli.command.AgentCommandHandler;
 import com.mindcli.app.cli.command.BrowserCommandHandler;
+import com.mindcli.app.cli.command.CliCommandRouter;
 import com.mindcli.app.cli.command.ConfigCommandHandler;
 import com.mindcli.app.cli.command.ExportCommandHandler;
-import com.mindcli.app.cli.command.MemoryCommandHandler;
-import com.mindcli.app.cli.command.RunCommandHandler;
-import com.mindcli.app.cli.command.SkillCommandHandler;
 import com.mindcli.app.cli.command.SlashCommandCatalog;
-import com.mindcli.app.cli.command.SnapshotCommandHandler;
 import com.mindcli.app.cli.command.WechatCliCommandHandler;
 import com.mindcli.app.cli.interaction.CliInputSupport;
 import com.mindcli.app.cli.interaction.MindCliCompleter;
@@ -41,8 +37,6 @@ import com.mindcli.capability.image.ClipboardImage;
 import com.mindcli.capability.mcp.McpServerManager;
 import com.mindcli.capability.mcp.mention.AtMentionExpander;
 import com.mindcli.agent.plan.ExecutionPlan;
-import com.mindcli.platform.hitl.ApprovalPolicy;
-import com.mindcli.platform.security.AuditLog;
 import com.mindcli.runtime.CancellationContext;
 import com.mindcli.runtime.CancellationToken;
 import com.mindcli.runtime.run.AgentMode;
@@ -60,7 +54,6 @@ import com.mindcli.runtime.run.TeamModeAdapter;
 import com.mindcli.runtime.api.RuntimeApiServer;
 import com.mindcli.runtime.api.RuntimeThreadStore;
 import com.mindcli.runtime.task.DurableTaskManager;
-import com.mindcli.runtime.task.TaskCommandFormatter;
 import com.mindcli.platform.snapshot.SnapshotService;
 import com.mindcli.capability.skill.SkillRegistry;
 import com.mindcli.capability.tool.ToolRegistry;
@@ -273,6 +266,23 @@ public class Main {
             WechatCliCommandHandler.WechatRuntimeController wechatRuntime =
                     new WechatCliCommandHandler.WechatRuntimeController(renderer);
             Runtime.getRuntime().addShutdownHook(new Thread(wechatRuntime::stop, "mindcli-wechat-shutdown"));
+            CliCommandRouter commandRouter = new CliCommandRouter(new CliCommandRouter.Context(
+                    ui,
+                    reactAgent,
+                    renderer,
+                    lineReader,
+                    skillRegistry,
+                    skillStateStore,
+                    mcpServerManager,
+                    taskManager,
+                    wechatRuntime,
+                    sessionContext,
+                    hitlHandler,
+                    phase -> renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, phase)),
+                    config,
+                    llmClientRef::get,
+                    browserSession,
+                    hitlToolRegistry));
             CliStartupView.StartupScreenInfo startupScreenInfo =
                     startupScreenInfo(llmClient, mcpServerManager, skillRegistry, startupNote);
             List<String> startupBannerLines = startupScreenLines(startupScreenInfo);
@@ -340,6 +350,9 @@ public class Main {
                     printSubmittedInput(renderer, ui, input);    //把用户输入打印到界面
                     submittedInputRendered = true;    //标记：输入已经渲染输出过
                 }
+                if (commandRouter.dispatch(command)) {
+                    continue;
+                }
                 switch (command.type()) {
                     case UNKNOWN_COMMAND -> {
                         ui.println("❌ 未知命令: " + command.payload());
@@ -354,120 +367,6 @@ public class Main {
                     }
                     case CANCEL -> {
                         ui.println("当前没有正在运行的任务。\n");
-                        continue;
-                    }
-                    case CLEAR -> {
-                        reactAgent.clearHistory();
-                        sessionContext.clear();
-                        hitlHandler.clearApprovedAll();
-                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
-                        ui.println("🗑️ 当前对话历史已清空，长期记忆保持不变\n");
-                        continue;
-                    }
-                    case COMPACT -> {
-                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "compacting"));
-                        boolean activityPanel = renderer.supportsActivityPanel();
-                        if (activityPanel) {
-                            renderer.beginActivity("Compacting conversation", "正在整理早期对话并生成摘要");
-                        } else {
-                            ui.println("⏳ 压缩中，等一下下哦...\n");
-                        }
-                        Agent.CompactionResult result;
-                        try {
-                            result = reactAgent.compactHistoryNow();
-                        } finally {
-                            if (activityPanel) {
-                                renderer.endActivity();
-                            }
-                            renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
-                        }
-                        if (result.error() != null && !result.error().isBlank()) {
-                            ui.println("❌ 手动压缩失败: " + result.error() + "\n");
-                        } else if (result.compacted()) {
-                            ui.printf("📦 已手动压缩历史上下文: %,d -> %,d tokens%n%n",
-                                    result.beforeTokens(), result.afterTokens());
-                        } else {
-                            ui.println("📭 当前没有需要压缩的历史上下文\n");
-                        }
-                        continue;
-                    }
-                    case HISTORY_CLEAR -> {
-                        clearLineReaderHistory(lineReader);
-                        ui.println("🧹 输入历史已清空\n");
-                        continue;
-                    }
-                    case INIT_PROJECT_MEMORY -> {
-                        String payload = command.payload();
-                        boolean force = payload != null && payload.trim().equalsIgnoreCase("--force");
-                        if (payload != null && !payload.isBlank() && !force) {
-                            ui.println("❌ 未知 /init 参数: " + payload);
-                            ui.println("   用法: /init 或 /init --force\n");
-                            continue;
-                        }
-                        try {
-                            ProjectMemoryInitializer.InitResult result = ProjectMemoryInitializer.initialize(
-                                    Path.of(reactAgent.getToolRegistry().getProjectPath()), force);
-                            if (result.written()) {
-                                ui.println("✅ " + result.message());
-                                ui.println("   路径: " + result.path());
-                                ui.println("   这份 MIND.md 会在后续 system prompt 的 Project Context 中注入。\n");
-                            } else {
-                                ui.println("ℹ️ " + result.message());
-                                ui.println("   路径: " + result.path() + "\n");
-                            }
-                        } catch (IOException e) {
-                            ui.println("❌ 生成 MIND.md 失败: " + e.getMessage() + "\n");
-                        }
-                        continue;
-                    }
-                    case CONTEXT_STATUS -> {
-                        ui.println("📋 上下文状态：");
-                        ui.println(reactAgent.getContextStatus());
-                        ui.println();
-                        continue;
-                    }
-                    case MEMORY_STATUS -> {
-                        MemoryCommandHandler.printStatus(ui, reactAgent.getMemoryManager());
-                        continue;
-                    }
-                    case MEMORY_POLICY -> {
-                        MemoryCommandHandler.printPolicy(ui, reactAgent.getMemoryManager());
-                        continue;
-                    }
-                    case MEMORY_PROPOSALS -> {
-                        MemoryCommandHandler.printProposals(ui, reactAgent.getMemoryManager());
-                        continue;
-                    }
-                    case MEMORY_EXPORT_AUDIT -> {
-                        MemoryCommandHandler.printAuditExport(ui, reactAgent.getMemoryManager());
-                        continue;
-                    }
-                    case MEMORY_APPROVE -> {
-                        MemoryCommandHandler.printApprove(ui, reactAgent.getMemoryManager(), command.payload());
-                        continue;
-                    }
-                    case MEMORY_REJECT -> {
-                        MemoryCommandHandler.printReject(ui, reactAgent.getMemoryManager(), command.payload());
-                        continue;
-                    }
-                    case MEMORY_LIST -> {
-                        MemoryCommandHandler.printList(ui, reactAgent.getMemoryManager());
-                        continue;
-                    }
-                    case MEMORY_SEARCH -> {
-                        MemoryCommandHandler.printSearch(ui, reactAgent.getMemoryManager(), command.payload());
-                        continue;
-                    }
-                    case MEMORY_DELETE -> {
-                        MemoryCommandHandler.printDelete(ui, reactAgent.getMemoryManager(), command.payload());
-                        continue;
-                    }
-                    case MEMORY_CLEAR -> {
-                        MemoryCommandHandler.printClear(ui, reactAgent.getMemoryManager());
-                        continue;
-                    }
-                    case MEMORY_SAVE -> {
-                        MemoryCommandHandler.printSave(ui, reactAgent.getMemoryManager(), command.payload());
                         continue;
                     }
                     case SWITCH_PLAN -> {
@@ -521,54 +420,11 @@ public class Main {
                         }
                         continue;
                     }
-                    case SWITCH_HITL -> {
-                        String payload = command.payload();
-                        if ("on".equals(payload)) {
-                            hitlHandler.setEnabled(true);
-                            ui.println("🔒 HITL 审批已启用：write_file / execute_command / create_project 执行前将请求人工确认\n");
-                        } else if ("off".equals(payload)) {
-                            hitlHandler.setEnabled(false);
-                            hitlHandler.clearApprovedAll();
-                            ui.println("🔓 HITL 审批已关闭：危险操作将直接执行\n");
-                        } else {
-                            String status = hitlHandler.isEnabled() ? "启用" : "关闭";
-                            ui.println("🔒 HITL 当前状态：" + status);
-                            ui.println("   /hitl on  - 启用人工审批");
-                            ui.println("   /hitl off - 关闭人工审批\n");
-                        }
-                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
-                        continue;
-                    }
-                    case POLICY_STATUS -> {
-                        printPolicyStatus(ui, reactAgent);
-                        continue;
-                    }
-                    case CONFIG -> {
-                        if (command.payload() == null || command.payload().isBlank()) {
-                            handleConfigPalette(renderer, config, llmClient, hitlHandler, skillRegistry);
-                        } else {
-                            ui.println(handleConfigCommand(config, command.payload()));
-                            renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
-                        }
-                        continue;
-                    }
                     case AGENT -> {
                         String projectPath = reactAgent.getToolRegistry().getProjectPath();
                         AgentCommandHandler.AgentCommandTarget target =
                                 AgentCommandHandler.parse(command.payload());
-                        if (target.create()) {
-                            ui.println(AgentCommandHandler.create(Path.of(projectPath), lineReader));
-                            continue;
-                        }
                         List<AgentProfile> profiles = AgentProfileLoader.load(Path.of(projectPath));
-                        if (target.name() == null) {
-                            ui.println(AgentCommandHandler.list(profiles));
-                            continue;
-                        }
-                        if (target.task() == null) {
-                            ui.println(AgentCommandHandler.detail(profiles, target.name()));
-                            continue;
-                        }
                         AgentProfile profile = AgentCommandHandler.find(profiles, target.name());
                         if (profile == null) {
                             ui.println("❌ 未找到子代理: " + target.name() + "（用 /agent 查看列表）\n");
@@ -597,101 +453,6 @@ public class Main {
                             ui.println(agentResponse);
                             ui.println();
                         }
-                        continue;
-                    }
-                    case AUDIT_TAIL -> {
-                        printAuditTail(ui, reactAgent, command.payload());
-                        continue;
-                    }
-                    case RUN_INSPECT -> {
-                        printRunInspect(ui, reactAgent.runStore(), command.payload());
-                        continue;
-                    }
-                    case SNAPSHOT -> {
-                        printSnapshotCommand(ui, reactAgent.getToolRegistry().getSnapshotService(), command.payload());
-                        continue;
-                    }
-                    case RESTORE_SNAPSHOT -> {
-                        printRestoreCommand(ui, reactAgent.getToolRegistry().getSnapshotService(), command.payload());
-                        continue;
-                    }
-                    case MCP_LIST -> {
-                        ui.println(mcpServerManager.formatStatus());
-                        ui.println();
-                        continue;
-                    }
-                    case MCP_RESTART -> {
-                        printMcpCommandResult(ui, mcpServerManager.restart(command.payload()));
-                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
-                        continue;
-                    }
-                    case MCP_LOGS -> {
-                        printMcpCommandResult(ui, mcpServerManager.logs(command.payload()));
-                        continue;
-                    }
-                    case MCP_DISABLE -> {
-                        printMcpCommandResult(ui, mcpServerManager.disable(command.payload()));
-                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
-                        continue;
-                    }
-                    case MCP_ENABLE -> {
-                        printMcpCommandResult(ui, mcpServerManager.enable(command.payload()));
-                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
-                        continue;
-                    }
-                    case MCP_RESOURCES -> {
-                        printMcpCommandResult(ui, mcpServerManager.resources(command.payload()));
-                        continue;
-                    }
-                    case MCP_PROMPTS -> {
-                        printMcpCommandResult(ui, mcpServerManager.prompts(command.payload()));
-                        continue;
-                    }
-                    case BROWSER -> {
-                        printMcpCommandResult(ui, handleBrowserCommand(
-                                command.payload(),
-                                browserSession,
-                                mcpServerManager,
-                                hitlToolRegistry,
-                                hitlHandler));
-                        continue;
-                    }
-                    case WECHAT -> {
-                        ui.println(handleWechatCommand(command.payload(), lineReader, renderer, ui, wechatRuntime));
-                        continue;
-                    }
-                    case TASK -> {
-                        printMcpCommandResult(ui, TaskCommandFormatter.handle(taskManager, command.payload()));
-                        continue;
-                    }
-                    case SKILL_LIST -> {
-                        ui.println(SkillCommandHandler.list(skillRegistry));
-                        continue;
-                    }
-                    case SKILL_SHOW -> {
-                        ui.println(SkillCommandHandler.show(skillRegistry, command.payload()));
-                        continue;
-                    }
-                    case SKILL_ON -> {
-                        ui.println(SkillCommandHandler.enable(skillRegistry, skillStateStore, command.payload()));
-                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
-                        continue;
-                    }
-                    case SKILL_OFF -> {
-                        ui.println(SkillCommandHandler.disable(skillRegistry, skillStateStore, command.payload()));
-                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
-                        continue;
-                    }
-                    case SKILL_RELOAD -> {
-                        skillRegistry.reload();
-                        ui.println("🔄 已重新扫描 skill 目录");
-                        ui.println(SkillCommandHandler.startupSummary(skillRegistry));
-                        ui.println("✅ 下一轮 LLM 调用生效");
-                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
-                        continue;
-                    }
-                    case EXPORT -> {
-                        handleExportCommand(ui, reactAgent);
                         continue;
                     }
                     case NONE -> {
@@ -1411,18 +1172,6 @@ public class Main {
         return SlashCommandCatalog.formatSlashCommandChoices(terminalWidth);
     }
 
-    /**
-     * /config 命令处理：用 renderer.openPalette 展示当前配置项列表。
-     * 当前是只读视图——选中一项后提示对应的 CLI 命令，由用户自己执行。
-     */
-    private static void handleConfigPalette(Renderer renderer,
-                                            MindCliConfig config,
-                                            LlmClient llmClient,
-                                            SwitchableHitlHandler hitlHandler,
-                                            com.mindcli.capability.skill.SkillRegistry skillRegistry) {
-        ConfigCommandHandler.handleConfigPalette(renderer, config, llmClient, hitlHandler, skillRegistry);
-    }
-
     static String handleConfigCommand(MindCliConfig config, String payload) {
         return ConfigCommandHandler.handleConfigCommand(config, payload);
     }
@@ -1509,10 +1258,6 @@ public class Main {
         lineReader.getBuffer().clear();
     }
 
-    private static void handleExportCommand(PrintStream out, Agent reactAgent) {
-        ExportCommandHandler.printExportCommand(out, reactAgent);
-    }
-
     static boolean hasExportableMessages(List<LlmClient.Message> history) {
         return ExportCommandHandler.hasExportableMessages(history);
     }
@@ -1529,18 +1274,6 @@ public class Main {
         return ExportCommandHandler.markdownFenceFor(content);
     }
 
-    private static void printPolicyStatus(PrintStream out, Agent reactAgent) {
-        out.println("🛡️ 安全策略状态：");
-        out.println("   项目根: " + reactAgent.getToolRegistry().getProjectPath());
-        out.println("   危险工具: " + String.join(", ", ApprovalPolicy.getDangerousTools()) + "，以及所有 mcp__ 前缀工具");
-        out.println("   路径围栏: 强制限定在项目根之内（read_file / write_file / list_dir / create_project）");
-        out.println("   命令黑名单: sudo / rm -rf 全盘 / mkfs / dd of=/dev / fork bomb / curl|sh / find / / chmod 777 / / shutdown");
-        out.println("   写入文件上限: 5MB");
-        out.println("   命令执行上限: 60 秒，输出 8KB（截断）");
-        out.println("   审计目录: " + reactAgent.getToolRegistry().getAuditLog().getAuditDir());
-        out.println();
-    }
-
     static String handleBrowserCommand(String payload,
                                        BrowserSession browserSession,
                                        McpServerManager mcpServerManager,
@@ -1552,61 +1285,6 @@ public class Main {
                 mcpServerManager,
                 registry,
                 hitlHandler);
-    }
-
-    private static void printMcpCommandResult(PrintStream out, String result) {
-        out.println(result);
-        out.println();
-    }
-
-    private static void printAuditTail(PrintStream out, Agent reactAgent, String payload) {
-        int requested = parseAuditCount(payload, 10);
-        List<AuditLog.AuditEntry> entries = reactAgent.getToolRegistry().getAuditLog().readRecent(requested);
-        if (entries.isEmpty()) {
-            out.println("📭 今日尚无审计记录\n");
-            return;
-        }
-        out.println("📋 最近 " + entries.size() + " 条危险工具审计：");
-        for (AuditLog.AuditEntry entry : entries) {
-            out.printf("   [%s] %s %s (%dms, approver=%s)%n",
-                    entry.outcome().toUpperCase(),
-                    entry.timestamp(),
-                    entry.tool(),
-                    entry.durationMs(),
-                    entry.approver());
-            if (entry.reason() != null && !entry.reason().isBlank()) {
-                out.println("        原因: " + entry.reason());
-            }
-            BrowserAuditMetadata metadata = entry.metadata();
-            if (metadata != null) {
-                out.println("        浏览器: mode=" + metadata.browserMode()
-                        + ", sensitive=" + metadata.sensitive()
-                        + (metadata.targetUrl() == null ? "" : ", url=" + metadata.targetUrl()));
-            }
-        }
-        out.println();
-    }
-
-    private static void printSnapshotCommand(PrintStream out, SnapshotService snapshotService, String payload) {
-        SnapshotCommandHandler.printSnapshotCommand(out, snapshotService, payload);
-    }
-
-    private static void printRunInspect(PrintStream out, RunStore runStore, String payload) {
-        RunCommandHandler.printRunInspect(out, runStore, payload);
-    }
-
-    private static void printRestoreCommand(PrintStream out, SnapshotService snapshotService, String payload) {
-        SnapshotCommandHandler.printRestoreCommand(out, snapshotService, payload);
-    }
-
-    private static int parseAuditCount(String payload, int defaultN) {
-        if (payload == null || payload.isBlank()) return defaultN;
-        try {
-            int n = Integer.parseInt(payload.trim());
-            return Math.max(1, Math.min(n, 100));
-        } catch (NumberFormatException e) {
-            return defaultN;
-        }
     }
 
     private static void printStartupHints(PrintStream out) {

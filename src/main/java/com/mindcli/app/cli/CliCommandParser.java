@@ -1,8 +1,8 @@
 package com.mindcli.app.cli;
 
-final class CliCommandParser {
+public final class CliCommandParser {
 
-    enum CommandType {
+    public enum CommandType {
         NONE,
         UNKNOWN_COMMAND,
         INIT_PROJECT_MEMORY,
@@ -52,8 +52,8 @@ final class CliCommandParser {
         EXPORT
     }
 
-    record ParsedCommand(CommandType type, String payload) {
-        static ParsedCommand none() {
+    public record ParsedCommand(CommandType type, String payload) {
+        public static ParsedCommand none() {
             return new ParsedCommand(CommandType.NONE, null);
         }
     }
@@ -61,7 +61,7 @@ final class CliCommandParser {
     private CliCommandParser() {
     }
 
-    static ParsedCommand parse(String input) {
+    public static ParsedCommand parse(String input) {
         if (input == null) {
             return ParsedCommand.none();
         }

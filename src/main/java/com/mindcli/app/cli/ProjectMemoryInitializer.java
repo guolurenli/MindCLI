@@ -8,11 +8,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-final class ProjectMemoryInitializer {
+public final class ProjectMemoryInitializer {
     private ProjectMemoryInitializer() {
     }
 
-    static InitResult initialize(Path projectRoot, boolean force) throws IOException {
+    public static InitResult initialize(Path projectRoot, boolean force) throws IOException {
         Path root = projectRoot == null ? Path.of(".").toAbsolutePath().normalize()
                 : projectRoot.toAbsolutePath().normalize();
         Path target = root.resolve("MIND.md");
@@ -25,7 +25,7 @@ final class ProjectMemoryInitializer {
         return new InitResult(true, target, "已生成项目级记忆 MIND.md。");
     }
 
-    static String generate(Path projectRoot) throws IOException {
+    public static String generate(Path projectRoot) throws IOException {
         Path root = projectRoot == null ? Path.of(".").toAbsolutePath().normalize()
                 : projectRoot.toAbsolutePath().normalize();
         ProjectFacts facts = inspect(root);
@@ -136,7 +136,7 @@ final class ProjectMemoryInitializer {
         return Files.isRegularFile(path) ? Files.readString(path, StandardCharsets.UTF_8) : "";
     }
 
-    record InitResult(boolean written, Path path, String message) {
+    public record InitResult(boolean written, Path path, String message) {
     }
 
     private record ProjectFacts(

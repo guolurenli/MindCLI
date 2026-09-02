@@ -41,6 +41,7 @@ java -jar target/mindcli-1.0-SNAPSHOT.jar serve --http --port 8080
 ```mermaid
 flowchart LR
     CLI["JLine CLI / Inline Renderer"] --> Parser["CliCommandParser"]
+    Parser --> Router["CliCommandRouter (slash commands)"]
     Parser --> React["ReAct Agent"]
     Parser --> Plan["PlanExecuteAgent"]
     Parser --> Team["AgentOrchestrator"]
@@ -82,7 +83,7 @@ sequenceDiagram
 ```text
 src/main/java/com/mindcli/
 ├── agent/       ReAct / Plan / Multi-Agent 编排，plan/ 含 DependencyGraph，profile/ 是 Agent Profile 与 profile lease
-├── app/         cli / wechat 用户入口与命令 handler
+├── app/         cli / wechat 用户入口与命令 handler；CliCommandRouter 负责低风险 slash 命令分发
 ├── capability/  browser / image / lsp / mcp / memory / skill / tool / web
 ├── platform/    config / hitl / llm / prompt / render / security / snapshot / text
 └── runtime/     run ledger、ToolDispatcher、Runtime API、DurableTaskManager
@@ -315,6 +316,7 @@ X-MindCLI-API-Key: <MINDCLI_RUNTIME_API_KEY>
 mvn test -Pquick
 mvn test -Pphase16-smoke
 mvn test -Dtest=CliCommandParserTest,PlanReviewInputParserTest,MainInputNormalizationTest
+mvn test -Dtest=CliCommandRouterTest,MainCommandHandlerRefactorTest
 mvn test -Dtest=ToolRegistryTest,ApprovalPolicyTest
 mvn test -Dtest=ExecutionPlanTest
 mvn test -Dtest=AgentRoleTest,AgentMessageTest,AgentOrchestratorTest
