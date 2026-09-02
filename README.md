@@ -82,11 +82,11 @@ sequenceDiagram
 
 ```text
 src/main/java/com/mindcli/
-├── agent/       ReAct / Plan / Multi-Agent 编排，plan/ 含 DependencyGraph，profile/ 是 Agent Profile 与 profile lease
+├── agent/       ReAct / Plan / Multi-Agent 编排，plan/ 含 DependencyGraph，team/ 是 Team 编排与调度模型，profile/ 是 Agent Profile 与 profile lease
 ├── app/         cli / wechat 用户入口与命令 handler；CliCommandRouter 负责低风险 slash 命令分发
-├── capability/  browser / image / lsp / mcp / memory / skill / tool / web
+├── capability/  browser / image / lsp / mcp / memory（policy/） / skill / tool（builtin/registry/namespace/search/） / web
 ├── platform/    config / hitl / llm / prompt / render / security / snapshot / text
-└── runtime/     run ledger、ToolDispatcher、Runtime API、DurableTaskManager
+└── runtime/     run/（facade + store/dispatch/loop/mode/recovery/hook/legacy/session）、api/、task/
 ```
 
 ## 核心能力

@@ -12,9 +12,9 @@
 
 三条主执行路径,共享 `ToolRegistry` / `MemoryManager` / `SnapshotService`：
 
-- **ReAct**（默认模式）—— 思考-行动-观察循环，LLM/tool 循环委托 `runtime/run/AgentLoopExecutor.java`，`Agent.java` 负责 prompt / memory / renderer。
+- **ReAct**（默认模式）—— 思考-行动-观察循环，LLM/tool 循环委托 `runtime/run/loop/AgentLoopExecutor.java`，`Agent.java` 负责 prompt / memory / renderer。
 - **Plan-and-Execute**（`/plan`）—— 先规划后执行，任务分解 + DAG 依赖管理 + 失败重规划，`PlanExecuteAgent.java` + `agent/plan/*`。
-- **Multi-Agent**（`/team`）—— 编排器内建规划，`EXPLORER` / `WORKER` 双 Profile 分工，`AgentOrchestrator.java` + `SubAgent.java` + `agent/profile/*`。
+- **Multi-Agent**（`/team`）—— 编排器内建规划，`EXPLORER` / `WORKER` 双 Profile 分工，`agent/team/AgentOrchestrator.java` + `agent/team/SubAgent.java` + `agent/profile/*`。
 - **模式路由** —— `AgentModeRouter` 统一把三种模式接入 `AgentRuntime`。
 
 ### 2. 记忆与上下文
@@ -97,7 +97,12 @@
 | 已完成 P0 | 配置读取统一 | `ConfigValueResolver` 已统一 `System property → OS environment → 项目 .env → 用户 ~/.env → 默认值`；原先分散在 `SnapshotConfig`、`RuntimeApiServer`、`DurableTaskManager`、`LspManager`、`AuditLog`、`CliInputSupport`、`McpClient` 等模块的业务配置读取已迁移。 |
 | 已完成 P1 | 继续压薄 `Main.java` | `CliCommandRouter` 已统一承接低风险 slash 命令、session 清理/压缩、配置、HITL、审计、浏览器、MCP、Skill、Wechat 与 Agent 展示；`Main` 保留启动、模式切换和 Agent 直连执行，当前约 1467 行。 |
 | 已完成 P1 | 拆薄 `ToolRegistry` | 文件读写/目录枚举已下沉到 `FileToolExecutor`，`glob_files` / `grep_code` 已下沉到 `CodeSearchToolExecutor`，`create_project` 已下沉到 `ProjectToolExecutor`，`load_skill` 已下沉到 `SkillToolExecutor`，Web 搜索/抓取已下沉到 `WebToolExecutor`，Memory 工具已下沉到 `MemoryToolExecutor`，Shell 命令执行已下沉到 `ShellCommandExecutor`；`ToolRegistry` 保留兼容入口与注册 facade。Snapshot/revert 只是生命周期服务的薄转发，未为少量逻辑增加抽象层。 |
-| 已完成 P1 | 统一三套 Agent 循环 | 已新增 `runtime/run/AgentTurnKernel`，ReAct 的 `AgentLoopExecutor`、Plan 的任务执行 loop 与 Team 的 `SubAgent` 已复用单轮 LLM/tool 内核；Plan 仍保留任务级 DAG/失败恢复，Team 仍保留 profile/自审/child run。模式级编排保持独立，避免强行合并语义。 |
+| 已完成 P1 | 统一三套 Agent 循环 | 已新增 `runtime/run/loop/AgentTurnKernel`，ReAct 的 `AgentLoopExecutor`、Plan 的任务执行 loop 与 Team 的 `SubAgent` 已复用单轮 LLM/tool 内核；Plan 仍保留任务级 DAG/失败恢复，Team 仍保留 profile/自审/child run。模式级编排保持独立，避免强行合并语义。 |
+| 已完成 P1 | Runtime 包结构整理 | `runtime/run` 保留运行时 facade 与核心 run 类型；存储、工具调度、循环、模式适配、恢复、Hook、兼容 runner、session 分别归入 `store/`、`dispatch/`、`loop/`、`mode/`、`recovery/`、`hook/`、`legacy/`、`session/`，仅调整包路径，不改变执行链路与公开行为。 |
+| 已完成 P1 | Team 包结构整理 | Multi-Agent 编排与步骤调度模型归入 `agent/team/`；通用 `AgentRole`、`AgentMessage`、`AgentBudget` 保留在 `agent` 根包，避免跨模式公共类型重复分组。 |
+| 已完成 P1 | Memory policy 包结构整理 | `MemoryPolicyContext`、`MemoryPolicyDecision`、`MemoryPolicyEngine` 归入 `capability/memory/policy/`；`MemoryManager` 继续作为记忆 facade，存储与检索链路保持原包和原接口。 |
+| 已完成 P1 | Tool search 包结构整理 | `CodeSearchToolExecutor` 与 ripgrep/Java 搜索引擎归入 `capability/tool/search/`；`ToolRegistry` 保留工具 facade，其他 builtin、registry、namespace 边界不变。 |
+| 已完成 P1 | AgentOrchestrator 职责瘦身 | 纯步骤状态诊断、阻塞依赖格式化和最终结果汇总提取到 `agent/team/TeamStepFormatter`；编排器继续负责计划执行、并行、worktree 与审查链路。 |
 | P1 | `/run resume` 与启动期自动恢复 | 当前只有 `/run inspect`，能查看但不能继续执行。恢复前需要生成计划并对文件写入、命令执行和未完成 child run 请求确认。 |
 | 已完成 P2 | 清理兼容 API | 已确认仓库生产代码没有旧入口调用，删除 `MemoryManager` / `MemoryExtractor` 的旧提取方法、`ToolRegistry` 的旧 memory saver setter 与 `MemoryWriteResult.legacyWritten`；测试已迁移到增量提取和 `setScopedMemoryWriter`。 |
 | 已完成 P2 | 依赖审计 | 已运行 `mvn dependency:analyze -DskipTests` 与 runtime dependency tree；直接使用的 Jackson annotations/core、SLF4J、Okio 与 JUnit API 已补为显式依赖，Logback/SQLite 标为 `runtime`。剩余 Logback、SQLite、JUnit 聚合依赖的 `unused` 告警分别来自 `logback.xml`、JDBC ServiceLoader 和 Surefire 聚合加载，属于已确认误报；JLine、JGit、JavaParser、ZXing、Tomlj、Jsoup 均有实际用途，没有可安全删除的核心依赖。后续仅在版本升级时复查。 |

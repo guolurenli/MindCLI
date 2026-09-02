@@ -1,5 +1,8 @@
 package com.mindcli.capability.memory;
 
+import com.mindcli.capability.memory.policy.MemoryPolicyContext;
+import com.mindcli.capability.memory.policy.MemoryPolicyDecision;
+import com.mindcli.capability.memory.policy.MemoryPolicyEngine;
 import com.mindcli.platform.config.ConfigValueResolver;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.platform.llm.LlmClient;
@@ -7,7 +10,7 @@ import com.mindcli.platform.llm.context.ContextProfile;
 import com.mindcli.runtime.run.AgentRunContext;
 import com.mindcli.runtime.run.AgentRunEvent;
 import com.mindcli.runtime.run.AgentRunEventType;
-import com.mindcli.runtime.run.RunStore;
+import com.mindcli.runtime.run.store.RunStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

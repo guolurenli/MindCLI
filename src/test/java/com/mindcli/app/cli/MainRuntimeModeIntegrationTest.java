@@ -5,10 +5,10 @@ import com.mindcli.runtime.run.AgentRunContext;
 import com.mindcli.runtime.run.AgentRunEvent;
 import com.mindcli.runtime.run.AgentRunEventType;
 import com.mindcli.runtime.run.AgentRunResult;
-import com.mindcli.runtime.run.InMemoryRunStore;
+import com.mindcli.runtime.run.store.InMemoryRunStore;
 import com.mindcli.runtime.run.ModeAdapter;
-import com.mindcli.runtime.run.RunStore;
-import com.mindcli.runtime.run.SessionContext;
+import com.mindcli.runtime.run.store.RunStore;
+import com.mindcli.runtime.run.session.SessionContext;
 import com.mindcli.platform.snapshot.SnapshotService;
 import org.junit.jupiter.api.Test;
 

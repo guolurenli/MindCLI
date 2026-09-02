@@ -7,7 +7,7 @@ import com.mindcli.platform.render.Renderer;
 import com.mindcli.runtime.run.AgentMode;
 import com.mindcli.runtime.run.AgentRunContext;
 import com.mindcli.runtime.run.AgentRunResult;
-import com.mindcli.runtime.run.SessionContext;
+import com.mindcli.runtime.run.session.SessionContext;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;

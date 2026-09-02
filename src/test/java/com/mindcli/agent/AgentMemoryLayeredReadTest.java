@@ -6,7 +6,7 @@ import com.mindcli.platform.llm.GLMClient;
 import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.runtime.run.AgentMode;
 import com.mindcli.runtime.run.AgentRunContext;
-import com.mindcli.runtime.run.InMemoryRunStore;
+import com.mindcli.runtime.run.store.InMemoryRunStore;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

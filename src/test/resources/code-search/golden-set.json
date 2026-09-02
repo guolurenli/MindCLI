@@ -12,7 +12,7 @@
     "question": "三条执行路径共享的并行工具入口在哪里？",
     "pattern": "dispatchInvocations",
     "glob": "**/ToolDispatcher.java",
-    "expectedPath": "src/main/java/com/mindcli/runtime/run/ToolDispatcher.java",
+    "expectedPath": "src/main/java/com/mindcli/runtime/run/dispatch/ToolDispatcher.java",
     "expectedText": "public List<ToolOutcome> dispatchInvocations"
   },
   {

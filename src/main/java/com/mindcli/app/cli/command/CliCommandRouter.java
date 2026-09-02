@@ -16,7 +16,7 @@ import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.platform.render.Renderer;
 import com.mindcli.platform.security.AuditLog;
 import com.mindcli.platform.hitl.ApprovalPolicy;
-import com.mindcli.runtime.run.SessionContext;
+import com.mindcli.runtime.run.session.SessionContext;
 import com.mindcli.runtime.task.DurableTaskManager;
 import com.mindcli.runtime.task.TaskCommandFormatter;
 import org.jline.reader.LineReader;

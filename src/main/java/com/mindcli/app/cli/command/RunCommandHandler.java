@@ -1,8 +1,8 @@
 package com.mindcli.app.cli.command;
 
-import com.mindcli.runtime.run.RunRecoveryPlan;
-import com.mindcli.runtime.run.RunRecoveryService;
-import com.mindcli.runtime.run.RunStore;
+import com.mindcli.runtime.run.recovery.RunRecoveryPlan;
+import com.mindcli.runtime.run.recovery.RunRecoveryService;
+import com.mindcli.runtime.run.store.RunStore;
 
 import java.io.PrintStream;
 

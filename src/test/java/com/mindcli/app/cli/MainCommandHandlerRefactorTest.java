@@ -8,7 +8,7 @@ import com.mindcli.runtime.run.AgentMode;
 import com.mindcli.runtime.run.AgentRunContext;
 import com.mindcli.runtime.run.AgentRunEvent;
 import com.mindcli.runtime.run.AgentRunEventType;
-import com.mindcli.runtime.run.InMemoryRunStore;
+import com.mindcli.runtime.run.store.InMemoryRunStore;
 import com.mindcli.platform.snapshot.RestoreResult;
 import com.mindcli.platform.snapshot.SideGitManager;
 import com.mindcli.platform.snapshot.SnapshotPhase;
