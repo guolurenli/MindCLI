@@ -22,7 +22,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 /**
@@ -46,9 +45,6 @@ public class MemoryManager {
     private TokenBudget tokenBudget;
     private ContextProfile contextProfile;
     private String currentProject;
-
-    /** 本轮是否已有手动记忆写入（互斥保护，避免自动提取产生重复） */
-    private final AtomicBoolean memoryWrittenThisRun = new AtomicBoolean(false);
 
     public MemoryManager(LlmClient llmClient) {
         this(llmClient, ContextProfile.from(llmClient), null);
@@ -95,33 +91,6 @@ public class MemoryManager {
             return;
         }
         this.currentProject = normalizeProjectKey(projectPath);
-    }
-
-    /**
-     * 从对话历史中提取事实并存入长期记忆。
-     * 替代旧版 ContextCompressor.extractFacts()。
-     * 默认关闭自动提取；只有显式开启兼容开关时才执行。
-     * 如果本轮已有手动记忆写入，跳过自动提取（互斥保护）。
-     */
-    public void extractFacts(List<LlmClient.Message> conversationHistory) {
-        if (!isAutoExtractEnabled()) {
-            log.debug("自动长期记忆提取默认关闭，跳过本轮提取");
-            return;
-        }
-        if (memoryWrittenThisRun.getAndSet(false)) {
-            log.debug("本轮已有手动记忆写入，跳过自动提取");
-            return;
-        }
-        addPendingProposals(extractor.extractFactProposalsIncremental(conversationHistory), null, null);
-    }
-
-    /**
-     * 异步提取事实（fire-and-forget），不阻塞主对话响应。
-     * 对齐 Claude Code 的 stopHooks 异步模式。
-     * @deprecated 改为 {@link #extractFactsIncrementalAsync}，只传本轮新增消息
-     */
-    public CompletableFuture<Void> extractFactsAsync(List<LlmClient.Message> conversationHistory) {
-        return runBackground("自动长期记忆提取", () -> extractFacts(conversationHistory));
     }
 
     /**
@@ -494,7 +463,6 @@ public class MemoryManager {
     private void storeMemoryEntry(MemoryEntry entry, AgentRunContext runContext, RunStore runStore,
                                   Map<String, String> extraAttributes) {
         longTermMemory.store(entry);
-        memoryWrittenThisRun.set(true);
         Map<String, String> attributes = new java.util.LinkedHashMap<>();
         attributes.put("memoryId", entry.getId());
         attributes.put("scope", LongTermMemory.scopeOf(entry));

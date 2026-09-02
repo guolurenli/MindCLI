@@ -44,7 +44,6 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
-import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.Locale;
 
@@ -289,20 +288,6 @@ public class ToolRegistry {
         return browserGuard;
     }
 
-
-    public void setMemorySaver(Consumer<String> memorySaver) {
-        this.memorySaver = memorySaver == null ? null : (fact, scope) -> {
-            memorySaver.accept(fact);
-            return MemoryWriteResult.legacyWritten(fact, scope);
-        };
-    }
-
-    public void setScopedMemorySaver(BiConsumer<String, String> memorySaver) {
-        this.memorySaver = memorySaver == null ? null : (fact, scope) -> {
-            memorySaver.accept(fact, scope);
-            return MemoryWriteResult.legacyWritten(fact, scope);
-        };
-    }
 
     public void setScopedMemoryWriter(BiFunction<String, String, MemoryWriteResult> memorySaver) {
         this.memorySaver = memorySaver;

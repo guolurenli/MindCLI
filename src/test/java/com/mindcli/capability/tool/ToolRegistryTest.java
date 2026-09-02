@@ -399,7 +399,10 @@ class ToolRegistryTest {
     void saveMemoryToolUsesInjectedMemorySaver() {
         ToolRegistry registry = new ToolRegistry();
         List<String> saved = new ArrayList<>();
-        registry.setMemorySaver(saved::add);
+        registry.setScopedMemoryWriter((fact, scope) -> {
+            saved.add(fact);
+            return MemoryWriteResult.written(null, "test", "已保存到长期记忆(" + scope + "): " + fact);
+        });
 
         String result = registry.executeTool("save_memory", "{\"fact\":\"访问 yuque.com 时复用登录态\"}");
 
@@ -411,7 +414,10 @@ class ToolRegistryTest {
     void saveMemoryToolPassesScopeToScopedSaver() {
         ToolRegistry registry = new ToolRegistry();
         List<String> saved = new ArrayList<>();
-        registry.setScopedMemorySaver((fact, scope) -> saved.add(scope + ":" + fact));
+        registry.setScopedMemoryWriter((fact, scope) -> {
+            saved.add(scope + ":" + fact);
+            return MemoryWriteResult.written(null, "test", "已保存到长期记忆(" + scope + "): " + fact);
+        });
 
         String result = registry.executeTool("save_memory", "{\"fact\":\"默认用中文回答\",\"scope\":\"global\"}");
 
@@ -479,7 +485,10 @@ class ToolRegistryTest {
     void forkForProject_doesNotLeakMemoryWriterToFork(@TempDir Path tempDir) {
         ToolRegistry registry = new ToolRegistry();
         List<String> saved = new ArrayList<>();
-        registry.setMemorySaver(saved::add);
+        registry.setScopedMemoryWriter((fact, scope) -> {
+            saved.add(fact);
+            return MemoryWriteResult.written(null, "test", "已保存到长期记忆(" + scope + "): " + fact);
+        });
 
         ToolRegistry fork = registry.forkForProject(tempDir);
 

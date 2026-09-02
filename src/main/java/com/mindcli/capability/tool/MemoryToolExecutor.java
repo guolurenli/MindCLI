@@ -28,7 +28,7 @@ public final class MemoryToolExecutor {
         String scope = "global".equalsIgnoreCase(args.get("scope")) ? "global" : "project";
         MemoryWriteResult result = memorySaver.apply(normalized, scope);
         if (result == null || result.message().isBlank()) {
-            return MemoryWriteResult.legacyWritten(normalized, scope).message();
+            return "已保存到长期记忆(" + scope + "): " + normalized;
         }
         return result.message();
     }
