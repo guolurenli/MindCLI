@@ -16,7 +16,7 @@ import java.util.Locale;
 import java.util.Map;
 
 public final class ToolResourceClassifier {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
 
     public List<ResourceKey> classify(ToolRegistry.ToolInvocation invocation, AgentRunContext context) {
         if (invocation == null) {

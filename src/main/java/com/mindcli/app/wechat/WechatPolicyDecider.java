@@ -6,7 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.Locale;
 
 public class WechatPolicyDecider {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private final WechatPolicyConfig config;
 
     public WechatPolicyDecider(WechatPolicyConfig config) {

@@ -8,7 +8,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class BrowserGuard {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final String SERVER_PREFIX = "mcp__chrome-devtools__";
     private static final Set<String> WRITE_TOOLS = Set.of(
             "click",

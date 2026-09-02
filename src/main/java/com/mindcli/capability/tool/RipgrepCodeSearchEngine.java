@@ -21,7 +21,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 final class RipgrepCodeSearchEngine implements CodeSearchEngine {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final Duration TIMEOUT = Duration.ofSeconds(8);
 
     private final Set<String> excludedDirs;

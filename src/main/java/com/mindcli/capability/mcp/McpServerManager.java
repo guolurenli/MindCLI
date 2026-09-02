@@ -8,43 +8,30 @@ import com.mindcli.capability.mcp.resources.McpResourceContent;
 import com.mindcli.capability.mcp.resources.McpResourceDescriptor;
 import com.mindcli.capability.mcp.resources.McpResourceTool;
 import com.mindcli.platform.security.AuditLog;
-import com.mindcli.capability.mcp.transport.MindCliStdioClientTransport;
+import com.mindcli.capability.mcp.lifecycle.McpStartupCoordinator;
+import com.mindcli.capability.mcp.lifecycle.McpTransportFactory;
 import com.mindcli.capability.tool.ToolOutput;
 import com.mindcli.capability.tool.ToolExecution;
 import com.mindcli.capability.tool.ToolRegistry;
 
 import java.io.IOException;
 import java.io.PrintStream;
-import java.net.http.HttpRequest;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Collection;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeoutException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-import io.modelcontextprotocol.client.McpSyncClient;
-import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
-import io.modelcontextprotocol.client.transport.ServerParameters;
-import io.modelcontextprotocol.json.jackson2.JacksonMcpJsonMapper;
-import io.modelcontextprotocol.spec.McpSchema;
 
 public class McpServerManager implements AutoCloseable {
-    private static final Duration STARTUP_PROGRESS_INTERVAL = Duration.ofSeconds(5);
-
     private final ToolRegistry toolRegistry;
     private final Path projectDir;
     private final McpConfigLoader configLoader;
+    private final McpStartupCoordinator startupCoordinator = new McpStartupCoordinator();
+    private final McpTransportFactory transportFactory;
     private final Map<String, McpServer> servers = new ConcurrentHashMap<>();
     private final McpResourceCache resourceCache = new McpResourceCache();
 
@@ -56,6 +43,7 @@ public class McpServerManager implements AutoCloseable {
         this.toolRegistry = toolRegistry;
         this.projectDir = projectDir.toAbsolutePath().normalize();
         this.configLoader = configLoader;
+        this.transportFactory = new McpTransportFactory(this.projectDir);
     }
 
     public void loadConfiguredServers() throws IOException {
@@ -82,116 +70,11 @@ public class McpServerManager implements AutoCloseable {
      * by a slow stdio/http server.
      */
     public void startAll(PrintStream progressOut, Duration maxWait) {
-        List<McpServer> targets = servers.values().stream()
-                .filter(server -> !server.config().isDisabled())
-                .toList();
-        if (targets.isEmpty()) {
-            return;
-        }
-        // 用专属 daemon executor，避免 npx/uvx 冷启动期间占满 ForkJoinPool.commonPool 影响其他并发任务。
-        AtomicInteger threadId = new AtomicInteger();
-        ExecutorService executor = Executors.newFixedThreadPool(
-                Math.min(targets.size(), 8),
-                r -> {
-                    Thread t = new Thread(r, "mindcli-mcp-startup-" + threadId.incrementAndGet());
-                    t.setDaemon(true);
-                    return t;
-                });
-        boolean boundedWait = maxWait != null && !maxWait.isZero() && !maxWait.isNegative();
-        Thread progressPrinter = boundedWait ? null : startProgressPrinter(targets, progressOut, STARTUP_PROGRESS_INTERVAL);
-        try {
-            List<CompletableFuture<Void>> futures = targets.stream()
-                    .map(server -> CompletableFuture.runAsync(() -> start(server), executor))
-                    .toList();
-            CompletableFuture<Void> all = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
-            if (!boundedWait) {
-                all.join();
-            } else {
-                try {
-                    all.get(Math.max(1, maxWait.toMillis()), TimeUnit.MILLISECONDS);
-                } catch (TimeoutException e) {
-                    printStartupTimeout(targets, progressOut, maxWait);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    printStartupTimeout(targets, progressOut, maxWait);
-                } catch (Exception e) {
-                    all.join();
-                }
-            }
-        } finally {
-            if (progressPrinter != null) {
-                progressPrinter.interrupt();
-            }
-            executor.shutdown();
-        }
-    }
-
-    private void printStartupTimeout(List<McpServer> targets, PrintStream out, Duration maxWait) {
-        if (out == null) {
-            return;
-        }
-        String line = startupNotice(targets, maxWait);
-        if (line.isBlank()) {
-            return;
-        }
-        out.println(line);
-        out.flush();
+        startupCoordinator.startAll(servers.values(), progressOut, maxWait, this::start);
     }
 
     public String startupNotice(Duration maxWait) {
-        return startupNotice(servers.values().stream()
-                .filter(server -> !server.config().isDisabled())
-                .toList(), maxWait);
-    }
-
-    private String startupNotice(List<McpServer> targets, Duration maxWait) {
-        List<McpServer> stillStarting = targets.stream()
-                .filter(server -> server.status() == McpServerStatus.STARTING)
-                .sorted(Comparator.comparing(McpServer::name))
-                .toList();
-        if (stillStarting.isEmpty()) {
-            return "";
-        }
-        String names = stillStarting.stream()
-                .map(McpServer::name)
-                .reduce((a, b) -> a + ", " + b)
-                .orElse("");
-        long displaySeconds = Math.max(1, (long) Math.ceil(maxWait.toMillis() / 1000.0));
-        return "Mcp 后台继续启动: " + names + "（超过 " + displaySeconds
-                + "s，可用 /mcp 查看，/mcp logs <name> 看日志）";
-    }
-
-    private Thread startProgressPrinter(List<McpServer> targets, PrintStream out, Duration interval) {
-        if (out == null || targets.isEmpty()) {
-            return null;
-        }
-        Map<String, Instant> startedAt = new ConcurrentHashMap<>();
-        targets.forEach(server -> startedAt.put(server.name(), Instant.now()));
-        Thread thread = new Thread(() -> {
-            try {
-                while (!Thread.currentThread().isInterrupted()) {
-                    TimeUnit.MILLISECONDS.sleep(interval.toMillis());
-                    List<McpServer> starting = targets.stream()
-                            .filter(server -> server.status() == McpServerStatus.STARTING)
-                            .sorted(Comparator.comparing(McpServer::name))
-                            .toList();
-                    if (starting.isEmpty()) {
-                        continue;
-                    }
-                    for (McpServer server : starting) {
-                        long waited = Duration.between(startedAt.get(server.name()), Instant.now()).toSeconds();
-                        out.printf("   ⏳ %-16s %-6s 启动中...（已等待 %ds）%n",
-                                server.name(), server.transportName(), waited);
-                    }
-                    out.flush();
-                }
-            } catch (InterruptedException ignored) {
-                Thread.currentThread().interrupt();
-            }
-        }, "mindcli-mcp-startup-progress");
-        thread.setDaemon(true);
-        thread.start();
-        return thread;
+        return startupCoordinator.startupNotice(servers.values(), maxWait);
     }
 
     public synchronized String restart(String name) {
@@ -429,11 +312,15 @@ public class McpServerManager implements AutoCloseable {
             // 在单 server 启动路径里展开 ${VAR} 与校验 transport，
             // 单个失败仅标 ERROR，不会阻塞其他 server。
             configLoader.prepare(server.config());
-            com.mindcli.capability.mcp.McpClient client = createOfficialClient(server);
-            client.initialize();
-            List<McpToolDescriptor> tools = buildToolList(server, client);
-            replaceTools(server, client, tools);
-            server.client(client);
+            com.mindcli.capability.mcp.McpClient mcpClient = transportFactory.create(
+                    server,
+                    client -> refreshToolsAfterNotification(server, client),
+                    () -> resourceCache.invalidateServer(server.name()),
+                    uri -> resourceCache.invalidateResource(server.name(), uri));
+            mcpClient.initialize();
+            List<McpToolDescriptor> tools = buildToolList(server, mcpClient);
+            replaceTools(server, mcpClient, tools);
+            server.client(mcpClient);
             server.tools(tools);
             server.markStarted();
             server.status(McpServerStatus.READY);
@@ -491,60 +378,6 @@ public class McpServerManager implements AutoCloseable {
         }
     }
 
-    private com.mindcli.capability.mcp.McpClient createOfficialClient(McpServer server) {
-        McpServerConfig config = server.config();
-        var mapper = new JacksonMcpJsonMapper(new com.fasterxml.jackson.databind.ObjectMapper());
-        AtomicReference<com.mindcli.capability.mcp.McpClient> facade = new AtomicReference<>();
-        McpSyncClient sdkClient;
-        io.modelcontextprotocol.spec.McpClientTransport sdkTransport;
-        if (config.isHttp()) {
-            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
-                    .header("Accept", "application/json, text/event-stream")
-                    .header("Content-Type", "application/json");
-            config.getHeaders().forEach(requestBuilder::header);
-            HttpClientStreamableHttpTransport transport = HttpClientStreamableHttpTransport.builder(config.getUrl())
-                    .jsonMapper(mapper)
-                    .requestBuilder(requestBuilder)
-                    .connectTimeout(Duration.ofSeconds(30))
-                    .customizeClient(builder -> builder.connectTimeout(Duration.ofSeconds(30)))
-                    .openConnectionOnStartup(false)
-                    .build();
-            sdkTransport = transport;
-            sdkClient = io.modelcontextprotocol.client.McpClient.sync(transport)
-                    .requestTimeout(Duration.ofSeconds(60))
-                    .initializationTimeout(Duration.ofSeconds(com.mindcli.capability.mcp.McpClient.initializeTimeoutSeconds()))
-                    .clientInfo(new McpSchema.Implementation("MindCLI", "1.0"))
-                    .toolsChangeConsumer(ignored -> refreshToolsAfterNotification(server, facade.get()))
-                    .resourcesChangeConsumer(ignored -> resourceCache.invalidateServer(server.name()))
-                    .resourcesUpdateConsumer(contents -> {
-                        if (contents != null) contents.forEach(content -> resourceCache.invalidateResource(server.name(), content.uri()));
-                    })
-                    .build();
-        } else {
-            String command = resolveCommand(config.getCommand());
-            ServerParameters parameters = ServerParameters.builder(command)
-                    .args(config.getArgs() == null ? List.of() : config.getArgs())
-                    .env(config.getEnv() == null ? Map.of() : config.getEnv())
-                    .build();
-            MindCliStdioClientTransport transport = new MindCliStdioClientTransport(parameters, mapper, projectDir);
-            sdkTransport = transport;
-            sdkClient = io.modelcontextprotocol.client.McpClient.sync(transport)
-                    .requestTimeout(Duration.ofSeconds(60))
-                    .initializationTimeout(Duration.ofSeconds(com.mindcli.capability.mcp.McpClient.initializeTimeoutSeconds()))
-                    .clientInfo(new McpSchema.Implementation("MindCLI", "1.0"))
-                    .toolsChangeConsumer(ignored -> refreshToolsAfterNotification(server, facade.get()))
-                    .resourcesChangeConsumer(ignored -> resourceCache.invalidateServer(server.name()))
-                    .resourcesUpdateConsumer(contents -> {
-                        if (contents != null) contents.forEach(content -> resourceCache.invalidateResource(server.name(), content.uri()));
-                    })
-                    .build();
-        }
-        com.mindcli.capability.mcp.McpClient result = new com.mindcli.capability.mcp.McpClient(
-                server.name(), sdkClient, sdkTransport,
-                sdkTransport instanceof MindCliStdioClientTransport stdio ? () -> stdio.stderrLines() : List::of);
-        facade.set(result);
-        return result;
-    }
 
     private void refreshToolsAfterNotification(McpServer server, com.mindcli.capability.mcp.McpClient client) {
         if (client == null) return;
@@ -555,14 +388,6 @@ public class McpServerManager implements AutoCloseable {
         } catch (Exception e) {
             server.errorMessage("tools/list_changed 处理失败: " + e.getMessage());
         }
-    }
-
-    private static String resolveCommand(String command) {
-        if (command == null || !System.getProperty("os.name", "").toLowerCase().contains("win")
-                || command.contains("/") || command.contains("\\")) return command;
-        String lower = command.toLowerCase();
-        if (lower.endsWith(".cmd") || lower.endsWith(".exe") || lower.endsWith(".bat")) return command;
-        return command + ".cmd";
     }
 
     private void validateNoDuplicateTools(String serverName, List<McpToolDescriptor> tools) {

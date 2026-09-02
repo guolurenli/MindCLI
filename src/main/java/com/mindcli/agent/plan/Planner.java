@@ -30,7 +30,7 @@ public class Planner {
 
     private final LlmClient llmClient;
     private final PrintStream out;
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = com.mindcli.platform.serialization.JsonSupport.mapper();
     private final PlanSchemaParser schemaParser = new PlanSchemaParser(mapper);
     private final PlanSchemaValidator schemaValidator = new PlanSchemaValidator();
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();

@@ -71,7 +71,7 @@ import java.util.function.Supplier;
  */
 public class AgentOrchestrator {
     private static final Logger log = LoggerFactory.getLogger(AgentOrchestrator.class);
-    private static final ObjectMapper mapper = new ObjectMapper();
+    private static final ObjectMapper mapper = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final int MAX_RETRIES_PER_STEP = 2;
 
     private final LlmClient llmClient;

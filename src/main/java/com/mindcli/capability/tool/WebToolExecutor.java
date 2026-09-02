@@ -15,7 +15,7 @@ import java.util.function.Function;
 
 /** Executes bounded web search and fetch operations, including the StepSearch bridge. */
 public final class WebToolExecutor {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final String STEP_SEARCH_TOOL = "mcp__step_search__web_search";
     private static final String STEP_FETCH_TOOL = "mcp__step_search__web_fetch";
 

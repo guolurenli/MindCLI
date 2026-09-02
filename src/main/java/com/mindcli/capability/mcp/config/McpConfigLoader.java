@@ -14,7 +14,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class McpConfigLoader {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final Pattern VAR_PATTERN = Pattern.compile("\\$\\{([A-Za-z_][A-Za-z0-9_]*|PROJECT_DIR|HOME)}");
     private static final String STEP_SEARCH_SERVER = "step_search";
     private static final String STEP_SEARCH_URL = "https://api.stepfun.com/step_plan/v1/mcp/web_search/mcp";

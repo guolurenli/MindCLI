@@ -55,7 +55,7 @@ import java.util.function.Supplier;
  */
 public class SubAgent {
     private static final Logger log = LoggerFactory.getLogger(SubAgent.class);
-    private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
+    private static final ObjectMapper JSON_MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
 
     private final AgentProfile profile;
     private final String name;

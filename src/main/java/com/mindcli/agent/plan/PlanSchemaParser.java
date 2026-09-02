@@ -12,7 +12,7 @@ public class PlanSchemaParser {
     private final ObjectMapper mapper;
 
     public PlanSchemaParser(ObjectMapper mapper) {
-        this.mapper = mapper == null ? new ObjectMapper() : mapper;
+        this.mapper = mapper == null ? com.mindcli.platform.serialization.JsonSupport.mapper() : mapper;
     }
 
     public PlanSchema parse(String rawJson) throws IOException {

@@ -64,7 +64,7 @@ Agent Runtime 账本默认通过 `RunStoreFactory` 写到 `~/.mindcli/runs`（�
 
 代码库理解默认走 Claude Code 式实时探索：`glob_files` 找候选文件、`grep_code` 精确定位符号或字符串、`read_file` 按需读取具体行段。长期记忆只在 session 注入受当前项目 scope/status/expiry 过滤的 `MEMORY.md` 短目录，正文通过 `search_memory` 查询后再用 `read_memory(id)` 按需读取；不得让模型直接读取用户目录下的记忆文件。`grep_code` 优先使用本机 `ripgrep`，不可用时回退到 Java 扫描；结果受 `max_results` / `head_limit` / `max_chars` 预算约束，返回 `partial: true` 或 `suggested_reads` 时应继续缩小搜索范围或按建议读取行段。
 
-MCP 动态工具：`mcp__{server}__{tool}`（+ resources 虚拟工具）。协议与 stdio/Streamable HTTP 传输仅由官方 MCP Java SDK 2.0.1 提供，不保留自研 JSON-RPC / wire-protocol / transport fallback；MindCLI 只保留生命周期、命名空间、策略、审计、内容适配和资源缓存 facade。
+MCP 动态工具：`mcp__{server}__{tool}`（+ resources 虚拟工具）。协议与 stdio/Streamable HTTP 传输仅由官方 MCP Java SDK 2.0.1 提供，不保留自研 JSON-RPC / wire-protocol / transport fallback；MindCLI 只保留生命周期、命名空间、策略、审计、内容适配和资源缓存 facade。MCP 启动协调与官方 transport 创建位于 `capability/mcp/lifecycle/`，`McpServerManager` 继续作为对外 facade。
 
 MCP 配置会合并用户级 `~/.mindcli/mcp.json` 与项目级 `.mindcli/mcp.json`；`${VAR}` 支持系统环境变量、系统属性、项目 `.env`、用户 `~/.env`。检测到 `STEP_API_KEY` 时会自动内置 `step_search` 远程 MCP（显式同名配置优先）。
 
@@ -236,7 +236,7 @@ src/main/java/com/mindcli/
 | 代码搜索 | capability/tool/builtin/FileToolRegistrar.java + capability/tool/CodeSearchToolExecutor.java + ToolRegistry.java 兼容入口 (`glob_files` / `grep_code` / `read_file`) |
 | 模型/API | platform/llm/*Client.java + LlmClientFactory.java |
 | Multi-Agent | AgentOrchestrator.java + SubAgent.java + agent/profile/* |
-| MCP | capability/mcp/McpServerManager.java + McpClient.java |
+| MCP | capability/mcp/McpServerManager.java + lifecycle/McpStartupCoordinator.java + lifecycle/McpTransportFactory.java + McpClient.java |
 | 终端渲染 | platform/render/Renderer.java + RendererFactory.java |
 
 ## 当前已知边界

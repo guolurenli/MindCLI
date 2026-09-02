@@ -55,7 +55,7 @@ import java.util.stream.Collectors;
  */
 public class PlanExecuteAgent {
     private static final Logger log = LoggerFactory.getLogger(PlanExecuteAgent.class);
-    private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
+    private static final ObjectMapper JSON_MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private record PlanRunOutcome(String result, boolean persistAssistantMessage) {
         static PlanRunOutcome executed(String result) {
             return new PlanRunOutcome(result, true);

@@ -50,6 +50,17 @@
             <artifactId>jackson-databind</artifactId>
             <version>2.16.0</version>
         </dependency>
+        <!-- 代码直接使用 Jackson annotations/core；不要依赖 MCP SDK 的传递依赖。 -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <version>2.21</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+            <version>2.16.0</version>
+        </dependency>
 
         <!-- HTTP客户端 -->
         <dependency>
@@ -63,11 +74,26 @@
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
             <version>1.5.18</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- 业务代码直接使用 SLF4J API；Logback 只是运行时绑定。 -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>2.0.16</version>
         </dependency>
 
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
+            <version>5.10.2</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- 测试源码直接引用 JUnit Jupiter API；聚合依赖继续提供 engine。 -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
             <version>5.10.2</version>
             <scope>test</scope>
         </dependency>
@@ -92,6 +118,7 @@
             <groupId>org.xerial</groupId>
             <artifactId>sqlite-jdbc</artifactId>
             <version>3.49.1.0</version>
+            <scope>runtime</scope>
         </dependency>
 
         <!-- Java AST 解析 -->
@@ -120,6 +147,13 @@
             <groupId>org.tomlj</groupId>
             <artifactId>tomlj</artifactId>
             <version>1.1.1</version>
+        </dependency>
+
+        <!-- AbstractOpenAiCompatibleClient 直接读取 Okio BufferedSource。 -->
+        <dependency>
+            <groupId>com.squareup.okio</groupId>
+            <artifactId>okio-jvm</artifactId>
+            <version>3.6.0</version>
         </dependency>
 
         <!-- OkHttp MockWebServer（仅测试） -->

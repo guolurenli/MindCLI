@@ -25,7 +25,7 @@ import java.util.Map;
  */
 public final class PlainRenderer implements Renderer {
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = com.mindcli.platform.serialization.JsonSupport.mapper();
 
     private final PrintStream out;
     private final BufferedReader in;

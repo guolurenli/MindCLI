@@ -35,7 +35,7 @@ import java.util.concurrent.TimeUnit;
 public class SearxngSearchProvider implements SearchProvider {
 
     private static final Logger log = LoggerFactory.getLogger(SearxngSearchProvider.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
 
     private final String baseUrl;
     private final OkHttpClient httpClient;

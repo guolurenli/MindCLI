@@ -41,7 +41,7 @@ import java.util.concurrent.TimeUnit;
 public class ZhipuSearchProvider implements SearchProvider {
 
     private static final Logger log = LoggerFactory.getLogger(ZhipuSearchProvider.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final String ENDPOINT = "https://open.bigmodel.cn/api/paas/v4/web_search";
     private static final MediaType JSON_MEDIA = MediaType.parse("application/json; charset=utf-8");
     private static final Set<String> ALLOWED_ENGINES = Set.of(

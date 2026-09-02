@@ -672,7 +672,7 @@ public class Agent {
     private int estimateToolsSchemaTokens() {
         try {
             return com.mindcli.capability.memory.MemoryEntry.estimateTokens(
-                    new ObjectMapper().writeValueAsString(toolRegistry.getToolDefinitions()));
+                    com.mindcli.platform.serialization.JsonSupport.mapper().writeValueAsString(toolRegistry.getToolDefinitions()));
         } catch (Exception e) {
             return 0;
         }
@@ -714,7 +714,7 @@ public class Agent {
         if (tools != null && !tools.isEmpty()) {
             try {
                 toolsSchemaTokens = com.mindcli.capability.memory.MemoryEntry.estimateTokens(
-                        new ObjectMapper().writeValueAsString(tools));
+                        com.mindcli.platform.serialization.JsonSupport.mapper().writeValueAsString(tools));
             } catch (Exception e) {
                 log.debug("Failed to estimate tools schema tokens", e);
             }
@@ -894,7 +894,7 @@ public class Agent {
             return "";
         }
         try {
-            return new ObjectMapper().readTree(json).path(key).asText("");
+            return com.mindcli.platform.serialization.JsonSupport.mapper().readTree(json).path(key).asText("");
         } catch (Exception e) {
             return "";
         }

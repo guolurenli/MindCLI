@@ -17,7 +17,7 @@ import java.util.Objects;
 import java.util.stream.Stream;
 
 public final class JsonlRunStore implements RunStore {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private final Path runsRoot;
     private final RunStateProjector projector = new RunStateProjector();
 

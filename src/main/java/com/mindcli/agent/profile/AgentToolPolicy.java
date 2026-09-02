@@ -14,7 +14,7 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 public final class AgentToolPolicy {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final List<String> READ_GROUP = List.of(
             "read_file", "list_dir", "glob_files", "grep_code", "search_memory", "read_memory");
     private static final List<String> WRITE_GROUP = List.of("write_file", "create_project");

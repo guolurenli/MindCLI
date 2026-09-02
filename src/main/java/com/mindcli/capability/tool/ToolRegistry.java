@@ -51,7 +51,7 @@ import java.util.Locale;
  * 工具注册表 - 管理所有可用工具
  */
 public class ToolRegistry {
-    private static final ObjectMapper mapper = new ObjectMapper();
+    private static final ObjectMapper mapper = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final int DEFAULT_COMMAND_TIMEOUT_SECONDS = 60;
     private static final int DEFAULT_TOOL_BATCH_TIMEOUT_SECONDS = 90;
     // 需要审计的内置工具（与 ApprovalPolicy 的 DANGEROUS_TOOLS 保持一致）；MCP 工具按前缀动态纳入审计。

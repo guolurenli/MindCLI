@@ -34,7 +34,7 @@ public class MemoryManager {
     private static final Logger log = LoggerFactory.getLogger(MemoryManager.class);
     private static final String AUTO_EXTRACT_PROPERTY = "mindcli.memory.autoExtract.enabled";
     private static final String AUTO_EXTRACT_ENV = "MINDCLI_MEMORY_AUTO_EXTRACT";
-    private static final ObjectMapper TOOL_MAPPER = new ObjectMapper();
+    private static final ObjectMapper TOOL_MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private final LongTermMemory longTermMemory;
     private final MemoryExtractor extractor;
     private final MemoryRetriever retriever;

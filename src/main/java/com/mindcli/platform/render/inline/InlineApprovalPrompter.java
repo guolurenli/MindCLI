@@ -25,7 +25,7 @@ import java.nio.charset.StandardCharsets;
  */
 public final class InlineApprovalPrompter {
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final int MAX_ATTEMPTS = 5;
 
     private final PrintStream out;

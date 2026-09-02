@@ -52,7 +52,7 @@ public class LongTermMemory implements MemoryStore {
     public LongTermMemory(File storageDir) {
         this.entries = new ConcurrentHashMap<>();
         this.tokenCounter = new AtomicInteger(0);
-        this.mapper = new ObjectMapper();
+        this.mapper = com.mindcli.platform.serialization.JsonSupport.mapper();
 
         // 确保存储目录存在
         File dir = storageDir;

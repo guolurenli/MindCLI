@@ -100,7 +100,8 @@
 | 已完成 P1 | 统一三套 Agent 循环 | 已新增 `runtime/run/AgentTurnKernel`，ReAct 的 `AgentLoopExecutor`、Plan 的任务执行 loop 与 Team 的 `SubAgent` 已复用单轮 LLM/tool 内核；Plan 仍保留任务级 DAG/失败恢复，Team 仍保留 profile/自审/child run。模式级编排保持独立，避免强行合并语义。 |
 | P1 | `/run resume` 与启动期自动恢复 | 当前只有 `/run inspect`，能查看但不能继续执行。恢复前需要生成计划并对文件写入、命令执行和未完成 child run 请求确认。 |
 | 已完成 P2 | 清理兼容 API | 已确认仓库生产代码没有旧入口调用，删除 `MemoryManager` / `MemoryExtractor` 的旧提取方法、`ToolRegistry` 的旧 memory saver setter 与 `MemoryWriteResult.legacyWritten`；测试已迁移到增量提取和 `setScopedMemoryWriter`。 |
-| 已完成 P2 | 依赖审计 | 已运行 `mvn dependency:analyze -DskipTests` 与 runtime dependency tree。SQLite（JDBC URL）、Logback（`logback.xml`）和 JUnit 聚合依赖均有运行/测试用途；Jackson、SLF4J、Okio 的告警来自直接使用或 SDK/OkHttp 传递关系。没有证据支持删除核心依赖，后续仅在版本升级时复查。 |
+| 已完成 P2 | 依赖审计 | 已运行 `mvn dependency:analyze -DskipTests` 与 runtime dependency tree；直接使用的 Jackson annotations/core、SLF4J、Okio 与 JUnit API 已补为显式依赖，Logback/SQLite 标为 `runtime`。剩余 Logback、SQLite、JUnit 聚合依赖的 `unused` 告警分别来自 `logback.xml`、JDBC ServiceLoader 和 Surefire 聚合加载，属于已确认误报；JLine、JGit、JavaParser、ZXing、Tomlj、Jsoup 均有实际用途，没有可安全删除的核心依赖。后续仅在版本升级时复查。 |
+| 已完成 P2 | JSON / MCP 内部瘦身 | 新增共享 `platform/serialization/JsonSupport`，生产代码统一默认 `ObjectMapper`；`McpServerManager` 保留 facade，启动并发/超时和官方 stdio/HTTP transport 创建分别下沉到 `capability/mcp/lifecycle/`，不改变 MCP 协议或公开接口。 |
 | P2 | Runtime 按 run 粒度加锁 | 当前 `JsonlRunStore` 仍使用实例级全局同步，正确性已保证但多 run 并发时会互相等待。属于性能优化，需单独验证锁顺序和派生状态一致性。 |
 | P2 | MCP OAuth / sampling / server 自动重启 | 路线图中的 MCP 增强能力，当前尚未实现，不应与核心重构混做。 |
 | P2 | 容器 / VM 沙箱 | 当前安全模型仍是 HITL + PathGuard + CommandGuard + 审计，不是真正的进程隔离；属于商业化安全升级。 |

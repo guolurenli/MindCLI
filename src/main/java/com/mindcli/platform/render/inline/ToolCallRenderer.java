@@ -21,7 +21,7 @@ import java.util.Map;
  */
 public final class ToolCallRenderer {
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = com.mindcli.platform.serialization.JsonSupport.mapper();
 
     private final PrintStream out;
     private final BlockRegistry registry;

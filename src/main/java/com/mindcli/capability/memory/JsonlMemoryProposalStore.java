@@ -13,7 +13,7 @@ import java.util.Map;
 import java.util.Optional;
 
 public class JsonlMemoryProposalStore implements MemoryProposalStore {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
 
     private final Path file;
     private final Map<String, MemoryProposal> proposals = new LinkedHashMap<>();

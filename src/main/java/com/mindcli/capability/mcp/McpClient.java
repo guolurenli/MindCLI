@@ -24,7 +24,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 public class McpClient implements AutoCloseable {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final TypeReference<Map<String, Object>> ARGUMENTS_TYPE = new TypeReference<>() {
     };
     private static final int DEFAULT_INITIALIZE_TIMEOUT_SECONDS = 60;
@@ -52,7 +52,7 @@ public class McpClient implements AutoCloseable {
         }
     }
 
-    static int initializeTimeoutSeconds() {
+    public static int initializeTimeoutSeconds() {
         int seconds = ConfigValueResolver.current().resolveInt(
                 INITIALIZE_TIMEOUT_PROPERTY, INITIALIZE_TIMEOUT_ENV, DEFAULT_INITIALIZE_TIMEOUT_SECONDS);
         return seconds > 0 ? seconds : DEFAULT_INITIALIZE_TIMEOUT_SECONDS;

@@ -45,7 +45,7 @@ public class AuditLog {
     public static final String OUTCOME_DENY = "deny";
     public static final String OUTCOME_ERROR = "error";
 
-    private static final ObjectMapper mapper = new ObjectMapper();
+    private static final ObjectMapper mapper = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.ROOT);
     private static final int MAX_FIELD_CHARS = 1000;
 

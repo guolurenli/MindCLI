@@ -15,7 +15,7 @@ public class MindCliConfig {
 
     private static final Path CONFIG_DIR = Path.of(System.getProperty("user.home"), ".mindcli");
     private static final Path CONFIG_FILE = CONFIG_DIR.resolve("config.json");
-    private static final ObjectMapper mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+    private static final ObjectMapper mapper = com.mindcli.platform.serialization.JsonSupport.prettyMapper();
     private static final ConfigValueResolver CONFIG_VALUES = new ConfigValueResolver(
             Path.of("."), Path.of(System.getProperty("user.home")));
 
