@@ -14,7 +14,13 @@ import com.mindcli.platform.prompt.PromptContext;
 import com.mindcli.platform.prompt.PromptMode;
 import com.mindcli.platform.prompt.ProjectMemoryLoader;
 import com.mindcli.runtime.run.AgentMode;
+import com.mindcli.runtime.run.AgentLoopObserver;
+import com.mindcli.runtime.run.AgentLoopPolicy;
 import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.runtime.run.AgentTurnContext;
+import com.mindcli.runtime.run.AgentTurnKernel;
+import com.mindcli.runtime.run.AgentTurnResult;
+import com.mindcli.runtime.run.AgentTurnStatus;
 import com.mindcli.runtime.run.RunStore;
 import com.mindcli.runtime.run.SessionContext;
 import com.mindcli.runtime.run.ToolDispatcher;
@@ -57,6 +63,7 @@ public class SubAgent {
     private final LlmClient llmClient;
     private final ToolRegistry toolRegistry;
     private final ToolDispatcher toolDispatcher;
+    private final AgentTurnKernel turnKernel;
     private final List<LlmClient.Message> conversationHistory;
     private final ThreadLocal<AgentRunContext> activeRunContext = new ThreadLocal<>();
     private final ThreadLocal<RunStore> activeRunStore = new ThreadLocal<>();
@@ -74,6 +81,7 @@ public class SubAgent {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
         this.toolDispatcher = new ToolDispatcher(toolRegistry);
+        this.turnKernel = new AgentTurnKernel(llmClient, (toolCalls, context) -> executeToolCalls(toolCalls));
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
         this.conversationHistory = new ArrayList<>();
         this.conversationHistory.add(LlmClient.Message.system(getSystemPrompt()));
@@ -277,75 +285,67 @@ public class SubAgent {
         AgentBudget budget = AgentBudget.fromLlmClient(llmClient);
 
         // 与 Agent.java 对称：主退出条件 = LLM 自决，budget 仅在 token / 停滞 / 硬轮数兜底。
-        while (true) {
-            AgentBudget.ExitReason exitReason = budget.check();
-            if (exitReason != AgentBudget.ExitReason.WITHIN_BUDGET) {
-                streamRenderer.finish();
-                String description = budget.describeExit(exitReason);
-                log.warn("[{}] run exhausted budget: reason={}, iteration={}, tokens={}/{}",
-                        name, exitReason, budget.iteration(),
-                        budget.totalInputTokens() + budget.totalOutputTokens(), budget.tokenBudget());
-                return AgentMessage.error(name, role, description);
+        AgentLoopObserver observer = new AgentLoopObserver() {
+            @Override
+            public void beforeIteration(int iteration, List<LlmClient.Message> messages, List<LlmClient.Tool> tools) {
+                injectPendingLspDiagnostics(out);
+                trimConversationHistory();
             }
 
-            budget.beginIteration();
-
-            // 调 LLM 前评估 conversationHistory 是否接近 window 上限；超阈值压缩早期消息为摘要。
-            injectPendingLspDiagnostics(out);
-            trimConversationHistory();
-
-            try {
-                LlmClient.ChatResponse response = com.mindcli.platform.llm.LlmRetryPolicy.withRetry(() ->
-                        llmClient.chat(
-                                conversationHistory,
-                                toolDefinitionsForProfile(),
-                                streamRenderer
-                        ),
-                        "sub-agent-" + name + "-" + role
-                );
+            @Override
+            public void afterLlmResponse(int iteration, LlmClient.ChatResponse response) {
                 LlmTraceLogger.logReasoning(log,
-                        "sub-agent name=" + name + " role=" + role + " iteration=" + budget.iteration(),
-                        llmClient,
-                        response.reasoningContent());
+                        "sub-agent name=" + name + " role=" + role + " iteration=" + iteration,
+                        llmClient, response.reasoningContent());
+            }
 
-                budget.recordTokens(response.inputTokens(), response.outputTokens(), response.cachedInputTokens());
+            @Override
+            public void beforeToolDispatch(int iteration, List<LlmClient.ToolCall> toolCalls) {
+                printToolCalls(out, toolCalls);
+                streamRenderer.resetBetweenIterations();
+            }
+        };
 
-                if (response.hasToolCalls()) {
-                    budget.recordToolCalls(response.toolCalls());
-                    printToolCalls(out, response.toolCalls());
-                    conversationHistory.add(LlmClient.Message.assistant(
-                            response.reasoningContent(),
-                            response.content(),
-                            response.toolCalls()
-                    ));
-
-                    // 在工具执行前 flush 并重置流式渲染器：TerminalMarkdownRenderer 按换行 flush，
-                    // 没有换行的 pending 内容会被 HITL 提示"跨过"导致标题错位。
-                    streamRenderer.resetBetweenIterations();
-
-                    List<ToolOutcome> toolResults = executeToolCalls(response.toolCalls());
-                    for (ToolOutcome toolResult : toolResults) {
-                        conversationHistory.add(toolResult.toToolMessage());
-                    }
-                    appendImageToolMessages(toolResults);
+        while (true) {
+            try {
+                AgentTurnResult turn = turnKernel.run(new AgentTurnContext(
+                        activeRunContext.get() == null
+                                ? AgentRunContext.create(AgentMode.TEAM, taskContent, toolRegistry.getProjectPath())
+                                : activeRunContext.get(),
+                        conversationHistory,
+                        toolDefinitionsForProfile(),
+                        new AgentLoopPolicy("sub-agent-" + name + "-" + role, true),
+                        budget,
+                        streamRenderer,
+                        observer));
+                if (turn.status() == AgentTurnStatus.BUDGET_EXHAUSTED) {
+                    streamRenderer.finish();
+                    log.warn("[{}] run exhausted budget: reason={}, iteration={}, tokens={}/{}",
+                            name, turn.exitReason(), budget.iteration(),
+                            budget.totalInputTokens() + budget.totalOutputTokens(), budget.tokenBudget());
+                    return AgentMessage.error(name, role, turn.exitDescription());
+                }
+                if (turn.status() == AgentTurnStatus.CANCELLED) {
+                    streamRenderer.finish();
+                    return AgentMessage.error(name, role, "⏹️ 已取消当前任务。");
+                }
+                if (turn.status() == AgentTurnStatus.FAILED) {
+                    streamRenderer.finish();
+                    return AgentMessage.error(name, role, "LLM 调用失败: " + turn.errorMessage());
+                }
+                if (turn.hasToolCalls()) {
                     continue;
                 }
 
-                // 没有工具调用，返回最终结果
-                conversationHistory.add(LlmClient.Message.assistant(response.content()));
-
                 streamRenderer.finish();
-
-                // 增量提取长期记忆，子任务中的关键发现不丢失
                 if (memoryManager != null) {
                     memoryManager.extractFactsIncrementalAsync(
                             conversationHistory,
                             activeRunContext.get(),
                             activeRunStore.get());
                 }
-
-                return AgentMessage.result(name, role, response.content());
-
+                return AgentMessage.result(name, role,
+                        turn.response() == null ? "" : turn.response().content());
             } catch (Exception e) {
                 log.error("[{}] LLM call failed", name, e);
                 streamRenderer.finish();
@@ -626,21 +626,6 @@ public class SubAgent {
         }
         for (ToolOutcome outcome : outcomes) {
             runStore.append(ToolOutcomeEventFactory.create(context, outcome, Map.of()));
-        }
-    }
-
-    private void appendImageToolMessages(List<ToolOutcome> toolResults) {
-        if (toolResults == null || toolResults.isEmpty()) {
-            return;
-        }
-        for (ToolOutcome result : toolResults) {
-            if (!result.hasImageParts()) {
-                continue;
-            }
-            List<LlmClient.ContentPart> parts = new ArrayList<>();
-            parts.add(LlmClient.ContentPart.text("工具 " + result.name() + " 返回了图片内容，请结合上面的工具文本结果分析。"));
-            parts.addAll(result.imageParts());
-            conversationHistory.add(LlmClient.Message.user(parts));
         }
     }
 

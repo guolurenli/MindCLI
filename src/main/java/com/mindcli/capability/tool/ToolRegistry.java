@@ -18,11 +18,12 @@ import com.mindcli.platform.security.PolicyException;
 import com.mindcli.runtime.CancellationContext;
 import com.mindcli.platform.snapshot.RestoreResult;
 import com.mindcli.platform.snapshot.SnapshotService;
-import com.mindcli.capability.skill.Skill;
 import com.mindcli.capability.skill.SkillRegistry;
 import com.mindcli.capability.tool.builtin.CodeToolRegistrar;
 import com.mindcli.capability.tool.builtin.FileToolExecutor;
 import com.mindcli.capability.tool.builtin.FileToolRegistrar;
+import com.mindcli.capability.tool.builtin.ProjectToolExecutor;
+import com.mindcli.capability.tool.builtin.SkillToolExecutor;
 import com.mindcli.capability.tool.builtin.MemoryToolRegistrar;
 import com.mindcli.capability.tool.builtin.ShellToolRegistrar;
 import com.mindcli.capability.tool.builtin.ShellCommandExecutor;
@@ -38,7 +39,6 @@ import com.mindcli.capability.web.SearchProvider;
 import com.mindcli.capability.web.SearchProviderFactory;
 import com.mindcli.capability.web.WebFetcher;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
@@ -382,37 +382,7 @@ public class ToolRegistry {
     }
 
     String createProjectTool(Map<String, String> args) {
-        String name = args.get("name");
-        String type = args.get("type");
-        Path projectRoot = pathGuard.resolveSafe(name);
-        try {
-            Files.createDirectories(projectRoot);
-
-            switch (type.toLowerCase()) {
-                case "java" -> {
-                    Files.createDirectories(projectRoot.resolve("src/main/java"));
-                    Files.createDirectories(projectRoot.resolve("src/main/resources"));
-                    Files.writeString(projectRoot.resolve("pom.xml"),
-                            String.format("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-                                    "<project>\n" +
-                                    "    <modelVersion>4.0.0</modelVersion>\n" +
-                                    "    <groupId>com.example</groupId>\n" +
-                                    "    <artifactId>%s</artifactId>\n" +
-                                    "    <version>1.0</version>\n" +
-                                    "</project>", name));
-                }
-                case "python" -> {
-                    Files.createDirectories(projectRoot.resolve(name));
-                    Files.writeString(projectRoot.resolve("main.py"), "# 主程序入口\n");
-                    Files.writeString(projectRoot.resolve("requirements.txt"), "# 依赖列表\n");
-                }
-                case "node" -> Files.writeString(projectRoot.resolve("package.json"),
-                        String.format("{\"name\": \"%s\", \"version\": \"1.0.0\"}", name));
-            }
-            return "项目已创建: " + name + " (类型: " + type + ")";
-        } catch (Exception e) {
-            return "创建项目失败: " + e.getMessage();
-        }
+        return new ProjectToolExecutor(pathGuard).create(args);
     }
 
     String webSearchTool(Map<String, String> args) {
@@ -424,29 +394,7 @@ public class ToolRegistry {
     }
 
     String loadSkillTool(Map<String, String> args) {
-        String name = args.get("name");
-        if (name == null || name.isBlank()) {
-            return "load_skill 失败: name 不能为空";
-        }
-        if (skillRegistry == null) {
-            return "load_skill 失败: Skill 系统未初始化";
-        }
-        Skill skill = skillRegistry.findSkill(name);
-        if (skill == null) {
-            Skill any = skillRegistry.findAnySkill(name);
-            if (any == null) {
-                return "Skill '" + name + "' 未找到，可用 /skill list 查看可用 skill";
-            }
-            return "Skill '" + name + "' 已被禁用，可用 /skill on " + name + " 启用";
-        }
-        String body = skill.body();
-        if (body == null) body = "";
-        int max = 5 * 1024;
-        if (body.length() > max) {
-            body = body.substring(0, max)
-                    + "\n\n...(skill body truncated, full content via /skill show " + name + ")";
-        }
-        return "## 已加载 Skill：" + name + "\n\n" + body;
+        return new SkillToolExecutor(skillRegistry).load(args);
     }
 
     String saveMemoryTool(Map<String, String> args) {

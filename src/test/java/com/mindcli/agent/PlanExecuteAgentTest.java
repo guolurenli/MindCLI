@@ -11,6 +11,7 @@ import com.mindcli.runtime.run.AgentMode;
 import com.mindcli.runtime.run.AgentRunContext;
 import com.mindcli.runtime.run.AgentRunEvent;
 import com.mindcli.runtime.run.AgentRunEventType;
+import com.mindcli.runtime.run.AgentTurnKernel;
 import com.mindcli.runtime.run.InMemoryRunStore;
 import com.mindcli.runtime.run.ToolDispatcher;
 import com.mindcli.capability.tool.ToolRegistry;
@@ -23,6 +24,7 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.lang.reflect.Field;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Queue;
@@ -42,6 +44,12 @@ class PlanExecuteAgentTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void planAgentUsesSharedSingleTurnKernelSeam() throws Exception {
+        Field field = PlanExecuteAgent.class.getDeclaredField("turnKernel");
+        assertEquals(AgentTurnKernel.class, field.getType());
+    }
 
     @Test
     void shouldNotRepeatStreamedTaskOutputInFinalPlanSummary() throws Exception {
