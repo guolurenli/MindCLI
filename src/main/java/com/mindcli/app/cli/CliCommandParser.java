@@ -30,6 +30,7 @@ public final class CliCommandParser {
         POLICY_STATUS,
         AUDIT_TAIL,
         RUN_INSPECT,
+        RUN_RESUME,
         SNAPSHOT,
         RESTORE_SNAPSHOT,
         MCP_LIST,
@@ -239,7 +240,12 @@ public final class CliCommandParser {
         }
 
         if (trimmed.regionMatches(true, 0, "/run ", 0, 5)) {
-            return new ParsedCommand(CommandType.RUN_INSPECT, trimmed.substring(5).trim());
+            String payload = trimmed.substring(5).trim();
+            if (payload.equalsIgnoreCase("resume") || payload.regionMatches(true, 0, "resume ", 0, 7)) {
+                return new ParsedCommand(CommandType.RUN_RESUME,
+                        payload.equalsIgnoreCase("resume") ? "" : payload.substring(7).trim());
+            }
+            return new ParsedCommand(CommandType.RUN_INSPECT, payload);
         }
 
         if (trimmed.equalsIgnoreCase("/snapshot")) {

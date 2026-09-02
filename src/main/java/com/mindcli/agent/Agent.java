@@ -168,6 +168,23 @@ public class Agent {
     }
 
     public AgentRunResult run(AgentRunContext runContext, RunStore runStore) {
+        return runInternal(runContext, runStore, true);
+    }
+
+    public AgentRunResult runRecovered(AgentRunContext runContext, RunStore runStore,
+                                       List<LlmClient.Message> recoveredMessages) {
+        conversationHistory.clear();
+        if (recoveredMessages != null) {
+            conversationHistory.addAll(recoveredMessages);
+        }
+        if (conversationHistory.isEmpty() || !"system".equals(conversationHistory.get(0).role())) {
+            conversationHistory.add(0, LlmClient.Message.system(buildSystemPrompt("")));
+        }
+        return runInternal(runContext, runStore, false);
+    }
+
+    private AgentRunResult runInternal(AgentRunContext runContext, RunStore runStore,
+                                       boolean appendUserInput) {
         if (runContext == null) {
             throw new IllegalArgumentException("runContext must not be null");
         }
@@ -203,9 +220,11 @@ public class Agent {
 
         // 添加用户输入到历史
         String userMessageContent = userInput;
-        conversationHistory.add(ImageReferenceParser.userMessage(
-                userMessageContent,
-                Path.of(toolRegistry.getProjectPath())));
+        if (appendUserInput) {
+            conversationHistory.add(ImageReferenceParser.userMessage(
+                    userMessageContent,
+                    Path.of(toolRegistry.getProjectPath())));
+        }
         StreamRenderer streamRenderer = new StreamRenderer(renderer());
 
         long startNanos = System.nanoTime();

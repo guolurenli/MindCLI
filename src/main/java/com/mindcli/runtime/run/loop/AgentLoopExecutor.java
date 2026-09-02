@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import com.mindcli.platform.serialization.JsonSupport;
 
 public final class AgentLoopExecutor {
     private final AgentTurnKernel turnKernel;
@@ -73,19 +74,28 @@ public final class AgentLoopExecutor {
     }
 
     private void appendLlmResponseEvent(AgentLoopContext context, int iteration, LlmClient.ChatResponse response) {
-        append(context, AgentRunEventType.LLM_RESPONSE, Map.of(
+        Map<String, String> attributes = new java.util.LinkedHashMap<>(Map.of(
                 "iteration", String.valueOf(iteration),
                 "inputTokens", String.valueOf(response.inputTokens()),
                 "outputTokens", String.valueOf(response.outputTokens()),
                 "cachedInputTokens", String.valueOf(response.cachedInputTokens()),
                 "toolCallCount", String.valueOf(response.toolCalls() == null ? 0 : response.toolCalls().size()),
                 "contentChars", String.valueOf(response.content() == null ? 0 : response.content().length()),
-                "reasoningChars", String.valueOf(response.reasoningContent() == null ? 0 : response.reasoningContent().length())));
+                "reasoningChars", String.valueOf(response.reasoningContent() == null ? 0 : response.reasoningContent().length()),
+                "content", response.content() == null ? "" : response.content(),
+                "reasoningContent", response.reasoningContent() == null ? "" : response.reasoningContent(),
+                "toolCallsJson", serializeToolCalls(response.toolCalls())));
+        append(context, AgentRunEventType.LLM_RESPONSE, attributes);
     }
 
     private void appendToolOutcomeEvent(AgentLoopContext context, int iteration, ToolOutcome outcome) {
-        append(context, AgentRunEventType.TOOL_OUTCOME,
+        Map<String, String> attributes = new java.util.LinkedHashMap<>(
                 ToolOutcomeEventFactory.attributes(outcome, Map.of("iteration", String.valueOf(iteration))));
+        if (outcome != null) {
+            attributes.put("argumentsJson", outcome.argumentsJson());
+            attributes.put("text", outcome.text());
+        }
+        append(context, AgentRunEventType.TOOL_OUTCOME, attributes);
     }
 
     private void append(AgentLoopContext context, AgentRunEventType type) {
@@ -113,6 +123,17 @@ public final class AgentLoopExecutor {
         return String.join(",", toolCalls.stream()
                 .map(toolCall -> toolCall.function() == null ? "" : toolCall.function().name())
                 .toList());
+    }
+
+    private static String serializeToolCalls(List<LlmClient.ToolCall> toolCalls) {
+        if (toolCalls == null || toolCalls.isEmpty()) {
+            return "[]";
+        }
+        try {
+            return JsonSupport.mapper().writeValueAsString(toolCalls);
+        } catch (Exception ignored) {
+            return "[]";
+        }
     }
 
 }

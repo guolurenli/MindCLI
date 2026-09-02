@@ -106,6 +106,44 @@ class MainCommandHandlerRefactorTest {
         assertTrue(output.contains("Pre-run snapshot: commit-pre"), output);
     }
 
+    @Test
+    void runHandlerBlocksHighRiskResumeWithoutConfirmation(@TempDir Path tempDir) {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext context = new AgentRunContext("run_resume", AgentMode.REACT, "hello", tempDir.toString(),
+                Instant.now(), Map.of());
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED, Map.of("input", "hello")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_CALL_REQUESTED,
+                Map.of("toolNames", "write_file")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_OUTCOME,
+                Map.of("toolName", "write_file", "status", "COMPLETED")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+
+        RunCommandHandler.printRunResume(printStream(sink), runStore, "run_resume", id -> "executed");
+
+        String output = sink.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("需要确认"), output);
+        assertTrue(!output.contains("executed"), output);
+    }
+
+    @Test
+    void runHandlerBlocksIncompleteResumeEvenWithConfirmation(@TempDir Path tempDir) {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext context = new AgentRunContext("run_incomplete", AgentMode.REACT, "hello", tempDir.toString(),
+                Instant.now(), Map.of());
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED, Map.of("input", "hello")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_CALL_REQUESTED,
+                Map.of("toolCallCount", "1", "toolNames", "read_file")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+
+        RunCommandHandler.printRunResume(printStream(sink), runStore, "run_incomplete --confirm", id -> "executed");
+
+        String output = sink.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("无法恢复") || output.contains("不确定"), output);
+        assertTrue(!output.contains("executed"), output);
+    }
+
     private static PrintStream printStream(ByteArrayOutputStream sink) {
         return new PrintStream(sink, true, StandardCharsets.UTF_8);
     }

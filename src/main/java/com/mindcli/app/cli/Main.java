@@ -20,6 +20,7 @@ import com.mindcli.app.cli.interaction.CliInputSupport;
 import com.mindcli.app.cli.interaction.MindCliCompleter;
 import com.mindcli.app.cli.interaction.MindCliHighlighter;
 import com.mindcli.app.cli.interaction.MindCliHistory;
+import com.mindcli.app.cli.runtime.CliRuntimeCoordinator;
 import com.mindcli.platform.config.MindCliConfig;
 import com.mindcli.platform.hitl.HitlHandler;
 import com.mindcli.platform.hitl.HitlToolRegistry;
@@ -48,6 +49,8 @@ import com.mindcli.runtime.run.ModeAdapter;
 import com.mindcli.runtime.run.mode.PlanModeAdapter;
 import com.mindcli.runtime.run.mode.ReActModeAdapter;
 import com.mindcli.runtime.run.store.RunStore;
+import com.mindcli.runtime.run.recovery.RunRecoveryPlan;
+import com.mindcli.runtime.run.recovery.RunRecoveryService;
 import com.mindcli.runtime.run.session.SessionContext;
 import com.mindcli.runtime.run.mode.SingleAgentAdapter;
 import com.mindcli.runtime.run.mode.TeamModeAdapter;
@@ -106,6 +109,7 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public class Main {
     private static final String VERSION = "16.1.0";
+    private static final CliRuntimeCoordinator RUNTIME_COORDINATOR = new CliRuntimeCoordinator();
     private static final String BRACKETED_PASTE_BEGIN = "[200~";
     private static final String BRACKETED_PASTE_END = "\u001b[201~";
     private static final int CTRL_O = 15;
@@ -282,7 +286,9 @@ public class Main {
                     config,
                     llmClientRef::get,
                     browserSession,
-                    hitlToolRegistry));
+                    hitlToolRegistry,
+                    runId -> resumeRun(runId, reactAgent, llmClientRef.get(), terminal, lineReader,
+                            ui, mcpServerManager, skillRegistry, sessionContext)));
             CliStartupView.StartupScreenInfo startupScreenInfo =
                     startupScreenInfo(llmClient, mcpServerManager, skillRegistry, startupNote);
             List<String> startupBannerLines = startupScreenLines(startupScreenInfo);
@@ -665,50 +671,72 @@ public class Main {
         return runModeWithRuntime(mode, input, workspace, runStore, snapshotService, adapter, null);
     }
 
+    private static String resumeRun(String runId, Agent reactAgent, LlmClient llmClient,
+                                    Terminal terminal, LineReader lineReader, PrintStream out,
+                                    McpServerManager mcpServerManager, SkillRegistry skillRegistry,
+                                    SessionContext sessionContext) {
+        RunStore store = reactAgent.runStore();
+        RunRecoveryPlan plan = new RunRecoveryService(store).inspect(runId);
+        if (!plan.resumeAvailable()) {
+            return "❌ 无法恢复: " + (plan.resumable() ? "历史 run 缺少原始输入或工作区信息" : plan.stateStatus());
+        }
+        Path currentWorkspace = Path.of(reactAgent.getToolRegistry().getProjectPath()).toAbsolutePath().normalize();
+        Path recordedWorkspace = Path.of(plan.workspace()).toAbsolutePath().normalize();
+        if (!currentWorkspace.equals(recordedWorkspace)) {
+            return "❌ 无法恢复: run workspace 与当前项目不一致（" + plan.workspace() + "）";
+        }
+        ModeAdapter adapter;
+        if (plan.mode() == AgentMode.REACT) {
+            adapter = new ReActModeAdapter(reactAgent);
+        } else if (plan.mode() == AgentMode.PLAN) {
+            PlanExecuteAgent agent = createPlanAgent(llmClient, reactAgent, terminal, lineReader, out);
+            agent.setSessionContext(sessionContext);
+            agent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
+            agent.setSkillRegistry(skillRegistry);
+            adapter = new PlanModeAdapter(agent);
+        } else if (plan.mode() == AgentMode.TEAM) {
+            AgentOrchestrator orchestrator = createTeamAgent(llmClient, reactAgent, out);
+            orchestrator.setSessionContext(sessionContext);
+            orchestrator.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
+            orchestrator.setSkillSystem(skillRegistry);
+            adapter = new TeamModeAdapter(orchestrator);
+        } else {
+            return "❌ 不支持恢复 mode: " + plan.mode();
+        }
+        AgentRunResult result = new AgentRuntime(store, reactAgent.getToolRegistry().getSnapshotService())
+                .resume(runId, adapter);
+        if (sessionContext != null) {
+            sessionContext.record(result, adapter instanceof ReActModeAdapter react
+                    ? react.latestAssistantResponse() : null);
+        }
+        return runtimeUserFacingContent(result);
+    }
+
     static String runModeWithRuntime(AgentMode mode, String input, String workspace,
                                      RunStore runStore, SnapshotService snapshotService,
                                      ModeAdapter adapter, SessionContext sessionContext) {
-        AgentRuntime runtime = new AgentRuntime(runStore, snapshotService);
-        AgentModeRouter router = new AgentModeRouter(runtime, List.of(adapter), workspace);
-        AgentRunResult result = router.submit(input, mode);
-        if (sessionContext != null) {
-            String contentOverride = adapter instanceof ReActModeAdapter reactAdapter
-                    ? reactAdapter.latestAssistantResponse()
-                    : null;
-            sessionContext.record(result, contentOverride);
-        }
-        return runtimeUserFacingContent(result);
+        return RUNTIME_COORDINATOR.run(mode, input, workspace, runStore, snapshotService, adapter, sessionContext);
     }
 
     static String runReactModeWithRuntime(String input, String workspace,
                                           RunStore runStore, SnapshotService snapshotService,
                                           ModeAdapter adapter) {
-        return runModeWithRuntime(AgentMode.REACT, input, workspace, runStore, snapshotService, adapter);
+        return RUNTIME_COORDINATOR.runReact(input, workspace, runStore, snapshotService, adapter, null);
     }
 
     static String runReactModeWithRuntime(String input, String workspace,
                                           RunStore runStore, SnapshotService snapshotService,
                                           ModeAdapter adapter, SessionContext sessionContext) {
-        return runModeWithRuntime(AgentMode.REACT, input, workspace, runStore, snapshotService,
-                adapter, sessionContext);
+        return RUNTIME_COORDINATOR.runReact(input, workspace, runStore, snapshotService, adapter, sessionContext);
     }
 
     static String runAgentTask(String mode, String input, SnapshotService snapshotService,
                                Callable<String> task) throws Exception {
-        return task.call();
+        return RUNTIME_COORDINATOR.runTask(task);
     }
 
     private static String runtimeUserFacingContent(AgentRunResult result) {
-        if (result == null) {
-            return "";
-        }
-        if (result.isSuccess() || result.status() == AgentRunStatus.CANCELLED) {
-            return result.content();
-        }
-        if (result.errorMessage() != null && !result.errorMessage().isBlank()) {
-            return result.errorMessage();
-        }
-        return result.content();
+        return CliRuntimeCoordinator.userFacingContent(result);
     }
 
     private static String runWithCancelSupport(Terminal terminal, PrintStream out, Callable<String> task) {

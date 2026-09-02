@@ -125,6 +125,7 @@ class CliCommandRouterTest {
                 null,
                 null,
                 null,
+                null,
                 null);
     }
 

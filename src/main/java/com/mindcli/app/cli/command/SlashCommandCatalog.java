@@ -70,6 +70,7 @@ public final class SlashCommandCatalog {
                 new SlashCommandHint("/audit", "/audit", "查看今日最近 10 条危险工具审计"),
                 new SlashCommandHint("/audit ", "/audit [N]", "查看今日最近 N 条危险工具审计"),
                 new SlashCommandHint("/run inspect ", "/run inspect <runId>", "检查 run ledger 与 snapshot checkpoint"),
+                new SlashCommandHint("/run resume ", "/run resume <runId>", "恢复可恢复的 Agent Runtime run"),
                 new SlashCommandHint("/snapshot", "/snapshot", "查看最近 Side-Git 快照"),
                 new SlashCommandHint("/snapshot status", "/snapshot status", "查看 Side-Git 快照状态"),
                 new SlashCommandHint("/snapshot clean", "/snapshot clean", "清理当前项目 Side-Git 快照"),

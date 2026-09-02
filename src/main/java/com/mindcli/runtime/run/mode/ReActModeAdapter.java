@@ -11,6 +11,8 @@ import com.mindcli.runtime.run.store.*;
 import com.mindcli.agent.Agent;
 
 import java.util.Objects;
+import java.util.List;
+import com.mindcli.platform.llm.LlmClient;
 
 public final class ReActModeAdapter implements ModeAdapter {
     private final Agent agent;
@@ -46,6 +48,14 @@ public final class ReActModeAdapter implements ModeAdapter {
         } catch (Exception e) {
             return AgentRunResult.failed(context, errorMessage(e));
         }
+    }
+
+    public AgentRunResult executeRecovered(AgentRunContext context, RunStore runStore,
+                                           List<LlmClient.Message> recoveredMessages) {
+        if (agent == null) {
+            return execute(context, runStore);
+        }
+        return agent.runRecovered(context, runStore, recoveredMessages);
     }
 
     public String latestAssistantResponse() {

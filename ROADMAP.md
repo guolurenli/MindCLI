@@ -103,7 +103,7 @@
 | 已完成 P1 | Memory policy 包结构整理 | `MemoryPolicyContext`、`MemoryPolicyDecision`、`MemoryPolicyEngine` 归入 `capability/memory/policy/`；`MemoryManager` 继续作为记忆 facade，存储与检索链路保持原包和原接口。 |
 | 已完成 P1 | Tool search 包结构整理 | `CodeSearchToolExecutor` 与 ripgrep/Java 搜索引擎归入 `capability/tool/search/`；`ToolRegistry` 保留工具 facade，其他 builtin、registry、namespace 边界不变。 |
 | 已完成 P1 | AgentOrchestrator 职责瘦身 | 纯步骤状态诊断、阻塞依赖格式化和最终结果汇总提取到 `agent/team/TeamStepFormatter`；编排器继续负责计划执行、并行、worktree 与审查链路。 |
-| P1 | `/run resume` 与启动期自动恢复 | 当前只有 `/run inspect`，能查看但不能继续执行。恢复前需要生成计划并对文件写入、命令执行和未完成 child run 请求确认。 |
+| 部分完成 P1 | `/run resume` 与启动期自动恢复 | `/run resume` 已支持风险计划与 ReAct 消息/工具结果恢复；Plan/Team 仍为同一 runId 下的安全重试。启动期自动发现、写入/命令/未完成 child run 的更细粒度恢复计划仍待完成。 |
 | 已完成 P2 | 清理兼容 API | 已确认仓库生产代码没有旧入口调用，删除 `MemoryManager` / `MemoryExtractor` 的旧提取方法、`ToolRegistry` 的旧 memory saver setter 与 `MemoryWriteResult.legacyWritten`；测试已迁移到增量提取和 `setScopedMemoryWriter`。 |
 | 已完成 P2 | 依赖审计 | 已运行 `mvn dependency:analyze -DskipTests` 与 runtime dependency tree；直接使用的 Jackson annotations/core、SLF4J、Okio 与 JUnit API 已补为显式依赖，Logback/SQLite 标为 `runtime`。剩余 Logback、SQLite、JUnit 聚合依赖的 `unused` 告警分别来自 `logback.xml`、JDBC ServiceLoader 和 Surefire 聚合加载，属于已确认误报；JLine、JGit、JavaParser、ZXing、Tomlj、Jsoup 均有实际用途，没有可安全删除的核心依赖。后续仅在版本升级时复查。 |
 | 已完成 P2 | JSON / MCP 内部瘦身 | 新增共享 `platform/serialization/JsonSupport`，生产代码统一默认 `ObjectMapper`；`McpServerManager` 保留 facade，启动并发/超时和官方 stdio/HTTP transport 创建分别下沉到 `capability/mcp/lifecycle/`，不改变 MCP 协议或公开接口。 |
@@ -116,7 +116,7 @@
 
 - **容器 / VM 沙箱** —— 真正的隔离执行环境（Docker / microVM）。当前安全模型是 HITL + 路径校验 + 命令拒绝 + 审计，而非隔离；沙箱方案参考「Pro 升级版本」章节。
 - **MCP OAuth 2.0 + sampling + server 自动重启** —— OAuth（Authorization Code + PKCE）、`sampling/createMessage`、server 崩溃自动拉起均未实现。
-- **`/run resume` + 启动期自动恢复** —— 当前只有 `/run inspect` 的检查能力，后续补 resume 与启动期自动发现可恢复 run。
+- **启动期自动恢复发现与 Plan/Team 精确恢复** —— `/run resume` 和 ReAct 基础断点恢复已交付，后续补启动期发现、DAG/child run 恢复与更细粒度副作用幂等。
 - **视频 / 音频输入** —— 多模态暂只支持图片，视频音频留作后续独立迭代。
 
 ---

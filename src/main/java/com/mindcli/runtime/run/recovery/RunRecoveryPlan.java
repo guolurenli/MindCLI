@@ -13,8 +13,13 @@ import java.util.Map;
 
 public record RunRecoveryPlan(
         String runId,
+        AgentMode mode,
+        String workspace,
+        String originalInput,
         RunStateStatus stateStatus,
         boolean resumable,
+        boolean resumeAvailable,
+        RunResumePlan resumePlan,
         boolean terminal,
         boolean manual,
         AgentRunEventType lastEventType,
@@ -31,5 +36,8 @@ public record RunRecoveryPlan(
         preRunSnapshotCommitId = preRunSnapshotCommitId == null ? "" : preRunSnapshotCommitId;
         postRunSnapshotCommitId = postRunSnapshotCommitId == null ? "" : postRunSnapshotCommitId;
         restoreHint = restoreHint == null ? "" : restoreHint;
+        workspace = workspace == null ? "" : workspace;
+        originalInput = originalInput == null ? "" : originalInput;
+        resumePlan = resumePlan == null ? new RunResumePlan(false, true, "UNKNOWN", "未生成恢复计划", List.of()) : resumePlan;
     }
 }

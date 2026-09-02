@@ -458,6 +458,14 @@ class CliCommandParserTest {
     }
 
     @Test
+    void parsesRunResumeCommand() {
+        CliCommandParser.ParsedCommand command = CliCommandParser.parse("/run resume run_abc123");
+
+        assertEquals(CliCommandParser.CommandType.RUN_RESUME, command.type());
+        assertEquals("run_abc123", command.payload());
+    }
+
+    @Test
     void parsesCancelCommand() {
         assertEquals(CliCommandParser.CommandType.CANCEL, CliCommandParser.parse("/cancel").type());
         assertEquals(CliCommandParser.CommandType.CANCEL, CliCommandParser.parse("cancel").type());

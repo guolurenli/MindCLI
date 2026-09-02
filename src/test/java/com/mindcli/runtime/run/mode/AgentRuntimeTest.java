@@ -42,6 +42,7 @@ class AgentRuntimeTest {
 
         assertEquals(AgentRunStatus.SUCCESS, result.status());
         assertEquals("done", result.content());
+        assertEquals("hello", runStore.events(context.runId()).get(0).attributes().get("input"));
         assertEventTypes(runStore.events(context.runId()),
                 AgentRunEventType.RUN_STARTED,
                 AgentRunEventType.MODE_SELECTED,
@@ -63,6 +64,82 @@ class AgentRuntimeTest {
                 AgentRunEventType.RUN_STARTED,
                 AgentRunEventType.MODE_SELECTED,
                 AgentRunEventType.RUN_FAILED);
+    }
+
+    @Test
+    void persistsOriginalInputAndResumesInterruptedRunWithoutNewRunId() {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRuntime runtime = new AgentRuntime(runStore);
+        AgentRunContext context = AgentRunContext.create(AgentMode.REACT, "resume me", "workspace");
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED,
+                java.util.Map.of("input", context.input())));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+
+        AgentRunResult result = runtime.resume(context.runId(), adapterReturning(AgentMode.REACT,
+                AgentRunResult.success(context, "resumed")));
+
+        assertEquals(AgentRunStatus.SUCCESS, result.status());
+        assertEquals("resumed", result.content());
+        assertEquals(context.runId(), result.runId());
+        assertEventTypes(runStore.events(context.runId()),
+                AgentRunEventType.RUN_STARTED,
+                AgentRunEventType.RUN_CANCELLED,
+                AgentRunEventType.RUN_RESUMED,
+                AgentRunEventType.MODE_SELECTED,
+                AgentRunEventType.RUN_FINISHED);
+    }
+
+    @Test
+    void reactResumeReusesCompletedToolResultWithoutDuplicatingUserMessage() {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        ScriptedClient client = new ScriptedClient(List.of(
+                new LlmClient.ChatResponse("assistant", "final from checkpoint", null, 10, 3)));
+        ToolRegistry registry = new ToolRegistry();
+        registry.setProjectPath(tempDir.toString());
+        Agent agent = new Agent(client, registry, runStore);
+        AgentRuntime runtime = new AgentRuntime(runStore);
+        AgentRunContext context = new AgentRunContext("run-react-resume", AgentMode.REACT, "inspect file",
+                tempDir.toString(), java.time.Instant.now(), java.util.Map.of());
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED,
+                java.util.Map.of("input", context.input())));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.LLM_RESPONSE, java.util.Map.of(
+                "content", "", "reasoningContent", "", "toolCallCount", "1",
+                "toolCallsJson", "[{\"id\":\"call_1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"a.txt\\\"}\"}}]")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_OUTCOME, java.util.Map.of(
+                "toolId", "call_1", "toolName", "read_file", "argumentsJson", "{\"path\":\"a.txt\"}",
+                "text", "file text", "status", "COMPLETED")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+
+        AgentRunResult result = runtime.resume(context.runId(), new ReActModeAdapter(agent));
+
+        assertEquals(AgentRunStatus.SUCCESS, result.status());
+        assertEquals("final from checkpoint", result.content());
+        assertEquals(List.of("system", "user", "assistant", "tool"),
+                client.lastMessages.stream().map(LlmClient.Message::role).toList());
+        assertEquals(1, client.lastMessages.stream().filter(message -> "user".equals(message.role())).count());
+    }
+
+    @Test
+    void doesNotAppendResumeMarkerWhenReactCheckpointCannotBeReconstructed() {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRuntime runtime = new AgentRuntime(runStore);
+        AgentRunContext context = new AgentRunContext("run-react-incomplete", AgentMode.REACT, "inspect file",
+                tempDir.toString(), java.time.Instant.now(), java.util.Map.of());
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED,
+                java.util.Map.of("input", context.input())));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.LLM_RESPONSE,
+                java.util.Map.of("content", "", "reasoningContent", "", "toolCallCount", "1",
+                        "toolCallsJson", "[{\"id\":\"call_1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+        ToolRegistry registry = new ToolRegistry();
+        registry.setProjectPath(tempDir.toString());
+        Agent agent = new Agent(new ScriptedClient(List.of()), registry, runStore);
+
+        AgentRunResult result = runtime.resume(context.runId(), new ReActModeAdapter(agent));
+
+        assertEquals(AgentRunStatus.FAILED, result.status());
+        assertTrue(runStore.events(context.runId()).stream()
+                .noneMatch(event -> event.type() == AgentRunEventType.RUN_RESUMED));
     }
 
     @Test
@@ -232,6 +309,7 @@ class AgentRuntimeTest {
     private static final class ScriptedClient implements LlmClient {
         private final Queue<ChatResponse> responses = new ArrayDeque<>();
         private final IOException failure;
+        private List<Message> lastMessages = List.of();
 
         private ScriptedClient(List<ChatResponse> responses) {
             this.responses.addAll(responses);
@@ -249,6 +327,7 @@ class AgentRuntimeTest {
 
         @Override
         public ChatResponse chat(List<Message> messages, List<Tool> tools, StreamListener listener) throws IOException {
+            lastMessages = List.copyOf(messages);
             if (failure != null) {
                 throw failure;
             }

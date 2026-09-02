@@ -40,6 +40,7 @@ mvn test -DskipTests=false                  # 全量回归
 /export                  # 导出当前 ReAct 会话为 Markdown，包含完整 system prompt
 /memory export --audit   # 导出记忆审计证据 Markdown
 /run inspect <runId>     # 检查指定 Agent Runtime run 的状态、snapshot checkpoint 与恢复提示
+/run resume <runId>      # 对 CANCELLED / BUDGET_EXHAUSTED 等可恢复 run 重新进入原始任务
 ```
 
 ## 架构概览
@@ -80,7 +81,7 @@ DeepSeek SSE 调用默认强制 HTTP/1.1，避免部分网络/网关下 HTTP/2 �
 ```
 src/main/java/com/mindcli/
 ├── agent/       ReAct / Plan / Multi-Agent 编排；plan/ 放 Planner / ExecutionPlan / Task / DependencyGraph，team/ 放 Team 编排、调度模型与 TeamStepFormatter，profile/ 放 AgentProfile / AgentPool
-├── app/         用户入口适配：cli/、wechat/
+├── app/         用户入口适配：cli/（runtime/ 负责模式运行与 SessionContext 交接）、wechat/
 ├── capability/  Agent 能力：browser/、image/、lsp/、mcp/、memory/（policy/）、skill/、tool/（builtin/registry/namespace/search/）、web/
 ├── platform/    平台支撑：config/、hitl/、llm/、prompt/、render/、security/、snapshot/、text/
 └── runtime/     run/ (facade + store/dispatch/loop/mode/recovery/hook/legacy/session) + api/ (RuntimeApiServer) + task/ (DurableTaskManager)
@@ -243,7 +244,8 @@ src/main/java/com/mindcli/
 
 以下在路线图但未交付：容器/VM 沙箱 / MCP OAuth + sampling + server 自动重启
 
-- TODO：Agent Runtime 当前只有 `/run inspect <runId>` 的恢复检查能力；后续补 `/run resume <runId>` 与启动期自动发现可恢复 run，涉及文件写入、命令执行、child run 未完成时必须先给出恢复计划并让用户确认。
+- `/run resume <runId>` 已支持安全重入：仅接受有原始输入且状态为 `RESUMABLE` 的 run，继续使用现有策略/HITL；包含已知写入、命令或 MCP 调用时，必须追加 `--confirm`；存在未完成或无法判断结果的工具调用时，即使 `--confirm` 也必须先人工检查。ReAct run 会从 ledger 重建规范的 `user -> assistant(tool_call) -> tool_result` 消息边界并复用已完成的工具结果；每个 assistant 工具调用都必须有且只有对应的成功结果，账本不完整时不会追加 `RUN_RESUMED` 标记。多次取消/恢复始终从账本生成单份消息历史，避免重复 user/tool 消息；Plan/Team 仍是同一 runId 下的适配器重试。缺少原始输入、终态或人工介入状态的 run 必须先人工处理。
+- TODO：启动期自动发现可恢复 run，以及对文件写入、命令执行、未完成 child run 的更细粒度恢复计划确认。
 
 不要把 `ROADMAP.md` 中"将来要做"误读成"现在已有"。
 

@@ -102,6 +102,12 @@ class AgentLoopExecutorTest {
                 .stream().sorted().map(ResourceKey::toString).toList());
         assertEquals(expectedLockKeys, outcome.attributes().get("lockKeys"));
         assertEquals("ALLOW", outcome.attributes().get("hookDecision"));
+        AgentRunEvent llmEvent = runStore.events(runContext.runId()).stream()
+                .filter(event -> event.type() == AgentRunEventType.LLM_RESPONSE)
+                .findFirst().orElseThrow();
+        assertTrue(llmEvent.attributes().get("toolCallsJson").contains("read_file"));
+        assertEquals("file text", outcome.attributes().get("text"));
+        assertEquals("{\"path\":\"a.txt\"}", outcome.attributes().get("argumentsJson"));
     }
 
     @Test

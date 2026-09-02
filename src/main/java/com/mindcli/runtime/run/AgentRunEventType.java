@@ -2,6 +2,7 @@ package com.mindcli.runtime.run;
 
 public enum AgentRunEventType {
     RUN_STARTED,
+    RUN_RESUMED,
     MODE_SELECTED,
     AGENT_SELECTED,
     SNAPSHOT_CREATED,

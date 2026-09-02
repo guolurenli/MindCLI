@@ -62,6 +62,7 @@ public final class CliCommandRouter {
                     CliCommandParser.CommandType.CONFIG,
                     CliCommandParser.CommandType.AGENT,
                     CliCommandParser.CommandType.RUN_INSPECT,
+                    CliCommandParser.CommandType.RUN_RESUME,
                     CliCommandParser.CommandType.SNAPSHOT,
                     CliCommandParser.CommandType.RESTORE_SNAPSHOT,
                     CliCommandParser.CommandType.EXPORT,
@@ -96,7 +97,8 @@ public final class CliCommandRouter {
             MindCliConfig config,
             Supplier<LlmClient> llmClientSupplier,
             BrowserSession browserSession,
-            HitlToolRegistry hitlToolRegistry) {
+            HitlToolRegistry hitlToolRegistry,
+            java.util.function.Function<String, String> runResumer) {
         public Context {
             Objects.requireNonNull(out, "out");
         }
@@ -169,6 +171,7 @@ public final class CliCommandRouter {
                 }
             }
             case RUN_INSPECT -> RunCommandHandler.printRunInspect(context.out(), context.reactAgent().runStore(), command.payload());
+            case RUN_RESUME -> RunCommandHandler.printRunResume(context.out(), context.reactAgent().runStore(), command.payload(), context.runResumer());
             case SNAPSHOT -> SnapshotCommandHandler.printSnapshotCommand(
                     context.out(), context.reactAgent().getToolRegistry().getSnapshotService(), command.payload());
             case RESTORE_SNAPSHOT -> SnapshotCommandHandler.printRestoreCommand(
