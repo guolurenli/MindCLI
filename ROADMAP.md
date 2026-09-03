@@ -103,6 +103,7 @@
 | 已完成 P1 | Memory policy 包结构整理 | `MemoryPolicyContext`、`MemoryPolicyDecision`、`MemoryPolicyEngine` 归入 `capability/memory/policy/`；`MemoryManager` 继续作为记忆 facade，存储与检索链路保持原包和原接口。 |
 | 已完成 P1 | Tool search 包结构整理 | `CodeSearchToolExecutor` 与 ripgrep/Java 搜索引擎归入 `capability/tool/search/`；`ToolRegistry` 保留工具 facade，其他 builtin、registry、namespace 边界不变。 |
 | 已完成 P1 | AgentOrchestrator 职责瘦身 | 纯步骤状态诊断、阻塞依赖格式化和最终结果汇总提取到 `agent/team/TeamStepFormatter`；编排器继续负责计划执行、并行、worktree 与审查链路。 |
+| 已完成 P1 | Agent 结果评测基线 | `com.mindcli.eval` 已提供 8 个离线确定性场景，覆盖 ReAct、Plan、Team、策略拒绝与恢复幂等；以最终工作区 Outcome 为主、RunStore ledger 为辅，不调用真实模型。真实模型能力评测与 Plan/Team 精确恢复仍是后续独立阶段。 |
 | 部分完成 P1 | `/run resume` 与启动期恢复发现 | `/run resume` 已支持风险计划、ReAct 消息/工具结果恢复，以及同一 `runId + toolCallId + 工具名 + 参数` 的成功结果幂等复用；启动期会只读提示最近 3 个可恢复父 run，不自动执行且不展示 child run。Plan/Team 仍为同一 runId 下的安全重试，写入/命令/未完成 child run 的更细粒度恢复计划仍待完成。 |
 | 已完成 P2 | 清理兼容 API | 已确认仓库生产代码没有旧入口调用，删除 `MemoryManager` / `MemoryExtractor` 的旧提取方法、`ToolRegistry` 的旧 memory saver setter 与 `MemoryWriteResult.legacyWritten`；测试已迁移到增量提取和 `setScopedMemoryWriter`。 |
 | 已完成 P2 | 依赖审计 | 已运行 `mvn dependency:analyze -DskipTests` 与 runtime dependency tree；直接使用的 Jackson annotations/core、SLF4J、Okio 与 JUnit API 已补为显式依赖，Logback/SQLite 标为 `runtime`。剩余 Logback、SQLite、JUnit 聚合依赖的 `unused` 告警分别来自 `logback.xml`、JDBC ServiceLoader 和 Surefire 聚合加载，属于已确认误报；JLine、JGit、JavaParser、ZXing、Tomlj、Jsoup 均有实际用途，没有可安全删除的核心依赖。后续仅在版本升级时复查。 |

@@ -221,6 +221,7 @@ src/main/java/com/mindcli/
 | 命令解析 | `mvn test -Dtest=CliCommandParserTest,CliCommandRouterTest,PlanReviewInputParserTest,MainInputNormalizationTest,MainCliBootstrapRefactorTest,MainCliStartupViewRefactorTest,MainMemoryCommandHandlerRefactorTest,MainCommandHandlerRefactorTest,MainConfigCommandHandlerRefactorTest,MainWechatCommandHandlerRefactorTest` |
 | DAG/Plan | `mvn test -Dtest=ExecutionPlanTest` |
 | Multi-Agent | `mvn test -Dtest=AgentRoleTest,AgentMessageTest,SubAgentTest,AgentProfileLoaderTest,AgentOrchestratorTest` |
+| Agent 结果评测 | `mvn test "-Dtest=com.mindcli.eval.*Test" -DskipTests=false`（8 个离线场景 + 1 个 fixture smoke，不需要 API Key） |
 | 终端/渲染 | `mvn test -Pphase16-smoke` |
 | 常规回归 | `mvn test -Pquick` |
 

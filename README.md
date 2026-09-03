@@ -323,8 +323,11 @@ mvn test -Dtest=CliCommandRouterTest,MainCommandHandlerRefactorTest
 mvn test -Dtest=ToolRegistryTest,ApprovalPolicyTest
 mvn test -Dtest=ExecutionPlanTest
 mvn test -Dtest=AgentRoleTest,AgentMessageTest,AgentOrchestratorTest
+mvn test "-Dtest=com.mindcli.eval.*Test" -DskipTests=false
 mvn test -DskipTests=false
 ```
+
+`com.mindcli.eval` 包含 Agent 结果评测第一阶段的 8 个离线确定性场景，覆盖 ReAct 代码探索与修改、Plan DAG 与显式降级、Team Profile 路由与审查 fail-closed、策略拒绝无副作用以及恢复工具幂等。评测使用 scripted LLM，不联网、不需要 API Key，并同时核对最终工作区 Outcome 与 RunStore ledger。
 
 常用文档入口：
 
