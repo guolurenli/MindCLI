@@ -12,6 +12,8 @@ import com.mindcli.runtime.run.AgentRunContext;
 import com.mindcli.runtime.run.AgentRunEvent;
 import com.mindcli.runtime.run.AgentRunEventType;
 import com.mindcli.runtime.run.loop.AgentTurnKernel;
+import com.mindcli.runtime.run.recovery.PlanResumeState;
+import com.mindcli.runtime.run.recovery.PlanTaskResumeState;
 import com.mindcli.runtime.run.store.InMemoryRunStore;
 import com.mindcli.runtime.run.dispatch.ToolDispatcher;
 import com.mindcli.capability.tool.ToolRegistry;
@@ -270,6 +272,94 @@ class PlanExecuteAgentTest {
     }
 
     @Test
+    void recordsPlanDefinitionAndTaskBoundaryCheckpoints() {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        StubGLMClient llmClient = StubGLMClient.streaming(List.of(
+                StubResponse.streamed(new LlmClient.ChatResponse(
+                        "assistant", "done", null, null, 10, 5))));
+        PlanExecuteAgent agent = new PlanExecuteAgent(
+                llmClient,
+                new ToolRegistry(),
+                new StubPlanner(llmClient),
+                null,
+                (goal, plan) -> PlanExecuteAgent.PlanReviewDecision.execute(),
+                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
+                runStore);
+        AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "goal", tempDir.toString());
+
+        String result = agent.run(context, runStore);
+
+        assertTrue(result.startsWith("✅"), result);
+        assertEquals(List.of(
+                        AgentRunEventType.PLAN_DEFINED,
+                        AgentRunEventType.PLAN_TASK_CHECKPOINT,
+                        AgentRunEventType.PLAN_TASK_CHECKPOINT),
+                runStore.events(context.runId()).stream()
+                        .map(AgentRunEvent::type)
+                        .filter(type -> type == AgentRunEventType.PLAN_DEFINED
+                                || type == AgentRunEventType.PLAN_TASK_CHECKPOINT)
+                        .toList());
+        assertEquals(List.of("RUNNING", "COMPLETED"),
+                runStore.events(context.runId()).stream()
+                        .filter(event -> event.type() == AgentRunEventType.PLAN_TASK_CHECKPOINT)
+                        .map(event -> event.attributes().get("taskStatus"))
+                        .toList());
+    }
+
+    @Test
+    void recoveredPlanSkipsCompletedTaskWithoutPlannerOrReview() {
+        AtomicInteger plannerCalls = new AtomicInteger();
+        AtomicInteger reviewCalls = new AtomicInteger();
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        StubGLMClient llmClient = StubGLMClient.streaming(List.of(
+                StubResponse.streamed(new LlmClient.ChatResponse(
+                        "assistant", "second done", null, null, 10, 5))));
+        Planner planner = new Planner(llmClient) {
+            @Override
+            public ExecutionPlan createPlan(String goal) {
+                plannerCalls.incrementAndGet();
+                throw new AssertionError("recovery must not create a new plan");
+            }
+        };
+        PlanExecuteAgent agent = new PlanExecuteAgent(
+                llmClient,
+                new ToolRegistry(),
+                planner,
+                null,
+                (goal, plan) -> {
+                    reviewCalls.incrementAndGet();
+                    return PlanExecuteAgent.PlanReviewDecision.execute();
+                },
+                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
+                runStore);
+        AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "goal", tempDir.toString());
+        PlanResumeState state = new PlanResumeState(
+                true,
+                3,
+                "plan-resume",
+                "goal",
+                "two tasks",
+                List.of(
+                        resumeTask("task_1", List.of(), "COMPLETED", "first done"),
+                        resumeTask("task_2", List.of("task_1"), "PENDING", "")),
+                "");
+
+        String result = agent.runRecovered(context, runStore, state);
+
+        assertTrue(result.startsWith("✅"), result);
+        assertEquals(0, plannerCalls.get());
+        assertEquals(0, reviewCalls.get());
+        assertEquals(List.of("task_2"),
+                runStore.events(context.runId()).stream()
+                        .filter(event -> event.type() == AgentRunEventType.PLAN_TASK_CHECKPOINT)
+                        .filter(event -> "RUNNING".equals(event.attributes().get("taskStatus")))
+                        .map(event -> event.attributes().get("taskId"))
+                        .toList());
+        assertTrue(runStore.events(context.runId()).stream()
+                .noneMatch(event -> event.type() == AgentRunEventType.PLAN_DEFINED));
+    }
+
+    @Test
     void nonCriticalSkipDegradationSkipsFailedTaskEvenWithDownstream() throws Exception {
         FailsFirstThenSucceedsClient llmClient = new FailsFirstThenSucceedsClient();
         AtomicInteger replanCalls = new AtomicInteger();
@@ -339,6 +429,26 @@ class PlanExecuteAgentTest {
             plan.computeExecutionOrder();
             return plan;
         }
+    }
+
+    private static PlanTaskResumeState resumeTask(String id, List<String> dependencies,
+                                                   String status, String result) {
+        return new PlanTaskResumeState(
+                id,
+                "execute " + id,
+                "ANALYSIS",
+                dependencies,
+                true,
+                0,
+                "BLOCK",
+                List.of(),
+                List.of(),
+                "",
+                "low",
+                status,
+                result,
+                "",
+                0);
     }
 
     private static final class RecordingToolRegistry extends ToolRegistry {

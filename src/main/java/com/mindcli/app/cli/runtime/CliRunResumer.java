@@ -35,7 +35,10 @@ public final class CliRunResumer {
         RunStore store = reactAgent.runStore();
         RunRecoveryPlan plan = new RunRecoveryService(store).inspect(runId);
         if (!plan.resumeAvailable()) {
-            return "❌ 无法恢复: " + (plan.resumable() ? "历史 run 缺少原始输入或工作区信息" : plan.stateStatus());
+            String reason = plan.resumePlan() == null ? "" : plan.resumePlan().reason();
+            return "❌ 无法恢复: " + (reason == null || reason.isBlank()
+                    ? (plan.resumable() ? "历史 run 缺少原始输入或工作区信息" : plan.stateStatus())
+                    : reason);
         }
         Path currentWorkspace = Path.of(reactAgent.getToolRegistry().getProjectPath()).toAbsolutePath().normalize();
         Path recordedWorkspace = Path.of(plan.workspace()).toAbsolutePath().normalize();

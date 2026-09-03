@@ -135,7 +135,10 @@ public final class RunCommandHandler {
         out.println("🧭 恢复风险: " + resumePlan.risk());
         out.println("   原因: " + resumePlan.reason());
         if (!plan.resumeAvailable()) {
-            out.println("❌ 无法恢复: " + (plan.resumable() ? "历史 run 缺少原始输入或工作区信息" : plan.stateStatus()) + "\n");
+            String reason = resumePlan.reason();
+            out.println("❌ 无法恢复: " + (reason == null || reason.isBlank()
+                    ? (plan.resumable() ? "历史 run 缺少原始输入或工作区信息" : plan.stateStatus())
+                    : reason) + "\n");
             return;
         }
         if ("UNKNOWN".equalsIgnoreCase(resumePlan.risk())) {

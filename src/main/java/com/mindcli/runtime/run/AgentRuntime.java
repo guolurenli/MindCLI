@@ -14,6 +14,8 @@ import com.mindcli.runtime.run.recovery.RunRecoveryPlan;
 import com.mindcli.runtime.run.recovery.RunRecoveryService;
 import com.mindcli.runtime.run.recovery.ReActResumeState;
 import com.mindcli.runtime.run.mode.ReActModeAdapter;
+import com.mindcli.runtime.run.mode.PlanModeAdapter;
+import com.mindcli.runtime.run.recovery.PlanResumeState;
 
 public final class AgentRuntime {
     private final RunStore runStore;
@@ -81,8 +83,11 @@ public final class AgentRuntime {
         context = new AgentRunContext(runId, context.mode(), context.input(), context.workspace(),
                 context.startedAt(), Map.of("resumed", "true"));
         if (!plan.resumeAvailable()) {
+            String recoveryReason = plan.resumePlan() == null ? "" : plan.resumePlan().reason();
             return AgentRunResult.failed(context,
-                    plan.resumable()
+                    recoveryReason != null && !recoveryReason.isBlank()
+                            ? recoveryReason
+                            : plan.resumable()
                             ? "Run 缺少可恢复的原始输入或上下文"
                             : "Run 当前不可恢复: " + plan.stateStatus());
         }
@@ -90,10 +95,16 @@ public final class AgentRuntime {
             return AgentRunResult.failed(context, "没有匹配的 mode adapter: " + plan.mode());
         }
         ReActResumeState recoveredState = null;
+        PlanResumeState recoveredPlanState = null;
         if (adapter instanceof ReActModeAdapter) {
             recoveredState = new RunRecoveryService(runStore).reconstructReActState(runId);
             if (!recoveredState.available()) {
                 return AgentRunResult.failed(context, "ReAct 恢复上下文不可用: " + recoveredState.reason());
+            }
+        } else if (adapter instanceof PlanModeAdapter) {
+            recoveredPlanState = new RunRecoveryService(runStore).reconstructPlanState(runId);
+            if (!recoveredPlanState.available()) {
+                return AgentRunResult.failed(context, "Plan 恢复上下文不可用: " + recoveredPlanState.reason());
             }
         }
         append(context, AgentRunEventType.RUN_RESUMED, Map.of(
@@ -104,6 +115,8 @@ public final class AgentRuntime {
             AgentRunResult result;
             if (adapter instanceof ReActModeAdapter reactAdapter) {
                 result = reactAdapter.executeRecovered(context, runStore, recoveredState.messages());
+            } else if (adapter instanceof PlanModeAdapter planAdapter) {
+                result = planAdapter.executeRecovered(context, runStore, recoveredPlanState);
             } else {
                 result = adapter.execute(context, runStore);
             }

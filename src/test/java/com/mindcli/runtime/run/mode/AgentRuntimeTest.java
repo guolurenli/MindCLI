@@ -10,6 +10,7 @@ import com.mindcli.runtime.run.session.*;
 import com.mindcli.runtime.run.store.*;
 
 import com.mindcli.agent.Agent;
+import com.mindcli.agent.PlanExecuteAgent;
 import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.platform.snapshot.SnapshotService;
 import com.mindcli.capability.tool.ToolRegistry;
@@ -17,6 +18,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -138,6 +142,80 @@ class AgentRuntimeTest {
         AgentRunResult result = runtime.resume(context.runId(), new ReActModeAdapter(agent));
 
         assertEquals(AgentRunStatus.FAILED, result.status());
+        assertTrue(runStore.events(context.runId()).stream()
+                .noneMatch(event -> event.type() == AgentRunEventType.RUN_RESUMED));
+    }
+
+    @Test
+    void planResumeUsesRecordedDagWithoutReplanning() {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext context = new AgentRunContext(
+                "run-plan-resume",
+                AgentMode.PLAN,
+                "finish plan",
+                tempDir.toString(),
+                java.time.Instant.now(),
+                java.util.Map.of());
+        PlanResumeState state = new PlanResumeState(
+                true,
+                1,
+                "plan-1",
+                context.input(),
+                "recorded",
+                List.of(new PlanTaskResumeState(
+                        "task_1", "finish remaining work", "ANALYSIS", List.of(), true,
+                        0, "BLOCK", List.of(), List.of(), "", "low",
+                        "PENDING", "", "", 0)),
+                "");
+        appendPlanLedger(runStore, context, state);
+        ToolRegistry registry = new ToolRegistry();
+        registry.setProjectPath(tempDir.toString());
+        PlanExecuteAgent agent = new PlanExecuteAgent(
+                new ScriptedClient(List.of(
+                        new LlmClient.ChatResponse("assistant", "remaining done", null, 10, 3))),
+                registry,
+                null,
+                (goal, plan) -> {
+                    throw new AssertionError("recovery must not review the recorded plan");
+                },
+                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
+                runStore);
+
+        AgentRunResult result = new AgentRuntime(runStore).resume(
+                context.runId(), new PlanModeAdapter(agent));
+
+        assertEquals(AgentRunStatus.SUCCESS, result.status());
+        assertEquals(context.runId(), result.runId());
+        assertEquals(1, runStore.events(context.runId()).stream()
+                .filter(event -> event.type() == AgentRunEventType.RUN_RESUMED)
+                .count());
+        assertEquals(List.of("task_1"), runStore.events(context.runId()).stream()
+                .filter(event -> event.type() == AgentRunEventType.PLAN_TASK_CHECKPOINT)
+                .filter(event -> "RUNNING".equals(event.attributes().get("taskStatus")))
+                .map(event -> event.attributes().get("taskId"))
+                .toList());
+    }
+
+    @Test
+    void planResumeRejectsLegacyLedgerBeforeAppendingResumeMarker() {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext context = new AgentRunContext(
+                "run-plan-legacy",
+                AgentMode.PLAN,
+                "finish plan",
+                tempDir.toString(),
+                java.time.Instant.now(),
+                java.util.Map.of());
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED,
+                java.util.Map.of("input", context.input())));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+
+        AgentRunResult result = new AgentRuntime(runStore).resume(
+                context.runId(), adapterReturning(AgentMode.PLAN,
+                        AgentRunResult.success(context, "must not execute")));
+
+        assertEquals(AgentRunStatus.FAILED, result.status());
+        assertTrue(result.errorMessage().contains("精确恢复 checkpoint"), result.errorMessage());
         assertTrue(runStore.events(context.runId()).stream()
                 .noneMatch(event -> event.type() == AgentRunEventType.RUN_RESUMED));
     }
@@ -273,6 +351,17 @@ class AgentRuntimeTest {
                 return result;
             }
         };
+    }
+
+    private static void appendPlanLedger(InMemoryRunStore store, AgentRunContext context,
+                                         PlanResumeState state) {
+        store.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED,
+                java.util.Map.of("input", context.input())));
+        store.append(AgentRunEvent.of(context, AgentRunEventType.PLAN_DEFINED, java.util.Map.of(
+                "planVersion", Integer.toString(state.planVersion()),
+                "reason", "INITIAL",
+                "planJson", new PlanCheckpointCodec().encode(state))));
+        store.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
     }
 
     private static void assertEventTypes(List<AgentRunEvent> events, AgentRunEventType... expected) {

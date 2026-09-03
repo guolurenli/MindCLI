@@ -13,18 +13,22 @@ import com.mindcli.agent.PlanExecuteAgent;
 import java.util.Objects;
 
 public final class PlanModeAdapter implements ModeAdapter {
+    private final PlanExecuteAgent agent;
     private final ContextualLegacyAgentRunner runner;
 
     public PlanModeAdapter(PlanExecuteAgent agent) {
-        this((ContextualLegacyAgentRunner) Objects.requireNonNull(agent, "agent")::run);
+        this.agent = Objects.requireNonNull(agent, "agent");
+        this.runner = agent::run;
     }
 
     PlanModeAdapter(LegacyAgentRunner runner) {
         Objects.requireNonNull(runner, "runner");
+        this.agent = null;
         this.runner = (context, runStore) -> runner.run(context.input());
     }
 
     PlanModeAdapter(ContextualLegacyAgentRunner runner) {
+        this.agent = null;
         this.runner = Objects.requireNonNull(runner, "runner");
     }
 
@@ -42,6 +46,18 @@ public final class PlanModeAdapter implements ModeAdapter {
     public AgentRunResult execute(AgentRunContext context, RunStore runStore) {
         try {
             return resultFromContent(context, runner.run(context, runStore));
+        } catch (Exception e) {
+            return AgentRunResult.failed(context, errorMessage(e));
+        }
+    }
+
+    public AgentRunResult executeRecovered(AgentRunContext context, RunStore runStore,
+                                           PlanResumeState state) {
+        if (agent == null) {
+            return AgentRunResult.failed(context, "Plan adapter 不支持 checkpoint 恢复");
+        }
+        try {
+            return resultFromContent(context, agent.runRecovered(context, runStore, state));
         } catch (Exception e) {
             return AgentRunResult.failed(context, errorMessage(e));
         }

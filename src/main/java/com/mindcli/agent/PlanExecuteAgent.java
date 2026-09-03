@@ -19,6 +19,9 @@ import com.mindcli.runtime.run.AgentMode;
 import com.mindcli.runtime.run.AgentRunContext;
 import com.mindcli.runtime.run.AgentRunEventType;
 import com.mindcli.runtime.run.AgentRunStatus;
+import com.mindcli.runtime.run.recovery.PlanCheckpointCodec;
+import com.mindcli.runtime.run.recovery.PlanResumeState;
+import com.mindcli.runtime.run.recovery.PlanTaskResumeState;
 import com.mindcli.runtime.run.loop.AgentTurnContext;
 import com.mindcli.runtime.run.loop.AgentTurnKernel;
 import com.mindcli.runtime.run.loop.AgentTurnResult;
@@ -130,6 +133,7 @@ public class PlanExecuteAgent {
     private Supplier<String> externalContextSupplier = () -> "";
     private SkillRegistry skillRegistry;
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
+    private final PlanCheckpointCodec planCheckpointCodec = new PlanCheckpointCodec();
 
     public PlanExecuteAgent(LlmClient llmClient) {
         this(llmClient, (goal, plan) -> PlanReviewDecision.execute());
@@ -293,17 +297,29 @@ public class PlanExecuteAgent {
                 AgentMode.PLAN,
                 userInput,
                 toolRegistry.getProjectPath());
-        return runInternal(runContext, runStore, true);
+        return runInternal(runContext, runStore, true, null);
     }
 
     public String run(AgentRunContext runContext, RunStore runStore) {
         AgentRunContext effectiveContext = runContext == null
                 ? AgentRunContext.create(AgentMode.PLAN, "", toolRegistry.getProjectPath())
                 : runContext;
-        return runInternal(effectiveContext, runStore == null ? this.runStore : runStore, false);
+        return runInternal(effectiveContext, runStore == null ? this.runStore : runStore, false, null);
     }
 
-    private String runInternal(AgentRunContext runContext, RunStore activeStore, boolean appendLifecycleStart) {
+    public String runRecovered(AgentRunContext runContext, RunStore runStore, PlanResumeState state) {
+        Objects.requireNonNull(state, "state");
+        if (!state.available()) {
+            throw new IllegalArgumentException(state.reason());
+        }
+        AgentRunContext effectiveContext = runContext == null
+                ? AgentRunContext.create(AgentMode.PLAN, state.goal(), toolRegistry.getProjectPath())
+                : runContext;
+        return runInternal(effectiveContext, runStore == null ? this.runStore : runStore, false, state);
+    }
+
+    private String runInternal(AgentRunContext runContext, RunStore activeStore,
+                               boolean appendLifecycleStart, PlanResumeState recoveredState) {
         String userInput = runContext.input();
         log.info("Plan run started: inputLength={}", userInput == null ? 0 : userInput.length());
         RunStore previousStore = activeRunStore;
@@ -326,7 +342,10 @@ public class PlanExecuteAgent {
                     appendTerminalEvent(runContext, result);
                     return result;
                 }
-                PlanRunOutcome outcome = runWithPlan(userInput, streamState);
+                PlanRunOutcome outcome = recoveredState == null
+                        ? runWithPlan(userInput, streamState)
+                        : PlanRunOutcome.executed(executePlan(
+                                toExecutionPlan(recoveredState), streamState, recoveredState.planVersion()));
                 appendTerminalEvent(runContext, outcome.result());
                 if (streamState.hasStreamedOutput() && (outcome.result() == null || outcome.result().isBlank())) {
                     return "";
@@ -359,7 +378,8 @@ public class PlanExecuteAgent {
         while (true) {
             PlanReviewDecision decision = reviewHandler.review(plan.getGoal(), plan);
             if (decision == null || decision.action() == PlanReviewAction.EXECUTE) {
-                return PlanRunOutcome.executed(executePlan(plan, streamState));
+                appendPlanDefinition(plan, 1, "INITIAL");
+                return PlanRunOutcome.executed(executePlan(plan, streamState, 1));
             }
 
             if (decision.action() == PlanReviewAction.CANCEL) {
@@ -368,7 +388,8 @@ public class PlanExecuteAgent {
 
             String feedback = decision.feedback() == null ? "" : decision.feedback().trim();
             if (feedback.isEmpty()) {
-                return PlanRunOutcome.executed(executePlan(plan, streamState));
+                appendPlanDefinition(plan, 1, "INITIAL");
+                return PlanRunOutcome.executed(executePlan(plan, streamState, 1));
             }
 
             out.println("📝 已收到补充要求，正在重新规划...\n");
@@ -376,12 +397,13 @@ public class PlanExecuteAgent {
         }
     }
 
-    private String executePlan(ExecutionPlan plan, StreamState streamState) throws IOException {
+    private String executePlan(ExecutionPlan plan, StreamState streamState, int initialPlanVersion) throws IOException {
         log.info("Executing plan: goal='{}', taskCount={}", plan.getGoal(), plan.getAllTasks().size());
         memoryManager.resetSurfaced();
         out.println("🚀 开始执行计划...\n");
 
         plan.markStarted();
+        int planVersion = initialPlanVersion;
         StringBuilder finalResult = new StringBuilder();
         Map<String, Boolean> streamedTaskOutputs = new HashMap<>();
 
@@ -395,12 +417,14 @@ public class PlanExecuteAgent {
                 break;
             }
             //批量执行这一批就绪任务（单任务串行 / 多任务最多4并发）
-            List<TaskExecutionResult> batchResults = executeTaskBatch(plan, executableTasks, streamState);
+            List<TaskExecutionResult> batchResults = executeTaskBatch(
+                    plan, executableTasks, streamState, planVersion);
             for (TaskExecutionResult batchResult : batchResults) {
                 Task task = batchResult.task();
 
                 if (!batchResult.failed()) {
                     task.markCompleted(batchResult.result());
+                    appendTaskCheckpoint(task, planVersion);
                     streamedTaskOutputs.put(task.getId(), batchResult.streamedOutput());
                     log.info("Task completed: {} status={} resultChars={}",
                             task.getId(), task.getStatus(), batchResult.result() == null ? 0 : batchResult.result().length());
@@ -421,6 +445,7 @@ public class PlanExecuteAgent {
                 if (task.shouldRetry(error)) {
                     task.incrementRetry();
                     task.resetToPending();
+                    appendTaskCheckpoint(task, planVersion);
                     long delayMs = (1L << (task.getRetryCount() - 1)) * 1000;
                     out.println("🔁 重试 [" + task.getId() + "] ("
                             + task.getRetryCount() + "/" + task.getMaxRetries()
@@ -443,6 +468,7 @@ public class PlanExecuteAgent {
                 // 第二级：显式允许跳过，且任务本身非关键 → 跳过，下游降级执行
                 if ("SKIP".equals(degradation) && !task.isCritical()) {
                     task.markSkipped();
+                    appendTaskCheckpoint(task, planVersion);
                     log.warn("Task {} skipped by degradation policy", task.getId());
                     out.println("⏭️ 跳过 [" + task.getId() + "]（degradation=SKIP），下游将降级执行\n");
                     continue;
@@ -450,6 +476,7 @@ public class PlanExecuteAgent {
 
                 if ("BLOCK".equals(degradation)) {
                     task.markFailed(error.getMessage());
+                    appendTaskCheckpoint(task, planVersion);
                     log.warn("Task {} failed and blocked by degradation policy", task.getId());
                     out.println("⛔ 阻断 [" + task.getId() + "]（degradation=BLOCK）\n");
                     continue;
@@ -458,13 +485,17 @@ public class PlanExecuteAgent {
                 // 第三级：默认或安全回退 → 局部重规划子树
                 out.println("🔄 任务 [" + task.getId() + "] 失败，局部重规划子树...\n");
                 task.markFailed(error.getMessage());
+                appendTaskCheckpoint(task, planVersion);
                 try {
                     ExecutionPlan partialPlan = planner.replanSubtree(plan, task, error.getMessage());
                     plan.mergeSubtree(partialPlan);
+                    planVersion++;
+                    appendPlanDefinition(plan, planVersion, "REPLAN");
                     log.info("Subtree replan merged for failed task {}", task.getId());
                 } catch (IOException e) {
                     log.error("Subtree replan failed for task {}", task.getId(), e);
                     task.markFailed("局部重规划失败: " + e.getMessage());
+                    appendTaskCheckpoint(task, planVersion);
                 }
             }
         }
@@ -511,12 +542,13 @@ public class PlanExecuteAgent {
     }
 
     private List<TaskExecutionResult> executeTaskBatch(ExecutionPlan plan, List<Task> executableTasks,
-                                                       StreamState streamState) {
+                                                       StreamState streamState, int planVersion) {
         if (executableTasks.size() == 1) {
             Task task = executableTasks.get(0);
             log.info("Executing single task: {} type={}", task.getId(), task.getType());
             out.println("▶️ 执行任务 [" + task.getId() + "]: " + task.getDescription());
             task.markStarted();
+            appendTaskCheckpoint(task, planVersion);
 
             try {
                 return List.of(TaskExecutionResult.success(task, executeTask(plan.getGoal(), plan, task, streamState, out)));
@@ -542,6 +574,7 @@ public class PlanExecuteAgent {
             for (Task task : executableTasks) {
                 out.println("▶️ 并行任务 [" + task.getId() + "]: " + task.getDescription());
                 task.markStarted();
+                appendTaskCheckpoint(task, planVersion);
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
                 buffers.put(task.getId(), baos);
                 PrintStream taskOut = new PrintStream(baos, true, StandardCharsets.UTF_8);
@@ -596,6 +629,95 @@ public class PlanExecuteAgent {
             return;
         }
         activeRunStore.append(com.mindcli.runtime.run.AgentRunEvent.of(context, type, attributes));
+    }
+
+    private void appendPlanDefinition(ExecutionPlan plan, int planVersion, String reason) {
+        PlanResumeState state = toResumeState(plan, planVersion);
+        try {
+            appendRunEvent(activeRunContext, AgentRunEventType.PLAN_DEFINED, Map.of(
+                    "planVersion", Integer.toString(planVersion),
+                    "reason", reason,
+                    "planJson", planCheckpointCodec.encode(state)));
+        } catch (IllegalArgumentException e) {
+            log.warn("Plan definition is not checkpointable: {}", e.getMessage());
+        }
+    }
+
+    private void appendTaskCheckpoint(Task task, int planVersion) {
+        Map<String, String> attributes = new LinkedHashMap<>();
+        attributes.put("planVersion", Integer.toString(planVersion));
+        attributes.put("taskId", task.getId());
+        attributes.put("taskStatus", task.getStatus().name());
+        attributes.put("result", Objects.toString(task.getResult(), ""));
+        attributes.put("error", Objects.toString(task.getError(), ""));
+        attributes.put("retryCount", Integer.toString(task.getRetryCount()));
+        appendRunEvent(activeRunContext, AgentRunEventType.PLAN_TASK_CHECKPOINT, attributes);
+    }
+
+    private static PlanResumeState toResumeState(ExecutionPlan plan, int planVersion) {
+        List<PlanTaskResumeState> tasks = plan.getAllTasks().stream()
+                .map(task -> new PlanTaskResumeState(
+                        task.getId(),
+                        task.getDescription(),
+                        task.getType().name(),
+                        task.getDependencies(),
+                        task.isCritical(),
+                        task.getMaxRetries(),
+                        task.getDegradation(),
+                        task.getExpectedEvidence(),
+                        task.getRequiredTools(),
+                        task.getPreferredAgent(),
+                        task.getRiskLevel(),
+                        task.getStatus().name(),
+                        task.getResult(),
+                        task.getError(),
+                        task.getRetryCount()))
+                .toList();
+        return new PlanResumeState(
+                true,
+                planVersion,
+                plan.getId(),
+                plan.getGoal(),
+                Objects.toString(plan.getSummary(), ""),
+                tasks,
+                "");
+    }
+
+    private static ExecutionPlan toExecutionPlan(PlanResumeState state) {
+        ExecutionPlan plan = new ExecutionPlan(state.planId(), state.goal());
+        plan.setSummary(state.summary());
+        for (PlanTaskResumeState saved : state.tasks()) {
+            Task task = new Task(
+                    saved.id(),
+                    saved.description(),
+                    Task.TaskType.valueOf(saved.type()),
+                    saved.dependencies());
+            task.setCritical(saved.critical());
+            task.setMaxRetries(saved.maxRetries());
+            task.setDegradation(saved.degradation());
+            task.setExpectedEvidence(saved.expectedEvidence());
+            task.setRequiredTools(saved.requiredTools());
+            task.setPreferredAgent(saved.preferredAgent());
+            task.setRiskLevel(saved.riskLevel());
+            task.setStatus(Task.TaskStatus.valueOf(saved.status()));
+            task.setResult(saved.result());
+            task.setError(saved.error());
+            for (int i = 0; i < saved.retryCount(); i++) task.incrementRetry();
+            plan.addTask(task);
+        }
+        for (Task task : plan.getAllTasks()) {
+            for (String dependencyId : task.getDependencies()) {
+                Task dependency = plan.getTask(dependencyId);
+                if (dependency == null) {
+                    throw new IllegalArgumentException("恢复的 Plan 缺少依赖: " + dependencyId);
+                }
+                dependency.addDependent(task.getId());
+            }
+        }
+        if (!plan.computeExecutionOrder()) {
+            throw new IllegalArgumentException("恢复的 Plan DAG 非法");
+        }
+        return plan;
     }
 
     private void appendTerminalEvent(AgentRunContext context, String result) {
