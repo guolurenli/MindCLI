@@ -16,6 +16,8 @@ import com.mindcli.runtime.run.recovery.ReActResumeState;
 import com.mindcli.runtime.run.mode.ReActModeAdapter;
 import com.mindcli.runtime.run.mode.PlanModeAdapter;
 import com.mindcli.runtime.run.recovery.PlanResumeState;
+import com.mindcli.runtime.run.mode.TeamModeAdapter;
+import com.mindcli.runtime.run.recovery.TeamResumeState;
 
 public final class AgentRuntime {
     private final RunStore runStore;
@@ -96,6 +98,7 @@ public final class AgentRuntime {
         }
         ReActResumeState recoveredState = null;
         PlanResumeState recoveredPlanState = null;
+        TeamResumeState recoveredTeamState = null;
         if (adapter instanceof ReActModeAdapter) {
             recoveredState = new RunRecoveryService(runStore).reconstructReActState(runId);
             if (!recoveredState.available()) {
@@ -105,6 +108,11 @@ public final class AgentRuntime {
             recoveredPlanState = new RunRecoveryService(runStore).reconstructPlanState(runId);
             if (!recoveredPlanState.available()) {
                 return AgentRunResult.failed(context, "Plan 恢复上下文不可用: " + recoveredPlanState.reason());
+            }
+        } else if (adapter instanceof TeamModeAdapter) {
+            recoveredTeamState = new RunRecoveryService(runStore).reconstructTeamState(runId);
+            if (!recoveredTeamState.available()) {
+                return AgentRunResult.failed(context, "Team 恢复上下文不可用: " + recoveredTeamState.reason());
             }
         }
         append(context, AgentRunEventType.RUN_RESUMED, Map.of(
@@ -117,6 +125,8 @@ public final class AgentRuntime {
                 result = reactAdapter.executeRecovered(context, runStore, recoveredState.messages());
             } else if (adapter instanceof PlanModeAdapter planAdapter) {
                 result = planAdapter.executeRecovered(context, runStore, recoveredPlanState);
+            } else if (adapter instanceof TeamModeAdapter teamAdapter) {
+                result = teamAdapter.executeRecovered(context, runStore, recoveredTeamState);
             } else {
                 result = adapter.execute(context, runStore);
             }

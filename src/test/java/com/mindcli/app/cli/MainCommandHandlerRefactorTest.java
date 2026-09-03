@@ -104,6 +104,8 @@ class MainCommandHandlerRefactorTest {
         assertTrue(output.contains("Status: RESUMABLE"), output);
         assertTrue(output.contains("Last completed: LLM_RESPONSE"), output);
         assertTrue(output.contains("Pre-run snapshot: commit-pre"), output);
+        assertTrue(output.contains("Recovery risk:"), output);
+        assertTrue(output.contains("Recovery reason:"), output);
     }
 
     @Test

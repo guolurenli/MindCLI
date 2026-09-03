@@ -13,18 +13,22 @@ import com.mindcli.agent.team.AgentOrchestrator;
 import java.util.Objects;
 
 public final class TeamModeAdapter implements ModeAdapter {
+    private final AgentOrchestrator orchestrator;
     private final ContextualLegacyAgentRunner runner;
 
     public TeamModeAdapter(AgentOrchestrator orchestrator) {
-        this((ContextualLegacyAgentRunner) Objects.requireNonNull(orchestrator, "orchestrator")::run);
+        this.orchestrator = Objects.requireNonNull(orchestrator, "orchestrator");
+        this.runner = orchestrator::run;
     }
 
     TeamModeAdapter(LegacyAgentRunner runner) {
         Objects.requireNonNull(runner, "runner");
+        this.orchestrator = null;
         this.runner = (context, runStore) -> runner.run(context.input());
     }
 
     TeamModeAdapter(ContextualLegacyAgentRunner runner) {
+        this.orchestrator = null;
         this.runner = Objects.requireNonNull(runner, "runner");
     }
 
@@ -42,6 +46,18 @@ public final class TeamModeAdapter implements ModeAdapter {
     public AgentRunResult execute(AgentRunContext context, RunStore runStore) {
         try {
             return resultFromContent(context, runner.run(context, runStore));
+        } catch (Exception e) {
+            return AgentRunResult.failed(context, errorMessage(e));
+        }
+    }
+
+    public AgentRunResult executeRecovered(AgentRunContext context, RunStore runStore,
+                                           TeamResumeState state) {
+        if (orchestrator == null) {
+            return AgentRunResult.failed(context, "Team adapter 不支持 checkpoint 恢复");
+        }
+        try {
+            return resultFromContent(context, orchestrator.runRecovered(context, runStore, state));
         } catch (Exception e) {
             return AgentRunResult.failed(context, errorMessage(e));
         }

@@ -10,7 +10,10 @@ import com.mindcli.runtime.run.session.*;
 import com.mindcli.runtime.run.store.*;
 
 import com.mindcli.agent.Agent;
+import com.mindcli.agent.team.AgentOrchestrator;
 import com.mindcli.agent.PlanExecuteAgent;
+import com.mindcli.capability.memory.LongTermMemory;
+import com.mindcli.capability.memory.MemoryManager;
 import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.platform.snapshot.SnapshotService;
 import com.mindcli.capability.tool.ToolRegistry;
@@ -339,6 +342,48 @@ class AgentRuntimeTest {
                 AgentRunEventType.RUN_FAILED);
     }
 
+    @Test
+    void resumesTeamThroughRecoveredAdapterWithoutDuplicateResumeMarker() {
+        InMemoryRunStore store = new InMemoryRunStore();
+        AgentRunContext context = AgentRunContext.create(AgentMode.TEAM, "resume team", tempDir.toString());
+        TeamResumeState state = new TeamResumeState(true, 1, 1, List.of(
+                new TeamStepResumeState("step_1", "done", "ANALYSIS", List.of(), List.of(),
+                        "", "low", "COMPLETED", "", 0, "result", "", List.of())), "");
+        appendTeamLedger(store, context, state, "COMPLETED", "", "");
+        ToolRegistry registry = new ToolRegistry();
+        registry.setProjectPath(tempDir.toString());
+        LlmClient llm = new ScriptedClient(List.of());
+        MemoryManager memory = new MemoryManager(llm, llm.maxContextWindow(),
+                new LongTermMemory(tempDir.resolve("memory").toFile()));
+        TeamModeAdapter adapter = new TeamModeAdapter(new AgentOrchestrator(
+                llm, registry, memory,
+                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8), store));
+
+        AgentRunResult result = new AgentRuntime(store).resume(context.runId(), adapter);
+
+        assertEquals(AgentRunStatus.SUCCESS, result.status());
+        assertEquals(1, store.events(context.runId()).stream()
+                .filter(event -> event.type() == AgentRunEventType.RUN_RESUMED).count());
+    }
+
+    @Test
+    void doesNotAppendRunResumedWhenTeamStateIsUnsafe() {
+        InMemoryRunStore store = new InMemoryRunStore();
+        AgentRunContext context = AgentRunContext.create(AgentMode.TEAM, "resume team", tempDir.toString());
+        TeamResumeState state = new TeamResumeState(true, 1, 1, List.of(
+                new TeamStepResumeState("step_1", "write", "FILE_WRITE", List.of(),
+                        List.of("write_file"), "worker", "high", "PENDING", "", 0, "", "", List.of())), "");
+        appendTeamLedger(store, context, state, "RUNNING", "AWAITING_MERGE", "");
+        TeamModeAdapter adapter = new TeamModeAdapter(
+                (ContextualLegacyAgentRunner) (runContext, runStore) -> "unused");
+
+        AgentRunResult result = new AgentRuntime(store).resume(context.runId(), adapter);
+
+        assertEquals(AgentRunStatus.FAILED, result.status());
+        assertTrue(store.events(context.runId()).stream()
+                .noneMatch(event -> event.type() == AgentRunEventType.RUN_RESUMED));
+    }
+
     private static ModeAdapter adapterReturning(AgentMode mode, AgentRunResult result) {
         return new ModeAdapter() {
             @Override
@@ -361,6 +406,22 @@ class AgentRuntimeTest {
                 "planVersion", Integer.toString(state.planVersion()),
                 "reason", "INITIAL",
                 "planJson", new PlanCheckpointCodec().encode(state))));
+        store.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+    }
+
+    private static void appendTeamLedger(InMemoryRunStore store, AgentRunContext context,
+                                         TeamResumeState state, String status,
+                                         String phase, String childRunId) {
+        TeamCheckpointCodec codec = new TeamCheckpointCodec();
+        store.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED,
+                java.util.Map.of("input", context.input())));
+        store.append(AgentRunEvent.of(context, AgentRunEventType.TEAM_PLAN_DEFINED, java.util.Map.of(
+                "schemaVersion", "1", "planVersion", "1", "planJson", codec.encodePlan(state))));
+        store.append(AgentRunEvent.of(context, AgentRunEventType.TEAM_STEP_CHECKPOINT, java.util.Map.of(
+                "schemaVersion", "1", "planVersion", "1",
+                "stepIdsJson", codec.encodeStepIds(List.of("step_1")),
+                "stepStatus", status, "phase", phase, "attempt", "0",
+                "childRunId", childRunId, "result", "result", "error", "")));
         store.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
     }
 

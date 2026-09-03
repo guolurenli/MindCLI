@@ -39,6 +39,8 @@ public final class RunCommandHandler {
         out.println("   Last completed: " + (plan.lastCompletedEventType() == null ? "" : plan.lastCompletedEventType().name()));
         out.println("   Pre-run snapshot: " + blankToNone(plan.preRunSnapshotCommitId()));
         out.println("   Post-run snapshot: " + blankToNone(plan.postRunSnapshotCommitId()));
+        out.println("   Recovery risk: " + plan.resumePlan().risk());
+        out.println("   Recovery reason: " + plan.resumePlan().reason());
         printToolDiagnostics(out, plan);
         out.println("   Hint: " + plan.restoreHint());
         out.println();
