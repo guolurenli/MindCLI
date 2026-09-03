@@ -57,6 +57,11 @@ public final class RunStateProjector {
                     lastCompletedEventType = event.type();
                     lastCompletedAttributes = event.attributes();
                 }
+                case TEAM_PLAN_DEFINED, TEAM_STEP_CHECKPOINT -> {
+                    resumable = true;
+                    lastCompletedEventType = event.type();
+                    lastCompletedAttributes = event.attributes();
+                }
                 default -> {
                 }
             }

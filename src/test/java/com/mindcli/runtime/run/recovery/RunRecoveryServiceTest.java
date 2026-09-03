@@ -20,6 +20,55 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RunRecoveryServiceTest {
 
     @Test
+    void teamExecutingReadOnlyChildReturnsToPending() {
+        TeamFixture fixture = teamFixture("RUNNING", "EXECUTING", "child-read");
+        appendCompleteChildToolTurn(fixture.store(), fixture.child("child-read"),
+                "call-1", "read_file", "{\"path\":\"a.txt\"}");
+        fixture.cancelParent();
+
+        TeamResumeState state = new RunRecoveryService(fixture.store())
+                .reconstructTeamState(fixture.parent().runId());
+
+        assertTrue(state.available(), state.reason());
+        assertEquals("PENDING", state.steps().get(0).status());
+        assertEquals("", state.steps().get(0).phase());
+    }
+
+    @Test
+    void teamExecutingWriteWithoutTerminalCheckpointFailsClosed() {
+        TeamFixture fixture = teamFixture("RUNNING", "EXECUTING", "child-write");
+        appendCompleteChildToolTurn(fixture.store(), fixture.child("child-write"),
+                "call-1", "write_file", "{\"path\":\"a.txt\",\"content\":\"x\"}");
+        fixture.cancelParent();
+
+        RunRecoveryPlan plan = new RunRecoveryService(fixture.store())
+                .inspect(fixture.parent().runId());
+
+        assertTrue(!plan.resumeAvailable());
+        assertEquals("UNKNOWN", plan.resumePlan().risk());
+        assertTrue(plan.resumePlan().reason().contains("step_1"));
+    }
+
+    @Test
+    void teamReviewingAndAwaitingMergeAlwaysFailClosed() {
+        assertTrue(!inspectTeamAtPhase("REVIEWING").resumeAvailable());
+        assertTrue(!inspectTeamAtPhase("AWAITING_MERGE").resumeAvailable());
+    }
+
+    @Test
+    void completedWriteStepRequiresConfirmation() {
+        TeamFixture fixture = teamFixture("COMPLETED", "", "child-completed-write", List.of("write_file"));
+        fixture.cancelParent();
+
+        RunRecoveryPlan plan = new RunRecoveryService(fixture.store())
+                .inspect(fixture.parent().runId());
+
+        assertTrue(plan.resumeAvailable(), plan.resumePlan().reason());
+        assertEquals("HIGH", plan.resumePlan().risk());
+        assertTrue(plan.resumePlan().requiresConfirmation());
+    }
+
+    @Test
     void reconstructsLatestPlanVersionAndRetriesSafeRunningTaskAsPending() {
         InMemoryRunStore runStore = new InMemoryRunStore();
         AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "goal", "workspace");
@@ -289,6 +338,69 @@ class RunRecoveryServiceTest {
         runStore.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_OUTCOME, java.util.Map.of(
                 "toolId", callId, "toolName", "read_file", "argumentsJson", "{}",
                 "text", text, "status", "COMPLETED")));
+    }
+
+    private record TeamFixture(InMemoryRunStore store, AgentRunContext parent, String childId) {
+        AgentRunContext child(String id) {
+            return new AgentRunContext(id, AgentMode.TEAM, parent.input(), parent.workspace(),
+                    parent.startedAt(), Map.of("parentRunId", parent.runId(), "stepId", "step_1"));
+        }
+
+        void cancelParent() {
+            store.append(AgentRunEvent.of(parent, AgentRunEventType.RUN_CANCELLED));
+        }
+    }
+
+    private static TeamFixture teamFixture(String status, String phase, String childId) {
+        return teamFixture(status, phase, childId, List.of());
+    }
+
+    private static TeamFixture teamFixture(String status, String phase, String childId,
+                                            List<String> requiredTools) {
+        InMemoryRunStore store = new InMemoryRunStore();
+        AgentRunContext parent = new AgentRunContext("team-parent-" + childId, AgentMode.TEAM,
+                "goal", "workspace", java.time.Instant.now(), Map.of());
+        store.append(AgentRunEvent.of(parent, AgentRunEventType.RUN_STARTED,
+                Map.of("input", "goal")));
+        TeamResumeState initial = new TeamResumeState(true, 1, 1, List.of(
+                new TeamStepResumeState("step_1", "step", "ANALYSIS", List.of(), requiredTools,
+                        "", "low", "PENDING", "", 0, "", "", List.of())) , "");
+        TeamCheckpointCodec codec = new TeamCheckpointCodec();
+        store.append(AgentRunEvent.of(parent, AgentRunEventType.TEAM_PLAN_DEFINED, Map.of(
+                "schemaVersion", "1", "planVersion", "1", "planJson", codec.encodePlan(initial))));
+        store.append(AgentRunEvent.of(parent, AgentRunEventType.TEAM_STEP_CHECKPOINT, Map.of(
+                "schemaVersion", "1", "planVersion", "1",
+                "stepIdsJson", codec.encodeStepIds(List.of("step_1")),
+                "stepStatus", status, "phase", phase, "attempt", "0",
+                "childRunId", childId, "result", "", "error", "")));
+        return new TeamFixture(store, parent, childId);
+    }
+
+    private static void appendCompleteChildToolTurn(InMemoryRunStore store, AgentRunContext child,
+                                                     String id, String name, String arguments) {
+        String calls = "[{\"id\":\"" + id + "\",\"function\":{\"name\":\""
+                + name + "\",\"arguments\":"
+                + com.mindcli.platform.serialization.JsonSupport.mapper().valueToTree(arguments)
+                + "}}]";
+        store.append(AgentRunEvent.of(child, AgentRunEventType.RUN_STARTED,
+                Map.of("phase", "execute")));
+        store.append(AgentRunEvent.of(child, AgentRunEventType.LLM_RESPONSE, Map.of(
+                "recordKind", "turn", "iteration", "1", "toolCallCount", "1",
+                "toolCallsJson", calls)));
+        store.append(AgentRunEvent.of(child, AgentRunEventType.TOOL_CALL_REQUESTED, Map.of(
+                "recordKind", "turn", "iteration", "1", "toolCallCount", "1",
+                "toolNames", name)));
+        store.append(AgentRunEvent.of(child, AgentRunEventType.TOOL_OUTCOME, Map.of(
+                "toolId", id, "toolName", name, "argumentsJson", arguments,
+                "status", "COMPLETED")));
+        store.append(AgentRunEvent.of(child, AgentRunEventType.RUN_FINISHED,
+                Map.of("phase", "execute", "status", "SUCCESS")));
+    }
+
+    private static RunRecoveryPlan inspectTeamAtPhase(String phase) {
+        TeamFixture fixture = teamFixture("RUNNING", phase, "child-" + phase.toLowerCase());
+        fixture.cancelParent();
+        return new RunRecoveryService(fixture.store()).inspect(fixture.parent().runId());
     }
 
     private static PlanResumeState planState(int version, String summary, String status) {

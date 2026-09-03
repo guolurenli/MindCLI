@@ -57,6 +57,19 @@ public final class RunRecoveryService {
                 resumePlan = classifyPlan(events);
             }
         }
+        if (resumeAvailable && mode == AgentMode.TEAM) {
+            TeamRecoveryProjection team = projectTeam(runId);
+            if (!team.state().available()) {
+                resumeAvailable = false;
+                resumePlan = new RunResumePlan(false, true, "UNKNOWN", team.reason(), team.toolNames());
+            } else if (team.completedSideEffect()) {
+                resumePlan = new RunResumePlan(false, true, "HIGH",
+                        "已完成 Team step 包含可能产生副作用的工具调用", team.toolNames());
+            } else {
+                resumePlan = new RunResumePlan(true, false, "LOW",
+                        "Team checkpoint 完整，仅继续安全的未完成步骤", team.toolNames());
+            }
+        }
         if (resumeAvailable && mode == AgentMode.REACT && hasEvent(events, AgentRunEventType.LLM_RESPONSE)) {
             ReActResumeState reactState = reconstructReActState(runId);
             if (!reactState.available()) {
@@ -238,6 +251,303 @@ public final class RunRecoveryService {
                 decoded.summary(),
                 restored,
                 "");
+    }
+
+    public TeamResumeState reconstructTeamState(String runId) {
+        return projectTeam(runId).state();
+    }
+
+    private TeamRecoveryProjection projectTeam(String runId) {
+        List<AgentRunEvent> events = runStore.events(runId);
+        int definitionIndex = lastIndexOf(events, AgentRunEventType.TEAM_PLAN_DEFINED);
+        if (definitionIndex < 0) {
+            return TeamRecoveryProjection.unavailable("旧 Team run 缺少精确恢复 checkpoint");
+        }
+        AgentRunEvent definition = events.get(definitionIndex);
+        Integer schemaVersion = parsePositiveInt(definition.attributes().get("schemaVersion"));
+        Integer planVersion = parsePositiveInt(definition.attributes().get("planVersion"));
+        TeamResumeState decoded = new TeamCheckpointCodec().decodePlan(
+                definition.attributes().get("planJson"));
+        if (schemaVersion == null || planVersion == null
+                || schemaVersion != decoded.schemaVersion() || planVersion != decoded.planVersion()) {
+            return TeamRecoveryProjection.unavailable("Team checkpoint 版本非法或不一致");
+        }
+        if (!decoded.available()) {
+            return TeamRecoveryProjection.unavailable(decoded.reason());
+        }
+
+        Map<String, TeamStepResumeState> steps = new LinkedHashMap<>();
+        for (TeamStepResumeState step : decoded.steps()) {
+            steps.put(step.id(), step);
+        }
+        for (int i = definitionIndex + 1; i < events.size(); i++) {
+            AgentRunEvent event = events.get(i);
+            if (event == null || event.type() != AgentRunEventType.TEAM_STEP_CHECKPOINT) {
+                continue;
+            }
+            TeamResumeState error = applyTeamCheckpoint(event, planVersion, steps);
+            if (error != null) {
+                return TeamRecoveryProjection.unavailable(error.reason());
+            }
+        }
+
+        LinkedHashSet<String> toolNames = new LinkedHashSet<>();
+        boolean completedSideEffect = false;
+        List<TeamStepResumeState> restored = new ArrayList<>();
+        for (TeamStepResumeState step : steps.values()) {
+            toolNames.addAll(step.requiredTools());
+            ChildEvidence evidence = inspectChildren(step, toolNames);
+            if (!evidence.available()) {
+                return new TeamRecoveryProjection(
+                        TeamResumeState.unavailable(evidence.reason()), List.copyOf(toolNames),
+                        false, evidence.reason());
+            }
+            if (isTerminalTeamStep(step.status())) {
+                completedSideEffect |= evidence.completedSideEffect()
+                        || step.requiredTools().stream().anyMatch(RunRecoveryService::isTeamSideEffectTool);
+                restored.add(step);
+                continue;
+            }
+            if ("REVIEWING".equals(step.phase()) || "AWAITING_MERGE".equals(step.phase())) {
+                return TeamRecoveryProjection.unavailable(
+                        "Team step " + step.id() + " 处于 " + step.phase() + "，无法判断副作用");
+            }
+            if (!"EXECUTING".equals(step.phase()) && "RUNNING".equals(step.status())) {
+                return TeamRecoveryProjection.unavailable(
+                        "Team step " + step.id() + " 的运行阶段缺失");
+            }
+            if (evidence.completedSideEffect()) {
+                return TeamRecoveryProjection.unavailable(
+                        "Team step " + step.id() + " 在终态 checkpoint 前已产生成功副作用: "
+                                + String.join(",", evidence.toolNames()));
+            }
+            restored.add(withTeamCheckpoint(step, "PENDING", "", step.result(), step.error(), step.attempt(),
+                    step.childRunIds()));
+        }
+        TeamResumeState state = new TeamResumeState(true, decoded.schemaVersion(), decoded.planVersion(), restored, "");
+        return new TeamRecoveryProjection(state, List.copyOf(toolNames), completedSideEffect, "");
+    }
+
+    private TeamResumeState applyTeamCheckpoint(AgentRunEvent event, int planVersion,
+                                                 Map<String, TeamStepResumeState> steps) {
+        Map<String, String> attributes = event.attributes();
+        Integer schemaVersion = parsePositiveInt(attributes.get("schemaVersion"));
+        Integer checkpointVersion = parsePositiveInt(attributes.get("planVersion"));
+        if (schemaVersion == null || checkpointVersion == null || checkpointVersion != planVersion) {
+            return TeamResumeState.unavailable("Team step checkpoint 版本不一致");
+        }
+        List<String> ids;
+        try {
+            ids = new TeamCheckpointCodec().decodeStepIds(attributes.get("stepIdsJson"));
+        } catch (IllegalArgumentException e) {
+            return TeamResumeState.unavailable("Team step checkpoint 的 stepIdsJson 非法");
+        }
+        String status = attributes.getOrDefault("stepStatus", "").trim().toUpperCase();
+        String phase = attributes.getOrDefault("phase", "").trim().toUpperCase();
+        Integer attempt = parseNonNegativeInt(attributes.get("attempt"));
+        if (!PLAN_TASK_STATUSES.contains(status) || attempt == null
+                || !attributes.containsKey("result") || !attributes.containsKey("error")) {
+            return TeamResumeState.unavailable("Team step checkpoint 字段非法");
+        }
+        if (!Set.of("", "EXECUTING", "REVIEWING", "AWAITING_MERGE").contains(phase)) {
+            return TeamResumeState.unavailable("Team step checkpoint phase 非法");
+        }
+        String childRunId = attributes.getOrDefault("childRunId", "").trim();
+        if (!childRunId.isEmpty() && !safeRunId(childRunId)) {
+            return TeamResumeState.unavailable("Team checkpoint childRunId 不安全: " + childRunId);
+        }
+        for (String id : ids) {
+            TeamStepResumeState previous = steps.get(id);
+            if (previous == null) {
+                return TeamResumeState.unavailable("Team step checkpoint 引用了未知步骤: " + id);
+            }
+            if (!fingerprintMatches(previous, attributes)) {
+                return TeamResumeState.unavailable("Team step checkpoint 与步骤定义不匹配: " + id);
+            }
+        }
+        for (String id : ids) {
+            TeamStepResumeState previous = steps.get(id);
+            List<String> childIds = new ArrayList<>(previous.childRunIds());
+            if (!childRunId.isEmpty() && !childIds.contains(childRunId)) {
+                childIds.add(childRunId);
+            }
+            steps.put(id, withTeamCheckpoint(previous, status, phase,
+                    attributes.get("result"), attributes.get("error"), attempt, childIds));
+        }
+        return null;
+    }
+
+    private ChildEvidence inspectChildren(TeamStepResumeState step, Set<String> toolNames) {
+        List<String> observed = new ArrayList<>();
+        boolean sideEffect = false;
+        for (String childId : step.childRunIds()) {
+            List<AgentRunEvent> events = runStore.events(childId);
+            if (events == null || events.isEmpty()) {
+                continue;
+            }
+            ChildEvidence evidence = inspectChild(events, step.id());
+            observed.addAll(evidence.toolNames());
+            toolNames.addAll(evidence.toolNames());
+            sideEffect |= evidence.completedSideEffect();
+            if (!evidence.available()) {
+                return new ChildEvidence(false, observed, sideEffect, evidence.reason());
+            }
+        }
+        return new ChildEvidence(true, List.copyOf(observed), sideEffect, "");
+    }
+
+    private ChildEvidence inspectChild(List<AgentRunEvent> events, String stepId) {
+        Map<String, LlmClient.ToolCall> pending = new LinkedHashMap<>();
+        LinkedHashSet<String> tools = new LinkedHashSet<>();
+        boolean started = false;
+        boolean terminal = false;
+        boolean sideEffect = false;
+        for (AgentRunEvent event : events) {
+            if (event == null) continue;
+            if (event.type() == AgentRunEventType.RUN_STARTED) {
+                started = true;
+                String recordedStep = event.attributes().getOrDefault("stepId", "");
+                if (!recordedStep.isBlank() && !recordedStep.equals(stepId)) {
+                    return new ChildEvidence(false, List.copyOf(tools), sideEffect,
+                            "Team child 与步骤不匹配: " + stepId);
+                }
+            } else if (event.type() == AgentRunEventType.LLM_RESPONSE
+                    && "turn".equals(event.attributes().getOrDefault("recordKind", ""))) {
+                if (!pending.isEmpty()) {
+                    return new ChildEvidence(false, List.copyOf(tools), sideEffect,
+                            "Team child 存在未完成的工具调用");
+                }
+                Integer count = parseNonNegativeInt(event.attributes().get("toolCallCount"));
+                List<LlmClient.ToolCall> calls = parseToolCalls(event.attributes().get("toolCallsJson"));
+                if (count == null || calls == null || count != calls.size()) {
+                    return new ChildEvidence(false, List.copyOf(tools), sideEffect,
+                            "Team child 工具调用记录不完整");
+                }
+                for (LlmClient.ToolCall call : calls) {
+                    if (call == null || call.id() == null || call.id().isBlank()
+                            || call.function() == null || call.function().name().isBlank()
+                            || pending.put(call.id(), call) != null) {
+                        return new ChildEvidence(false, List.copyOf(tools), sideEffect,
+                                "Team child 工具调用记录不完整");
+                    }
+                    tools.add(call.function().name());
+                }
+            } else if (event.type() == AgentRunEventType.TOOL_CALL_REQUESTED) {
+                Integer count = parseNonNegativeInt(event.attributes().get("toolCallCount"));
+                if (count != null && count != pending.size()) {
+                    return new ChildEvidence(false, List.copyOf(tools), sideEffect,
+                            "Team child 工具请求数量不匹配");
+                }
+                String ids = event.attributes().getOrDefault("toolIds", "");
+                if (!ids.isBlank() && !parseCsvList(ids).equals(List.copyOf(pending.keySet()))) {
+                    return new ChildEvidence(false, List.copyOf(tools), sideEffect,
+                            "Team child 工具请求 ID 不匹配");
+                }
+                String names = event.attributes().getOrDefault("toolNames", "");
+                if (!names.isBlank() && !parseCsvList(names).equals(pending.values().stream()
+                        .map(call -> call.function().name()).toList())) {
+                    return new ChildEvidence(false, List.copyOf(tools), sideEffect,
+                            "Team child 工具请求名称不匹配");
+                }
+            } else if (event.type() == AgentRunEventType.TOOL_OUTCOME) {
+                String id = event.attributes().getOrDefault("toolId", "");
+                LlmClient.ToolCall call = pending.remove(id);
+                String name = event.attributes().getOrDefault("toolName", "");
+                if (call == null || !name.equals(call.function().name())
+                        || !event.attributes().getOrDefault("argumentsJson", "")
+                        .equals(call.function().arguments())) {
+                    return new ChildEvidence(false, List.copyOf(tools), sideEffect,
+                            "Team child 工具结果与请求不匹配");
+                }
+                String status = event.attributes().getOrDefault("status", "");
+                if (!Set.of("COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT", "DENIED_BY_POLICY", "DENIED_BY_USER")
+                        .contains(status.toUpperCase())) {
+                    return new ChildEvidence(false, List.copyOf(tools), sideEffect,
+                            "Team child 工具结果状态非法");
+                }
+                sideEffect |= "COMPLETED".equalsIgnoreCase(status) && !PLAN_READ_ONLY_TOOLS.contains(name);
+            } else if (event.type() == AgentRunEventType.RUN_FINISHED
+                    || event.type() == AgentRunEventType.RUN_FAILED
+                    || event.type() == AgentRunEventType.RUN_CANCELLED
+                    || event.type() == AgentRunEventType.BUDGET_EXHAUSTED) {
+                terminal = true;
+            }
+        }
+        if (!pending.isEmpty()) {
+            return new ChildEvidence(false, List.copyOf(tools), sideEffect,
+                    "Team child 存在未完成的工具调用");
+        }
+        if (started && !terminal) {
+            return new ChildEvidence(false, List.copyOf(tools), sideEffect,
+                    "Team child 已启动但没有终态事件");
+        }
+        return new ChildEvidence(true, List.copyOf(tools), sideEffect, "");
+    }
+
+    private static boolean fingerprintMatches(TeamStepResumeState step, Map<String, String> attributes) {
+        return matchesOptional(attributes, "stepType", step.type())
+                && matchesOptional(attributes, "description", step.description())
+                && matchesOptional(attributes, "preferredAgent", step.preferredAgent())
+                && matchesOptional(attributes, "riskLevel", step.riskLevel())
+                && matchesOptional(attributes, "requiredTools", String.join(",", step.requiredTools().stream().sorted().toList()))
+                && matchesOptional(attributes, "dependencies", String.join(",", step.dependencies().stream().sorted().toList()));
+    }
+
+    private static boolean matchesOptional(Map<String, String> attributes, String key, String expected) {
+        String actual = attributes.get(key);
+        return actual == null || actual.isBlank() || actual.equals(expected);
+    }
+
+    private static TeamStepResumeState withTeamCheckpoint(TeamStepResumeState step, String status, String phase,
+                                                          String result, String error, int attempt,
+                                                          List<String> childRunIds) {
+        return new TeamStepResumeState(step.id(), step.description(), step.type(), step.dependencies(),
+                step.requiredTools(), step.preferredAgent(), step.riskLevel(), status, phase, attempt,
+                result, error, childRunIds);
+    }
+
+    private static boolean isTerminalTeamStep(String status) {
+        return "COMPLETED".equals(status) || "FAILED".equals(status) || "SKIPPED".equals(status);
+    }
+
+    private static boolean safeRunId(String id) {
+        return id != null && id.matches("[A-Za-z0-9][A-Za-z0-9._-]*") && !id.contains("..");
+    }
+
+    private static List<String> parseCsvList(String ids) {
+        List<String> parsed = new ArrayList<>();
+        for (String id : ids.split(",")) {
+            String value = id.trim();
+            if (value.isEmpty()) {
+                return List.of("<invalid>");
+            }
+            parsed.add(value);
+        }
+        return List.copyOf(parsed);
+    }
+
+    private static boolean isTeamSideEffectTool(String toolName) {
+        return toolName == null || toolName.isBlank() || !PLAN_READ_ONLY_TOOLS.contains(toolName);
+    }
+
+    private record ChildEvidence(boolean available, List<String> toolNames,
+                                 boolean completedSideEffect, String reason) {
+        private ChildEvidence {
+            toolNames = toolNames == null ? List.of() : List.copyOf(toolNames);
+            reason = reason == null ? "" : reason;
+        }
+    }
+
+    private record TeamRecoveryProjection(TeamResumeState state, List<String> toolNames,
+                                           boolean completedSideEffect, String reason) {
+        private TeamRecoveryProjection {
+            toolNames = toolNames == null ? List.of() : List.copyOf(toolNames);
+            reason = reason == null ? "" : reason;
+        }
+
+        private static TeamRecoveryProjection unavailable(String reason) {
+            return new TeamRecoveryProjection(TeamResumeState.unavailable(reason), List.of(), false, reason);
+        }
     }
 
     private static PlanResumeState applyTaskCheckpoint(AgentRunEvent event, int planVersion,
