@@ -20,6 +20,8 @@ import com.mindcli.runtime.run.store.RunStore;
 import com.mindcli.capability.tool.ToolRegistry;
 import com.mindcli.runtime.run.recovery.TeamResumeState;
 import com.mindcli.runtime.run.recovery.TeamStepResumeState;
+import com.mindcli.runtime.run.recovery.TeamCheckpointCodec;
+import com.mindcli.platform.worktree.GitWorktreeManager;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -317,6 +319,90 @@ class AgentOrchestratorTest {
         assertEquals(1, reviewCalls.get(), "duplicate write steps should reuse one review");
         assertTrue(finalResult.contains("[step_1] ✅ 更新 README"), finalResult);
         assertTrue(finalResult.contains("[step_2] ✅ 更新 README"), finalResult);
+    }
+
+    @Test
+    void leaderAndDuplicateCompleteInOneCheckpoint(@TempDir Path tempDir) {
+        StubGLMClient llm = new StubGLMClient(List.of(
+                response("""
+                        {"summary":"duplicates","steps":[
+                          {"id":"a","description":"inspect same symbol","type":"ANALYSIS","dependencies":[]},
+                          {"id":"b","description":"inspect same symbol","type":"ANALYSIS","dependencies":[]}
+                        ]}
+                        """),
+                response("one result"),
+                response("{\"approved\":true,\"summary\":\"ok\",\"issues\":[]}")
+        ));
+        RecordingRunStore store = new RecordingRunStore();
+        ToolRegistry registry = new ToolRegistry();
+        registry.setProjectPath(tempDir.toString());
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                llm, registry, new NoOpMemoryManager(tempDir.toFile()), System.out, store);
+
+        orchestrator.run("inspect once");
+
+        List<AgentRunEvent> completed = store.allEvents().stream()
+                .filter(event -> event.type() == AgentRunEventType.TEAM_STEP_CHECKPOINT)
+                .filter(event -> "COMPLETED".equals(event.attributes().get("stepStatus")))
+                .toList();
+        assertEquals(1, completed.size());
+        assertEquals(List.of("step_1", "step_2"), new TeamCheckpointCodec()
+                .decodeStepIds(completed.get(0).attributes().get("stepIdsJson")));
+    }
+
+    @Test
+    void worktreeCompletesOnlyAfterSuccessfulMerge(@TempDir Path tempDir) {
+        RecordingRunStore store = new RecordingRunStore();
+        RecordingWorktreeManager worktrees = new RecordingWorktreeManager(store, false);
+        AgentOrchestrator orchestrator = parallelWriteOrchestrator(tempDir, store, worktrees);
+
+        orchestrator.run("write two independent files");
+
+        assertTrue(worktrees.sawAwaitingMerge());
+        assertTrue(store.allEvents().stream().anyMatch(event ->
+                event.type() == AgentRunEventType.TEAM_STEP_CHECKPOINT
+                        && "COMPLETED".equals(event.attributes().get("stepStatus"))));
+    }
+
+    @Test
+    void ambiguousMergeFailureNeverPersistsCompletedOrFailed(@TempDir Path tempDir) {
+        RecordingRunStore store = new RecordingRunStore();
+        RecordingWorktreeManager worktrees = new RecordingWorktreeManager(store, true);
+        AgentOrchestrator orchestrator = parallelWriteOrchestrator(tempDir, store, worktrees);
+
+        orchestrator.run("write two independent files");
+
+        assertTrue(worktrees.sawAwaitingMerge());
+        assertTrue(store.allEvents().stream()
+                .filter(event -> event.type() == AgentRunEventType.TEAM_STEP_CHECKPOINT)
+                .noneMatch(event -> "COMPLETED".equals(event.attributes().get("stepStatus"))
+                        || "FAILED".equals(event.attributes().get("stepStatus"))));
+    }
+
+    private static AgentOrchestrator parallelWriteOrchestrator(
+            Path root, RecordingRunStore store, RecordingWorktreeManager worktrees) {
+        DispatchingStubGLMClient llm = new DispatchingStubGLMClient(body -> {
+            if (body.contains("请为以下任务制定执行计划")) {
+                return response("""
+                        {"summary":"two writes","steps":[
+                          {"id":"a","description":"write a","type":"FILE_WRITE","dependencies":[],
+                           "requiredTools":["write_file"],"riskLevel":"medium"},
+                          {"id":"b","description":"write b","type":"FILE_WRITE","dependencies":[],
+                           "requiredTools":["write_file"],"riskLevel":"medium"}
+                        ]}
+                        """);
+            }
+            if (body.contains("原始任务")) {
+                return response("{\"approved\":true,\"summary\":\"ok\",\"issues\":[]}");
+            }
+            return response(body.contains("write a") ? "candidate a" : "candidate b");
+        });
+        ToolRegistry registry = new ToolRegistry();
+        registry.setProjectPath(root.toString());
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                llm, registry, new NoOpMemoryManager(root.toFile()), System.out, store);
+        orchestrator.setWorktreeManager(worktrees);
+        return orchestrator;
     }
 
     @Test
@@ -1154,19 +1240,69 @@ class AgentOrchestratorTest {
         private final List<AgentRunEvent> events = new ArrayList<>();
 
         @Override
-        public void append(AgentRunEvent event) {
+        public synchronized void append(AgentRunEvent event) {
             events.add(event);
         }
 
         @Override
-        public List<AgentRunEvent> events(String runId) {
+        public synchronized List<AgentRunEvent> events(String runId) {
             return events.stream()
                     .filter(event -> event.runId().equals(runId))
                     .toList();
         }
 
-        private List<AgentRunEvent> allEvents() {
+        private synchronized List<AgentRunEvent> allEvents() {
             return List.copyOf(events);
+        }
+    }
+
+    private static final class RecordingWorktreeManager extends GitWorktreeManager {
+        private final RecordingRunStore store;
+        private final boolean failMerge;
+        private boolean sawAwaitingMerge;
+
+        private RecordingWorktreeManager(RecordingRunStore store, boolean failMerge) {
+            this.store = store;
+            this.failMerge = failMerge;
+        }
+
+        @Override
+        public boolean isGitRepository(Path root) {
+            return true;
+        }
+
+        @Override
+        public boolean isGitAvailable() {
+            return true;
+        }
+
+        @Override
+        public synchronized boolean commitCheckpoint(Path root, String message) {
+            return false;
+        }
+
+        @Override
+        public synchronized WorktreeHandle create(Path root, Path path, String branch) throws IOException {
+            Files.createDirectories(path);
+            return new WorktreeHandle(path, branch);
+        }
+
+        @Override
+        public synchronized BatchMergeResult mergeBatchAndDispose(
+                Path root, List<WorktreeHandle> handles, String message) throws IOException {
+            sawAwaitingMerge = store.allEvents().stream().anyMatch(event ->
+                    event.type() == AgentRunEventType.TEAM_STEP_CHECKPOINT
+                            && "AWAITING_MERGE".equals(event.attributes().get("phase")));
+            if (failMerge) throw new IOException("ambiguous merge failure");
+            return new BatchMergeResult(BatchMergeResult.Status.CLEAN, List.of());
+        }
+
+        @Override
+        public synchronized void dispose(Path root, WorktreeHandle handle) {
+        }
+
+        private boolean sawAwaitingMerge() {
+            return sawAwaitingMerge;
         }
     }
 

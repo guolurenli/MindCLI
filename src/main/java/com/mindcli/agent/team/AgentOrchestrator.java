@@ -509,7 +509,7 @@ public class AgentOrchestrator {
             StepExecutionGroup group = groups.get(0);
             String context = buildStepContext(steps, group.leader());
             runStep(runContext, group.leader(), steps, retryCount, context, out);
-            propagateDuplicateResult(group, steps);
+            persistGroupOutcome(group, steps, retryCount);
             return;
         }
         List<ExecutionStep> leaders = groups.stream()
@@ -520,7 +520,7 @@ public class AgentOrchestrator {
                 + " 个并发 " + batchRoleLabel(leaders) + "）\n");
         runBatchParallel(runContext, leaders, steps, retryCount);
         for (StepExecutionGroup group : groups) {
-            propagateDuplicateResult(group, steps);
+            persistGroupOutcome(group, steps, retryCount);
         }
     }
 
@@ -537,7 +537,7 @@ public class AgentOrchestrator {
                 + " " + reason + "\n");
         String context = buildStepContext(steps, group.leader());
         runStep(runContext, group.leader(), steps, retryCount, context, out);
-        propagateDuplicateResult(group, steps);
+        persistGroupOutcome(group, steps, retryCount);
     }
 
     /**
@@ -675,9 +675,13 @@ public class AgentOrchestrator {
         if (!allStepsSucceeded) {
             disposeWorktrees(projectRoot, handles.values());
             String reason = "同批次存在未完成步骤，已丢弃未合并的 worktree 结果";
-            for (ExecutionStep step : leaders) {
-                if (Boolean.TRUE.equals(completed.get(step.id()))) {
-                    updateStep(steps, step.id(), step.withFailed(reason));
+            for (StepExecutionGroup group : groups) {
+                ExecutionStep leader = stepById(steps, group.leader().id());
+                if (Boolean.TRUE.equals(completed.get(group.leader().id()))) {
+                    updateStep(steps, group.leader().id(), group.leader().withFailed(reason));
+                    propagateDuplicateResult(group, steps);
+                } else if (leader != null && leader.status() == StepStatus.FAILED) {
+                    persistGroupOutcome(group, steps, retryCount);
                 }
             }
             out.println("⚠️ 批次 #" + batchIndex + " 未全部完成，未合并任何 worktree 结果。\n");
@@ -689,11 +693,16 @@ public class AgentOrchestrator {
                         "mindcli: integrate batch " + batchIndex);
                 if (mergeResult.status() == GitWorktreeManager.BatchMergeResult.Status.CONFLICTING) {
                     String files = String.join(", ", mergeResult.conflictingFiles());
-                    for (ExecutionStep step : leaders) {
-                        updateStep(steps, step.id(), step.withFailed("worktree merge 冲突: " + files));
+                    for (StepExecutionGroup group : groups) {
+                        updateStep(steps, group.leader().id(), group.leader().withFailed("worktree merge 冲突: " + files));
+                        persistGroupOutcome(group, steps, retryCount);
                     }
                     out.println("⚠️ 批次 #" + batchIndex + " worktree merge 冲突，需人工处理："
                             + files + "\n");
+                } else {
+                    for (StepExecutionGroup group : groups) {
+                        persistGroupOutcome(group, steps, retryCount);
+                    }
                 }
             } catch (IOException e) {
                 disposeWorktrees(projectRoot, handles.values());
@@ -725,7 +734,7 @@ public class AgentOrchestrator {
                 appendAgentSelected(runContext, childRoleName(worker.getRole()), step, workerLease.profile(),
                         workerRequirements, workerLease.selectionReason());
                 runStepWithWorker(runContext, step, steps, retryCount, worker, context, out,
-                        workerRequirements, workerLease.selectionReason());
+                        workerRequirements, workerLease.selectionReason(), true);
             } catch (IllegalStateException e) {
                 updateStep(steps, step.id(), step.withFailed("Agent profile 选择失败: " + e.getMessage()));
                 out.println("❌ 步骤 [" + step.id() + "] Agent profile 选择失败：" + e.getMessage() + "\n");
@@ -965,13 +974,25 @@ public class AgentOrchestrator {
         for (int i = 0; i < steps.size(); i++) {
             if (steps.get(i).id().equals(stepId)) {
                 steps.set(i, updated);
-                if (teamCheckpointActive && isTerminalStatus(updated.status())) {
-                    stepPhases.remove(stepId);
-                    appendStepCheckpoint(updated);
-                }
                 return;
             }
         }
+    }
+
+    private void persistGroupOutcome(StepExecutionGroup group, List<ExecutionStep> steps,
+                                     Map<String, Integer> retryCount) {
+        if (group == null || CancellationContext.isCancelled()) return;
+        ExecutionStep leader = stepById(steps, group.leader().id());
+        if (leader == null || !isTerminalStatus(leader.status())) return;
+        propagateDuplicateResult(group, steps);
+        List<String> ids = new ArrayList<>();
+        ids.add(group.leader().id());
+        group.duplicates().forEach(step -> ids.add(step.id()));
+        stepPhases.remove(leader.id());
+        appendStepCheckpoint(ids, leader, leader.status(), "",
+                retryCount.getOrDefault(leader.id(), 0), "",
+                leader.status() == StepStatus.FAILED ? "" : Objects.toString(leader.result(), ""),
+                leader.status() == StepStatus.FAILED ? Objects.toString(leader.result(), "") : "");
     }
 
     private void appendTeamPlanDefined(AgentRunContext context, List<ExecutionStep> steps) {
@@ -1012,18 +1033,31 @@ public class AgentOrchestrator {
     }
 
     private void appendStepCheckpoint(ExecutionStep step) {
+        appendStepCheckpoint(List.of(step.id()), step, stepAttempts.getOrDefault(step.id(), 0));
+    }
+
+    private void appendStepCheckpoint(List<String> stepIds, ExecutionStep step, int attempt) {
+        appendStepCheckpoint(stepIds, step, step.status(), stepPhases.getOrDefault(step.id(), ""),
+                attempt, stepChildRunIds.getOrDefault(step.id(), ""),
+                step.status() == StepStatus.FAILED ? "" : Objects.toString(step.result(), ""),
+                step.status() == StepStatus.FAILED ? Objects.toString(step.result(), "") : "");
+    }
+
+    private void appendStepCheckpoint(List<String> stepIds, ExecutionStep step, StepStatus status,
+                                      String phase, int attempt, String childRunId,
+                                      String result, String error) {
         AgentRunContext context = activeRunContext;
         if (!teamCheckpointActive || context == null || step == null) return;
         Map<String, String> attributes = new LinkedHashMap<>();
         attributes.put("schemaVersion", "1");
         attributes.put("planVersion", "1");
-        attributes.put("stepIdsJson", teamCheckpointCodec.encodeStepIds(List.of(step.id())));
-        attributes.put("stepStatus", step.status().name());
-        attributes.put("phase", stepPhases.getOrDefault(step.id(), ""));
-        attributes.put("attempt", Integer.toString(stepAttempts.getOrDefault(step.id(), 0)));
-        attributes.put("childRunId", stepChildRunIds.getOrDefault(step.id(), ""));
-        attributes.put("result", step.status() == StepStatus.FAILED ? "" : Objects.toString(step.result(), ""));
-        attributes.put("error", step.status() == StepStatus.FAILED ? Objects.toString(step.result(), "") : "");
+        attributes.put("stepIdsJson", teamCheckpointCodec.encodeStepIds(stepIds));
+        attributes.put("stepStatus", status.name());
+        attributes.put("phase", phase);
+        attributes.put("attempt", Integer.toString(attempt));
+        attributes.put("childRunId", childRunId);
+        attributes.put("result", result);
+        attributes.put("error", error);
         attributes.put("stepType", step.type());
         attributes.put("description", step.description());
         attributes.put("preferredAgent", step.preferredAgent());
@@ -1332,7 +1366,7 @@ public class AgentOrchestrator {
             appendAgentSelected(runContext, childRoleName(worker.getRole()), step, workerLease.profile(),
                     workerRequirements, workerLease.selectionReason());
             runStepWithWorker(runContext, step, steps, retryCount, worker, context, out,
-                    workerRequirements, workerLease.selectionReason());
+                    workerRequirements, workerLease.selectionReason(), false);
         } catch (IllegalStateException e) {
             updateStep(steps, step.id(), step.withFailed("Agent profile 选择失败: " + e.getMessage()));
             out.println("❌ 步骤 [" + step.id() + "] Agent profile 选择失败：" + e.getMessage() + "\n");
@@ -1354,7 +1388,7 @@ public class AgentOrchestrator {
                                    Map<String, Integer> retryCount,
                                    SubAgent worker, String context, PrintStream out,
                                    AgentTaskRequirements workerRequirements,
-                                   String workerSelectionReason) {
+                                   String workerSelectionReason, boolean deferForMerge) {
         out.println("🛠️ " + worker.getName() + " 执行步骤 [" + step.id() + "]: " + step.description());
         if (CancellationContext.isCancelled()) {
             updateStep(steps, step.id(), step.withFailed("用户取消"));
@@ -1403,6 +1437,10 @@ public class AgentOrchestrator {
         if (approved) {
             appendReviewDecisionEvent(reviewChild.context(), true, AgentRunStatus.SUCCESS, "");
             updateStep(steps, step.id(), step.withResult(acceptedResult));
+            if (deferForMerge) {
+                appendStepCheckpoint(List.of(step.id()), step, StepStatus.RUNNING,
+                        "AWAITING_MERGE", initialAttempt, "", acceptedResult, "");
+            }
             out.println("✅ 步骤 [" + step.id() + "] 审查通过\n");
             return;
         }
@@ -1457,6 +1495,10 @@ public class AgentOrchestrator {
 
         if (approved) {
             updateStep(steps, step.id(), step.withResult(acceptedResult));
+            if (deferForMerge) {
+                appendStepCheckpoint(List.of(step.id()), step, StepStatus.RUNNING,
+                        "AWAITING_MERGE", retries, "", acceptedResult, "");
+            }
             out.println("✅ 步骤 [" + step.id() + "] 重试后审查通过\n");
         } else {
             updateStep(steps, step.id(), step.withFailed("审查未通过：" + issues

@@ -25,7 +25,7 @@ import java.util.stream.Stream;
  * 注意：JGit 7.x 尚无 worktree add/remove API，因此这里走系统 git 命令；git 不可用或
  * 项目不是 git 仓库时，调用方应回退串行执行（见 {@link #isGitRepository(Path)}）。
  */
-public final class GitWorktreeManager {
+public class GitWorktreeManager {
     private static final Logger log = LoggerFactory.getLogger(GitWorktreeManager.class);
     private static final long GIT_TIMEOUT_SECONDS = 120;
 
