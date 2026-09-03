@@ -1052,6 +1052,7 @@ public class AgentOrchestrator {
         appendRunEvent(childContext, AgentRunEventType.LLM_RESPONSE, Map.of(
                 "phase", "execute",
                 "agent", worker.getName(),
+                "recordKind", "child_summary",
                 "messageType", result == null ? "null" : result.type().name()));
         appendChildTerminalEvent(childContext, result, "execute");
         return result;
@@ -1074,6 +1075,7 @@ public class AgentOrchestrator {
         appendRunEvent(childContext, AgentRunEventType.LLM_RESPONSE, Map.of(
                 "phase", "review",
                 "agent", agent.getName(),
+                "recordKind", "child_summary",
                 "messageType", result == null ? "null" : result.type().name()));
         return new ReviewChildResult(childContext, result);
     }

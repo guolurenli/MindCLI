@@ -795,6 +795,10 @@ class AgentOrchestratorTest {
         assertTrue(childStarts.stream()
                 .allMatch(event -> parentRunId.equals(event.attributes().get("rootRunId"))));
         assertEquals(2, childStarts.stream().map(AgentRunEvent::runId).collect(toSet()).size());
+        assertTrue(allEvents.stream()
+                .filter(event -> event.type() == AgentRunEventType.LLM_RESPONSE)
+                .filter(event -> parentRunId.equals(event.attributes().get("parentRunId")))
+                .anyMatch(event -> "child_summary".equals(event.attributes().get("recordKind"))));
     }
 
     @Test

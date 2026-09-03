@@ -11,6 +11,8 @@ import com.mindcli.runtime.run.AgentRunEventType;
 import com.mindcli.runtime.run.AgentRunContext;
 import com.mindcli.runtime.run.store.RunStore;
 import com.mindcli.runtime.run.dispatch.ToolDispatcher;
+import com.mindcli.capability.tool.ToolExecution;
+import com.mindcli.capability.tool.ToolOutput;
 import com.mindcli.capability.tool.ToolRegistry;
 import com.mindcli.capability.tool.ToolRegistry.ToolInvocation;
 import org.junit.jupiter.api.Test;
@@ -30,6 +32,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -112,6 +115,45 @@ class SubAgentTest {
         assertEquals("code-reader", outcome.attributes().get("profileName"));
         assertEquals("READ_ONLY", outcome.attributes().get("permissionMode"));
         assertEquals("DENY", outcome.attributes().get("policyDecision"));
+    }
+
+    @Test
+    void recordsToolRequestBeforeOutcomeWithArguments(@TempDir Path root) {
+        MultiCallStreamClient llm = new MultiCallStreamClient(List.of(
+                new CallScript(listener -> { }, new LlmClient.ChatResponse(
+                        "assistant", "", null,
+                        List.of(new LlmClient.ToolCall("call_read",
+                                new LlmClient.ToolCall.Function("read_file", "{\"path\":\"a.txt\"}"))),
+                        10, 5)),
+                new CallScript(listener -> { }, new LlmClient.ChatResponse(
+                        "assistant", "done", null, null, 10, 5))));
+        ToolRegistry registry = new ToolRegistry() {
+            @Override
+            public ToolExecution executeToolExecution(String name, String argumentsJson) {
+                return ToolExecution.completed(ToolOutput.text("content"), argumentsJson);
+            }
+        };
+        registry.setProjectPath(root.toString());
+        SubAgent agent = new SubAgent(AgentProfile.builtinExplorer("explorer#ledger"), llm, registry);
+        RecordingRunStore store = new RecordingRunStore();
+        AgentRunContext child = AgentRunContext.create(AgentMode.TEAM, "read a.txt", root.toString());
+
+        agent.executeWithRunContext(AgentMessage.task("orchestrator", "read a.txt"),
+                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8), child, store);
+
+        List<AgentRunEvent> events = store.events(child.runId());
+        int request = IntStream.range(0, events.size())
+                .filter(i -> events.get(i).type() == AgentRunEventType.TOOL_CALL_REQUESTED)
+                .findFirst().orElseThrow();
+        int outcome = IntStream.range(0, events.size())
+                .filter(i -> events.get(i).type() == AgentRunEventType.TOOL_OUTCOME)
+                .findFirst().orElseThrow();
+        assertTrue(request < outcome);
+        assertEquals("turn", events.stream()
+                .filter(e -> e.type() == AgentRunEventType.LLM_RESPONSE)
+                .findFirst().orElseThrow().attributes().get("recordKind"));
+        assertEquals("{\"path\":\"a.txt\"}",
+                events.get(outcome).attributes().get("argumentsJson"));
     }
 
     @Test

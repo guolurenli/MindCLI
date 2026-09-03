@@ -17,6 +17,8 @@ import com.mindcli.platform.prompt.PromptContext;
 import com.mindcli.platform.prompt.PromptMode;
 import com.mindcli.platform.prompt.ProjectMemoryLoader;
 import com.mindcli.runtime.run.AgentMode;
+import com.mindcli.runtime.run.AgentRunEvent;
+import com.mindcli.runtime.run.AgentRunEventType;
 import com.mindcli.runtime.run.loop.AgentLoopObserver;
 import com.mindcli.runtime.run.loop.AgentLoopPolicy;
 import com.mindcli.runtime.run.AgentRunContext;
@@ -300,10 +302,12 @@ public class SubAgent {
                 LlmTraceLogger.logReasoning(log,
                         "sub-agent name=" + name + " role=" + role + " iteration=" + iteration,
                         llmClient, response.reasoningContent());
+                appendTurnLlmResponse(iteration, response);
             }
 
             @Override
             public void beforeToolDispatch(int iteration, List<LlmClient.ToolCall> toolCalls) {
+                appendToolCallRequested(iteration, toolCalls);
                 printToolCalls(out, toolCalls);
                 streamRenderer.resetBetweenIterations();
             }
@@ -628,7 +632,56 @@ public class SubAgent {
             return;
         }
         for (ToolOutcome outcome : outcomes) {
-            runStore.append(ToolOutcomeEventFactory.create(context, outcome, Map.of()));
+            Map<String, String> extra = new LinkedHashMap<>();
+            extra.put("argumentsJson", outcome.argumentsJson());
+            runStore.append(ToolOutcomeEventFactory.create(context, outcome, extra));
+        }
+    }
+
+    private void appendTurnLlmResponse(int iteration, LlmClient.ChatResponse response) {
+        AgentRunContext context = activeRunContext.get();
+        RunStore runStore = activeRunStore.get();
+        if (context == null || runStore == null || response == null) {
+            return;
+        }
+        List<LlmClient.ToolCall> toolCalls = response.toolCalls() == null ? List.of() : response.toolCalls();
+        Map<String, String> attributes = new LinkedHashMap<>();
+        attributes.put("recordKind", "turn");
+        attributes.put("iteration", String.valueOf(iteration));
+        attributes.put("inputTokens", String.valueOf(response.inputTokens()));
+        attributes.put("outputTokens", String.valueOf(response.outputTokens()));
+        attributes.put("cachedInputTokens", String.valueOf(response.cachedInputTokens()));
+        attributes.put("content", response.content() == null ? "" : response.content());
+        attributes.put("reasoningContent", response.reasoningContent() == null ? "" : response.reasoningContent());
+        attributes.put("toolCallCount", String.valueOf(toolCalls.size()));
+        attributes.put("toolCallsJson", serializeToolCalls(toolCalls));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.LLM_RESPONSE, attributes));
+    }
+
+    private void appendToolCallRequested(int iteration, List<LlmClient.ToolCall> toolCalls) {
+        AgentRunContext context = activeRunContext.get();
+        RunStore runStore = activeRunStore.get();
+        if (context == null || runStore == null || toolCalls == null || toolCalls.isEmpty()) {
+            return;
+        }
+        Map<String, String> attributes = new LinkedHashMap<>();
+        attributes.put("recordKind", "turn");
+        attributes.put("iteration", String.valueOf(iteration));
+        attributes.put("toolCallCount", String.valueOf(toolCalls.size()));
+        attributes.put("toolNames", String.join(",", toolCalls.stream()
+                .map(toolCall -> toolCall.function() == null ? "" : toolCall.function().name())
+                .toList()));
+        attributes.put("toolIds", String.join(",", toolCalls.stream()
+                .map(LlmClient.ToolCall::id)
+                .toList()));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_CALL_REQUESTED, attributes));
+    }
+
+    private static String serializeToolCalls(List<LlmClient.ToolCall> toolCalls) {
+        try {
+            return JSON_MAPPER.writeValueAsString(toolCalls == null ? List.of() : toolCalls);
+        } catch (Exception ignored) {
+            return "[]";
         }
     }
 
