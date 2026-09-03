@@ -12,10 +12,14 @@ import com.mindcli.capability.memory.LongTermMemory;
 import com.mindcli.capability.memory.MemoryManager;
 import com.mindcli.runtime.run.AgentRunEvent;
 import com.mindcli.runtime.run.AgentRunEventType;
+import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.runtime.run.AgentMode;
 import com.mindcli.runtime.run.store.InMemoryRunStore;
 import com.mindcli.runtime.run.store.JsonlRunStore;
 import com.mindcli.runtime.run.store.RunStore;
 import com.mindcli.capability.tool.ToolRegistry;
+import com.mindcli.runtime.run.recovery.TeamResumeState;
+import com.mindcli.runtime.run.recovery.TeamStepResumeState;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -799,6 +803,98 @@ class AgentOrchestratorTest {
                 .filter(event -> event.type() == AgentRunEventType.LLM_RESPONSE)
                 .filter(event -> parentRunId.equals(event.attributes().get("parentRunId")))
                 .anyMatch(event -> "child_summary".equals(event.attributes().get("recordKind"))));
+    }
+
+    @Test
+    void teamRunWritesPlanAndStepCheckpointsBeforeChildStarts(@TempDir Path tempDir) {
+        StubGLMClient llmClient = new StubGLMClient(List.of(
+                response("""
+                        {"summary":"单步计划","steps":[{"id":"s1","description":"读取文件","type":"ANALYSIS","dependencies":[]}]}
+                        """),
+                response("执行结果"),
+                response("{\"approved\":true,\"summary\":\"通过\",\"issues\":[]}")
+        ));
+        RecordingRunStore runStore = new RecordingRunStore();
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                llmClient, new ToolRegistry(), new NoOpMemoryManager(tempDir.toFile()),
+                System.out, runStore);
+
+        orchestrator.run("checkpoint 顺序");
+
+        List<AgentRunEvent> events = runStore.allEvents();
+        String parentRunId = events.stream()
+                .filter(event -> event.type() == AgentRunEventType.RUN_STARTED)
+                .filter(event -> !event.attributes().containsKey("parentRunId"))
+                .findFirst().orElseThrow().runId();
+        int planIndex = indexOf(events, parentRunId, AgentRunEventType.TEAM_PLAN_DEFINED);
+        int runningIndex = indexOfCheckpoint(events, parentRunId, "RUNNING");
+        int firstChildIndex = events.stream()
+                .filter(event -> event.type() == AgentRunEventType.RUN_STARTED)
+                .filter(event -> parentRunId.equals(event.attributes().get("parentRunId")))
+                .map(events::indexOf).findFirst().orElseThrow();
+        int completedIndex = indexOfCheckpoint(events, parentRunId, "COMPLETED");
+
+        assertTrue(planIndex >= 0);
+        assertTrue(runningIndex > planIndex);
+        assertTrue(firstChildIndex > runningIndex,
+                "parent step checkpoint must precede child RUN_STARTED");
+        assertTrue(completedIndex > firstChildIndex);
+    }
+
+    @Test
+    void recoveredTeamRunSkipsCompletedStepsWithoutCallingPlanner(@TempDir Path tempDir) {
+        StubGLMClient llmClient = new StubGLMClient(List.of(
+                response("恢复中的执行结果"),
+                response("{\"approved\":true,\"summary\":\"通过\",\"issues\":[]}")
+        ));
+        RecordingRunStore runStore = new RecordingRunStore();
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                llmClient, new ToolRegistry(), new NoOpMemoryManager(tempDir.toFile()),
+                System.out, runStore);
+        TeamResumeState state = new TeamResumeState(true, 1, 1, List.of(
+                new TeamStepResumeState("step_1", "已完成", "ANALYSIS", List.of(), List.of(),
+                        "", "low", "COMPLETED", "", 0, "旧结果", "", List.of()),
+                new TeamStepResumeState("step_2", "继续执行", "ANALYSIS", List.of("step_1"), List.of(),
+                        "", "low", "PENDING", "", 1, "", "", List.of("old-child"))
+        ), "");
+        AgentRunContext context = AgentRunContext.create(AgentMode.TEAM, "恢复任务", tempDir.toString());
+
+        String result = orchestrator.runRecovered(context, runStore, state);
+
+        assertTrue(result.contains("step_1"));
+        assertTrue(result.contains("旧结果"));
+        assertTrue(runStore.allEvents().stream()
+                .filter(event -> event.type() == AgentRunEventType.LLM_RESPONSE)
+                .noneMatch(event -> parentPlanResponse(event)));
+        assertEquals(2, runStore.allEvents().stream()
+                .filter(event -> event.type() == AgentRunEventType.RUN_STARTED)
+                .filter(event -> event.attributes().containsKey("parentRunId"))
+                .count());
+        assertEquals("1", runStore.allEvents().stream()
+                .filter(event -> event.type() == AgentRunEventType.TEAM_STEP_CHECKPOINT)
+                .filter(event -> "RUNNING".equals(event.attributes().get("stepStatus")))
+                .findFirst().orElseThrow().attributes().get("attempt"));
+    }
+
+    private static boolean parentPlanResponse(AgentRunEvent event) {
+        return event.runId() != null && "plan".equals(event.attributes().get("phase"));
+    }
+
+    private static int indexOf(List<AgentRunEvent> events, String runId, AgentRunEventType type) {
+        for (int i = 0; i < events.size(); i++) {
+            AgentRunEvent event = events.get(i);
+            if (runId.equals(event.runId()) && event.type() == type) return i;
+        }
+        return -1;
+    }
+
+    private static int indexOfCheckpoint(List<AgentRunEvent> events, String runId, String status) {
+        for (int i = 0; i < events.size(); i++) {
+            AgentRunEvent event = events.get(i);
+            if (runId.equals(event.runId()) && event.type() == AgentRunEventType.TEAM_STEP_CHECKPOINT
+                    && status.equals(event.attributes().get("stepStatus"))) return i;
+        }
+        return -1;
     }
 
     @Test

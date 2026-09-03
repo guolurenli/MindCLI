@@ -32,6 +32,9 @@ import com.mindcli.runtime.run.AgentRunStatus;
 import com.mindcli.runtime.run.store.RunStore;
 import com.mindcli.runtime.run.store.RunStoreFactory;
 import com.mindcli.runtime.run.session.SessionContext;
+import com.mindcli.runtime.run.recovery.TeamResumeState;
+import com.mindcli.runtime.run.recovery.TeamStepResumeState;
+import com.mindcli.runtime.run.recovery.TeamCheckpointCodec;
 import com.mindcli.capability.skill.SkillRegistry;
 import com.mindcli.capability.tool.ToolRegistry;
 import com.mindcli.platform.worktree.GitWorktreeManager;
@@ -86,7 +89,13 @@ public class AgentOrchestrator {
     private final PrintStream out;
     private final RunStore runStore;
     private volatile RunStore activeRunStore;
+    private volatile AgentRunContext activeRunContext;
     private volatile String runtimeOwnedLifecycleRunId;
+    private volatile boolean teamCheckpointActive;
+    private final TeamCheckpointCodec teamCheckpointCodec = new TeamCheckpointCodec();
+    private final ConcurrentMap<String, Integer> stepAttempts = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, String> stepPhases = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, String> stepChildRunIds = new ConcurrentHashMap<>();
     private volatile SessionContext sessionContext;
     private final PlanSchemaParser planSchemaParser = new PlanSchemaParser(mapper);
     private final PlanSchemaValidator planSchemaValidator = new PlanSchemaValidator();
@@ -331,12 +340,34 @@ public class AgentOrchestrator {
         return runInternal(effectiveContext, runStore == null ? this.runStore : runStore, false);
     }
 
+    public String runRecovered(AgentRunContext runContext, RunStore runStore, TeamResumeState state) {
+        Objects.requireNonNull(state, "state");
+        if (!state.available()) {
+            throw new IllegalArgumentException(state.reason());
+        }
+        AgentRunContext effectiveContext = runContext == null
+                ? AgentRunContext.create(AgentMode.TEAM, "", toolRegistry.getProjectPath())
+                : runContext;
+        return runInternal(effectiveContext, runStore == null ? this.runStore : runStore, false, state);
+    }
+
     private String runInternal(AgentRunContext runContext, RunStore activeStore, boolean appendLifecycleStart) {
+        return runInternal(runContext, activeStore, appendLifecycleStart, null);
+    }
+
+    private String runInternal(AgentRunContext runContext, RunStore activeStore,
+                               boolean appendLifecycleStart, TeamResumeState recoveredState) {
         String userInput = runContext.input();
         log.info("Multi-Agent run started: inputLength={}", userInput == null ? 0 : userInput.length());
         RunStore previousStore = activeRunStore;
+        AgentRunContext previousContext = activeRunContext;
         String previousRuntimeOwnedRunId = runtimeOwnedLifecycleRunId;
         activeRunStore = activeStore == null ? this.runStore : activeStore;
+        activeRunContext = runContext;
+        teamCheckpointActive = false;
+        stepAttempts.clear();
+        stepPhases.clear();
+        stepChildRunIds.clear();
         runtimeOwnedLifecycleRunId = appendLifecycleStart ? null : runContext.runId();
         try {
             if (appendLifecycleStart) {
@@ -345,14 +376,19 @@ public class AgentOrchestrator {
                         "mode", AgentMode.TEAM.name(),
                         "adapterMode", AgentMode.TEAM.name()));
             }
-            return runTeam(runContext, userInput);
+            return runTeam(runContext, userInput, recoveredState);
         } finally {
             activeRunStore = previousStore;
+            activeRunContext = previousContext;
             runtimeOwnedLifecycleRunId = previousRuntimeOwnedRunId;
+            teamCheckpointActive = false;
+            stepAttempts.clear();
+            stepPhases.clear();
+            stepChildRunIds.clear();
         }
     }
 
-    private String runTeam(AgentRunContext runContext, String userInput) {
+    private String runTeam(AgentRunContext runContext, String userInput, TeamResumeState recoveredState) {
         memoryManager.resetSurfaced();
         if (CancellationContext.isCancelled()) {
             String cancelled = "⏹️ 已取消当前多 Agent 任务。";
@@ -360,45 +396,53 @@ public class AgentOrchestrator {
             return cancelled;
         }
 
-        // 1. 规划阶段：主 agent 内建规划（对齐 Codex default 主 agent 内建 update_plan）
-        out.println(AnsiStyle.heading("📋 第一阶段：规划"));
-        out.println("🧑‍💼 正在分析任务并制定执行计划...\n");
+        List<ExecutionStep> steps;
+        if (recoveredState != null) {
+            steps = fromResumeState(recoveredState);
+            if (steps.isEmpty()) {
+                String failed = "❌ Team 恢复失败：恢复计划为空";
+                appendRunEvent(runContext, AgentRunEventType.RUN_FAILED, Map.of(
+                        "status", AgentRunStatus.FAILED.name(), "phase", "recovery"));
+                return failed;
+            }
+            initializeCheckpointMetadata(recoveredState);
+        } else {
+            // 1. 规划阶段：主 agent 内建规划（对齐 Codex default 主 agent 内建 update_plan）
+            out.println(AnsiStyle.heading("📋 第一阶段：规划"));
+            out.println("🧑‍💼 正在分析任务并制定执行计划...\n");
 
-        String planContent;
-        try {
-            planContent = planWithOrchestrator(userInput);
-        } catch (Exception e) {
-            String failed = "❌ 规划阶段失败，LLM 调用出错：" + e.getMessage();
-            appendRunEvent(runContext, AgentRunEventType.RUN_FAILED, Map.of(
-                    "status", AgentRunStatus.FAILED.name(),
-                    "phase", "plan"));
-            return failed;
-        }
-        appendRunEvent(runContext, AgentRunEventType.LLM_RESPONSE, Map.of(
-                "phase", "plan",
-                "agent", "orchestrator",
-                "messageType", "RESULT"));
-        if (CancellationContext.isCancelled()) {
-            String cancelled = "⏹️ 已取消当前多 Agent 任务。";
-            appendTerminalEvent(runContext, cancelled);
-            return cancelled;
-        }
-        if (planContent == null || planContent.isBlank()) {
-            String failed = "❌ 规划失败：未能生成有效计划";
-            appendRunEvent(runContext, AgentRunEventType.RUN_FAILED, Map.of(
-                    "status", AgentRunStatus.FAILED.name(),
-                    "phase", "plan"));
-            return failed;
-        }
+            String planContent;
+            try {
+                planContent = planWithOrchestrator(userInput);
+            } catch (Exception e) {
+                String failed = "❌ 规划阶段失败，LLM 调用出错：" + e.getMessage();
+                appendRunEvent(runContext, AgentRunEventType.RUN_FAILED, Map.of(
+                        "status", AgentRunStatus.FAILED.name(), "phase", "plan"));
+                return failed;
+            }
+            appendRunEvent(runContext, AgentRunEventType.LLM_RESPONSE, Map.of(
+                    "phase", "plan", "agent", "orchestrator", "messageType", "RESULT"));
+            if (CancellationContext.isCancelled()) {
+                String cancelled = "⏹️ 已取消当前多 Agent 任务。";
+                appendTerminalEvent(runContext, cancelled);
+                return cancelled;
+            }
+            if (planContent == null || planContent.isBlank()) {
+                String failed = "❌ 规划失败：未能生成有效计划";
+                appendRunEvent(runContext, AgentRunEventType.RUN_FAILED, Map.of(
+                        "status", AgentRunStatus.FAILED.name(), "phase", "plan"));
+                return failed;
+            }
 
-        // 2. 解析计划
-        List<ExecutionStep> steps = parsePlan(planContent);
-        if (steps.isEmpty()) {
-            String failed = "❌ 规划失败：无法解析执行计划\n原始输出:\n" + planContent;
-            appendRunEvent(runContext, AgentRunEventType.RUN_FAILED, Map.of(
-                    "status", AgentRunStatus.FAILED.name(),
-                    "phase", "parse_plan"));
-            return failed;
+            // 2. 解析计划
+            steps = parsePlan(planContent);
+            if (steps.isEmpty()) {
+                String failed = "❌ 规划失败：无法解析执行计划\n原始输出:\n" + planContent;
+                appendRunEvent(runContext, AgentRunEventType.RUN_FAILED, Map.of(
+                        "status", AgentRunStatus.FAILED.name(), "phase", "parse_plan"));
+                return failed;
+            }
+            appendTeamPlanDefined(runContext, steps);
         }
 
         out.println(AnsiStyle.heading("📋 执行计划"));
@@ -407,6 +451,11 @@ public class AgentOrchestrator {
         // 3. 执行阶段：按依赖顺序分配给执行者
         out.println(AnsiStyle.heading("⚡ 第二阶段：执行"));
         Map<String, Integer> retryCount = new ConcurrentHashMap<>();
+        if (recoveredState != null) {
+            for (TeamStepResumeState saved : recoveredState.steps()) {
+                retryCount.put(saved.id(), saved.attempt());
+            }
+        }
         int batchIndex = 0;
 
         while (true) {
@@ -916,9 +965,99 @@ public class AgentOrchestrator {
         for (int i = 0; i < steps.size(); i++) {
             if (steps.get(i).id().equals(stepId)) {
                 steps.set(i, updated);
+                if (teamCheckpointActive && isTerminalStatus(updated.status())) {
+                    stepPhases.remove(stepId);
+                    appendStepCheckpoint(updated);
+                }
                 return;
             }
         }
+    }
+
+    private void appendTeamPlanDefined(AgentRunContext context, List<ExecutionStep> steps) {
+        TeamResumeState state = toResumeState(steps);
+        appendRunEvent(context, AgentRunEventType.TEAM_PLAN_DEFINED, Map.of(
+                "schemaVersion", "1",
+                "planVersion", "1",
+                "planJson", teamCheckpointCodec.encodePlan(state)));
+        initializeCheckpointMetadata(steps);
+    }
+
+    private void initializeCheckpointMetadata(List<ExecutionStep> steps) {
+        stepAttempts.clear();
+        stepPhases.clear();
+        stepChildRunIds.clear();
+        for (ExecutionStep step : steps) {
+            stepAttempts.put(step.id(), 0);
+        }
+        teamCheckpointActive = true;
+    }
+
+    private void initializeCheckpointMetadata(TeamResumeState state) {
+        stepAttempts.clear();
+        stepPhases.clear();
+        stepChildRunIds.clear();
+        for (TeamStepResumeState step : state.steps()) {
+            stepAttempts.put(step.id(), step.attempt());
+        }
+        teamCheckpointActive = true;
+    }
+
+    private void appendChildStartCheckpoint(ExecutionStep step, int attempt,
+                                            String phase, String childRunId) {
+        stepAttempts.put(step.id(), attempt);
+        stepPhases.put(step.id(), phase);
+        stepChildRunIds.put(step.id(), childRunId);
+        appendStepCheckpoint(step.started());
+    }
+
+    private void appendStepCheckpoint(ExecutionStep step) {
+        AgentRunContext context = activeRunContext;
+        if (!teamCheckpointActive || context == null || step == null) return;
+        Map<String, String> attributes = new LinkedHashMap<>();
+        attributes.put("schemaVersion", "1");
+        attributes.put("planVersion", "1");
+        attributes.put("stepIdsJson", teamCheckpointCodec.encodeStepIds(List.of(step.id())));
+        attributes.put("stepStatus", step.status().name());
+        attributes.put("phase", stepPhases.getOrDefault(step.id(), ""));
+        attributes.put("attempt", Integer.toString(stepAttempts.getOrDefault(step.id(), 0)));
+        attributes.put("childRunId", stepChildRunIds.getOrDefault(step.id(), ""));
+        attributes.put("result", step.status() == StepStatus.FAILED ? "" : Objects.toString(step.result(), ""));
+        attributes.put("error", step.status() == StepStatus.FAILED ? Objects.toString(step.result(), "") : "");
+        attributes.put("stepType", step.type());
+        attributes.put("description", step.description());
+        attributes.put("preferredAgent", step.preferredAgent());
+        attributes.put("riskLevel", step.riskLevel());
+        attributes.put("requiredTools", String.join(",", step.requiredTools().stream().sorted().toList()));
+        attributes.put("dependencies", String.join(",", step.dependencies().stream().sorted().toList()));
+        appendRunEvent(context, AgentRunEventType.TEAM_STEP_CHECKPOINT, attributes);
+    }
+
+    private static boolean isTerminalStatus(StepStatus status) {
+        return status == StepStatus.COMPLETED || status == StepStatus.FAILED || status == StepStatus.SKIPPED;
+    }
+
+    private static TeamResumeState toResumeState(List<ExecutionStep> steps) {
+        List<TeamStepResumeState> saved = steps.stream()
+                .map(step -> new TeamStepResumeState(
+                        step.id(), step.description(), step.type(), step.dependencies(), step.requiredTools(),
+                        step.preferredAgent(), step.riskLevel(), step.status().name(), "", 0,
+                        step.status() == StepStatus.FAILED ? "" : Objects.toString(step.result(), ""),
+                        step.status() == StepStatus.FAILED ? Objects.toString(step.result(), "") : "",
+                        List.of()))
+                .toList();
+        return new TeamResumeState(true, 1, 1, saved, "");
+    }
+
+    private static List<ExecutionStep> fromResumeState(TeamResumeState state) {
+        List<ExecutionStep> steps = new ArrayList<>();
+        for (TeamStepResumeState saved : state.steps()) {
+            StepStatus status = StepStatus.valueOf(saved.status());
+            String result = status == StepStatus.FAILED ? saved.error() : saved.result();
+            steps.add(new ExecutionStep(saved.id(), saved.description(), saved.type(), saved.dependencies(),
+                    saved.requiredTools(), saved.preferredAgent(), saved.riskLevel(), result, status));
+        }
+        return steps;
     }
 
     private void appendRunEvent(AgentRunContext context, AgentRunEventType type) {
@@ -1042,6 +1181,7 @@ public class AgentOrchestrator {
                                             String selectedReason) {
         AgentRunContext childContext = childRunContext(parentContext, childRoleName(worker.getRole()), step.id(), attempt,
                 worker.getProfile(), requirements, selectedReason);
+        appendChildStartCheckpoint(step, attempt, "EXECUTING", childContext.runId());
         appendChildRunStarted(childContext, "execute");
         AgentMessage result;
         try {
@@ -1065,6 +1205,7 @@ public class AgentOrchestrator {
                                                      String selectedReason) {
         AgentRunContext childContext = childRunContext(parentContext, childRoleName(agent.getRole()), step.id(), attempt,
                 agent.getProfile(), requirements, selectedReason);
+        appendChildStartCheckpoint(step, attempt, "REVIEWING", childContext.runId());
         appendChildRunStarted(childContext, "review");
         AgentMessage result;
         try {
@@ -1222,7 +1363,8 @@ public class AgentOrchestrator {
         }
 
         AgentMessage taskMsg = AgentMessage.task("orchestrator", step.description());
-        AgentMessage result = executeWorkerChild(runContext, step, worker, taskMsg, context, out, 0,
+        int initialAttempt = retryCount.getOrDefault(step.id(), 0);
+        AgentMessage result = executeWorkerChild(runContext, step, worker, taskMsg, context, out, initialAttempt,
                 workerRequirements, workerSelectionReason);
         if (CancellationContext.isCancelled()) {
             updateStep(steps, step.id(), step.withFailed("用户取消"));
