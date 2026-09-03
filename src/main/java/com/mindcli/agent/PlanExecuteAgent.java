@@ -73,24 +73,35 @@ public class PlanExecuteAgent {
         }
     }
 
-    private record TaskRunResult(String result, boolean streamedOutput) {
+    private record TaskRunResult(String result, boolean streamedOutput, boolean cancelled) {
         static TaskRunResult of(String result, boolean streamedOutput) {
-            return new TaskRunResult(result, streamedOutput);
+            return new TaskRunResult(result, streamedOutput, false);
+        }
+
+        static TaskRunResult cancelled(String result, boolean streamedOutput) {
+            return new TaskRunResult(result, streamedOutput, true);
         }
     }
 
-    private record TaskExecutionResult(Task task, String result, boolean streamedOutput, Exception error) {
+    private record TaskExecutionResult(Task task, String result, boolean streamedOutput,
+                                       boolean cancelled, Exception error) {
         static TaskExecutionResult success(Task task, TaskRunResult taskRunResult) {
-            return new TaskExecutionResult(task, taskRunResult.result(), taskRunResult.streamedOutput(), null);
+            return new TaskExecutionResult(
+                    task,
+                    taskRunResult.result(),
+                    taskRunResult.streamedOutput(),
+                    taskRunResult.cancelled(),
+                    null);
         }
 
         static TaskExecutionResult failure(Task task, Exception error) {
-            return new TaskExecutionResult(task, null, false, error);
+            return new TaskExecutionResult(task, null, false, false, error);
         }
 
         boolean failed() {
             return error != null;
         }
+
     }
 
     public interface PlanReviewHandler {
@@ -421,6 +432,10 @@ public class PlanExecuteAgent {
                     plan, executableTasks, streamState, planVersion);
             for (TaskExecutionResult batchResult : batchResults) {
                 Task task = batchResult.task();
+
+                if (batchResult.cancelled()) {
+                    continue;
+                }
 
                 if (!batchResult.failed()) {
                     task.markCompleted(batchResult.result());
@@ -825,7 +840,9 @@ public class PlanExecuteAgent {
                     observer));
             if (turn.status() == AgentTurnStatus.CANCELLED) {
                 streamRenderer.finish();
-                return TaskRunResult.of("⏹️ 已取消任务 [" + task.getId() + "]。", streamRenderer.hasStreamedOutput());
+                return TaskRunResult.cancelled(
+                        "⏹️ 已取消任务 [" + task.getId() + "]。",
+                        streamRenderer.hasStreamedOutput());
             }
             if (turn.status() == AgentTurnStatus.BUDGET_EXHAUSTED) {
                 log.warn("Task {} budget exhausted: reason={}, iteration={}",

@@ -14,6 +14,8 @@ import com.mindcli.runtime.run.AgentRunEventType;
 import com.mindcli.runtime.run.loop.AgentTurnKernel;
 import com.mindcli.runtime.run.recovery.PlanResumeState;
 import com.mindcli.runtime.run.recovery.PlanTaskResumeState;
+import com.mindcli.runtime.CancellationContext;
+import com.mindcli.runtime.CancellationToken;
 import com.mindcli.runtime.run.store.InMemoryRunStore;
 import com.mindcli.runtime.run.dispatch.ToolDispatcher;
 import com.mindcli.capability.tool.ToolRegistry;
@@ -357,6 +359,36 @@ class PlanExecuteAgentTest {
                         .toList());
         assertTrue(runStore.events(context.runId()).stream()
                 .noneMatch(event -> event.type() == AgentRunEventType.PLAN_DEFINED));
+    }
+
+    @Test
+    void cancellationInsideTaskDoesNotWriteCompletedCheckpoint() {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        CancellationToken token = CancellationContext.startRun();
+        try {
+            StubGLMClient llmClient = StubGLMClient.streaming(List.of(
+                    StubResponse.scripted(listener -> token.cancel(), new LlmClient.ChatResponse(
+                            "assistant", "cancelled response", null, null, 10, 5))));
+            PlanExecuteAgent agent = new PlanExecuteAgent(
+                    llmClient,
+                    new ToolRegistry(),
+                    new StubPlanner(llmClient),
+                    null,
+                    (goal, plan) -> PlanExecuteAgent.PlanReviewDecision.execute(),
+                    new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
+                    runStore);
+            AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "goal", tempDir.toString());
+
+            String result = agent.run(context, runStore);
+
+            assertTrue(result.startsWith("⏹"), result);
+            assertEquals(List.of("RUNNING"), runStore.events(context.runId()).stream()
+                    .filter(event -> event.type() == AgentRunEventType.PLAN_TASK_CHECKPOINT)
+                    .map(event -> event.attributes().get("taskStatus"))
+                    .toList());
+        } finally {
+            CancellationContext.clear(token);
+        }
     }
 
     @Test

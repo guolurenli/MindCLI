@@ -170,6 +170,24 @@ class MainCommandHandlerRefactorTest {
         assertTrue(!output.contains("executed"), output);
     }
 
+    @Test
+    void runHandlerExplainsThatLegacyPlanLedgerHasNoExactCheckpoint(@TempDir Path tempDir) {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext context = new AgentRunContext(
+                "run_legacy_plan", AgentMode.PLAN, "plan it", tempDir.toString(), Instant.now(), Map.of());
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED,
+                Map.of("input", context.input())));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+
+        RunCommandHandler.printRunResume(
+                printStream(sink), runStore, context.runId(), id -> "must not execute");
+
+        String output = sink.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("旧 Plan run 缺少精确恢复 checkpoint"), output);
+        assertTrue(!output.contains("must not execute"), output);
+    }
+
     private static PrintStream printStream(ByteArrayOutputStream sink) {
         return new PrintStream(sink, true, StandardCharsets.UTF_8);
     }

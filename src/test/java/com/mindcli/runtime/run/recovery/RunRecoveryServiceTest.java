@@ -61,6 +61,25 @@ class RunRecoveryServiceTest {
     }
 
     @Test
+    void rejectsSideEffectBeforeLatestDefinitionWhenTaskIsStillRunningInThatDefinition() {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "goal", "workspace");
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED,
+                Map.of("input", context.input())));
+        appendPlanDefinition(runStore, context, planState(1, "initial", "RUNNING"));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_OUTCOME, Map.of(
+                "taskId", "task_1", "toolId", "write_parallel", "toolName", "write_file",
+                "status", "COMPLETED", "text", "written")));
+        appendPlanDefinition(runStore, context, planState(2, "replanned", "RUNNING"));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+
+        PlanResumeState restored = new RunRecoveryService(runStore).reconstructPlanState(context.runId());
+
+        assertTrue(!restored.available());
+        assertTrue(restored.reason().contains("副作用"), restored.reason());
+    }
+
+    @Test
     void planInspectionKeepsCompletedSideEffectAsConfirmationRequired() {
         InMemoryRunStore runStore = new InMemoryRunStore();
         AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "goal", "workspace");

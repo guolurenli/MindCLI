@@ -4,6 +4,9 @@ import com.mindcli.runtime.run.AgentMode;
 import com.mindcli.runtime.run.AgentRunEvent;
 import com.mindcli.runtime.run.AgentRunEventType;
 import com.mindcli.runtime.run.recovery.RunRecoveryPlan;
+import com.mindcli.runtime.run.recovery.PlanCheckpointCodec;
+import com.mindcli.runtime.run.recovery.PlanResumeState;
+import com.mindcli.runtime.run.recovery.PlanTaskResumeState;
 import com.mindcli.runtime.run.store.InMemoryRunStore;
 import com.mindcli.runtime.run.store.JsonlRunStore;
 import org.junit.jupiter.api.Test;
@@ -70,6 +73,25 @@ class CliRecoverableRunDiscoveryTest {
                 "mode", mode.name(),
                 "workspace", tempDir.toString(),
                 "input", "secret task input")));
+        if (mode == AgentMode.PLAN) {
+            PlanResumeState state = new PlanResumeState(
+                    true,
+                    1,
+                    runId + "-plan",
+                    "secret task input",
+                    "recoverable plan",
+                    List.of(new PlanTaskResumeState(
+                            "task_1", "remaining task", "ANALYSIS", List.of(), true,
+                            0, "BLOCK", List.of(), List.of(), "", "low",
+                            "PENDING", "", "", 0)),
+                    "");
+            store.append(event(runId, AgentRunEventType.PLAN_DEFINED, timestamp.plusMillis(500), Map.of(
+                    "mode", mode.name(),
+                    "workspace", tempDir.toString(),
+                    "planVersion", "1",
+                    "reason", "INITIAL",
+                    "planJson", new PlanCheckpointCodec().encode(state))));
+        }
         store.append(event(runId, AgentRunEventType.RUN_CANCELLED, timestamp.plusSeconds(1), Map.of()));
     }
 

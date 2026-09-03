@@ -183,6 +183,19 @@ public final class RunRecoveryService {
             tasks.put(task.id(), task);
         }
         Map<String, List<String>> completedSideEffects = new LinkedHashMap<>();
+        for (int i = 0; i < definitionIndex; i++) {
+            AgentRunEvent event = events.get(i);
+            if (event == null || event.type() != AgentRunEventType.TOOL_OUTCOME
+                    || !ToolOutcomeStatus.COMPLETED.name().equalsIgnoreCase(
+                    event.attributes().getOrDefault("status", ""))) {
+                continue;
+            }
+            String taskId = event.attributes().getOrDefault("taskId", "").trim();
+            String toolName = event.attributes().getOrDefault("toolName", "").trim();
+            if (tasks.containsKey(taskId) && isPlanSideEffect(toolName)) {
+                completedSideEffects.computeIfAbsent(taskId, ignored -> new ArrayList<>()).add(toolName);
+            }
+        }
         for (int i = definitionIndex + 1; i < events.size(); i++) {
             AgentRunEvent event = events.get(i);
             if (event == null) continue;
