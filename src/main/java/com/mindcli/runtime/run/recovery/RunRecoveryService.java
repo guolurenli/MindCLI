@@ -21,6 +21,11 @@ import com.mindcli.platform.llm.LlmClient;
 import com.fasterxml.jackson.databind.JsonNode;
 
 public final class RunRecoveryService {
+    private static final Set<String> PLAN_READ_ONLY_TOOLS = Set.of(
+            "read_file", "list_dir", "glob_files", "grep_code",
+            "web_search", "web_fetch", "search_memory", "read_memory");
+    private static final Set<String> PLAN_TASK_STATUSES = Set.of(
+            "PENDING", "RUNNING", "COMPLETED", "FAILED", "SKIPPED");
     private final RunStore runStore;
     private final RunStateProjector projector;
 
@@ -42,6 +47,16 @@ public final class RunRecoveryService {
         boolean resumeAvailable = projection.status() == RunStateStatus.RESUMABLE && !originalInput.isBlank()
                 && mode != null && !workspace.isBlank();
         RunResumePlan resumePlan = classify(events, resumeAvailable);
+        if (resumeAvailable && mode == AgentMode.PLAN) {
+            PlanResumeState planState = reconstructPlanState(runId);
+            if (!planState.available()) {
+                resumeAvailable = false;
+                resumePlan = new RunResumePlan(
+                        false, true, "UNKNOWN", planState.reason(), resumePlan.toolNames());
+            } else {
+                resumePlan = classifyPlan(events);
+            }
+        }
         if (resumeAvailable && mode == AgentMode.REACT && hasEvent(events, AgentRunEventType.LLM_RESPONSE)) {
             ReActResumeState reactState = reconstructReActState(runId);
             if (!reactState.available()) {
@@ -143,6 +158,106 @@ public final class RunRecoveryService {
         return new ReActResumeState(true, messages, "");
     }
 
+    public PlanResumeState reconstructPlanState(String runId) {
+        List<AgentRunEvent> events = runStore.events(runId);
+        int definitionIndex = lastIndexOf(events, AgentRunEventType.PLAN_DEFINED);
+        if (definitionIndex < 0) {
+            return PlanResumeState.unavailable("旧 Plan run 缺少精确恢复 checkpoint");
+        }
+
+        AgentRunEvent definition = events.get(definitionIndex);
+        Integer planVersion = parsePositiveInt(definition.attributes().get("planVersion"));
+        PlanResumeState decoded = new PlanCheckpointCodec().decode(definition.attributes().get("planJson"));
+        if (planVersion == null) {
+            return PlanResumeState.unavailable("Plan checkpoint 版本非法");
+        }
+        if (!decoded.available()) {
+            return decoded;
+        }
+        if (decoded.planVersion() != planVersion) {
+            return PlanResumeState.unavailable("Plan checkpoint 版本不一致");
+        }
+
+        Map<String, PlanTaskResumeState> tasks = new LinkedHashMap<>();
+        for (PlanTaskResumeState task : decoded.tasks()) {
+            tasks.put(task.id(), task);
+        }
+        Map<String, List<String>> completedSideEffects = new LinkedHashMap<>();
+        for (int i = definitionIndex + 1; i < events.size(); i++) {
+            AgentRunEvent event = events.get(i);
+            if (event == null) continue;
+            if (event.type() == AgentRunEventType.PLAN_TASK_CHECKPOINT) {
+                PlanResumeState error = applyTaskCheckpoint(event, planVersion, tasks);
+                if (error != null) return error;
+            } else if (event.type() == AgentRunEventType.TOOL_OUTCOME
+                    && ToolOutcomeStatus.COMPLETED.name().equalsIgnoreCase(
+                    event.attributes().getOrDefault("status", ""))) {
+                String toolName = event.attributes().getOrDefault("toolName", "").trim();
+                if (isPlanSideEffect(toolName)) {
+                    String taskId = event.attributes().getOrDefault("taskId", "").trim();
+                    if (taskId.isEmpty() || !tasks.containsKey(taskId)) {
+                        return PlanResumeState.unavailable("Plan checkpoint 后存在无法归属任务的成功副作用");
+                    }
+                    completedSideEffects.computeIfAbsent(taskId, ignored -> new ArrayList<>()).add(toolName);
+                }
+            }
+        }
+
+        for (Map.Entry<String, List<String>> entry : completedSideEffects.entrySet()) {
+            PlanTaskResumeState task = tasks.get(entry.getKey());
+            if (!isTerminalPlanTask(task.status())) {
+                return PlanResumeState.unavailable(
+                        "任务 " + task.id() + " 在终态 checkpoint 前已产生成功副作用: "
+                                + String.join(",", entry.getValue()));
+            }
+        }
+
+        List<PlanTaskResumeState> restored = tasks.values().stream()
+                .map(task -> "RUNNING".equals(task.status())
+                        ? withCheckpoint(task, "PENDING", task.result(), task.error(), task.retryCount())
+                        : task)
+                .toList();
+        return new PlanResumeState(
+                true,
+                decoded.planVersion(),
+                decoded.planId(),
+                decoded.goal(),
+                decoded.summary(),
+                restored,
+                "");
+    }
+
+    private static PlanResumeState applyTaskCheckpoint(AgentRunEvent event, int planVersion,
+                                                       Map<String, PlanTaskResumeState> tasks) {
+        Map<String, String> attributes = event.attributes();
+        Integer checkpointVersion = parsePositiveInt(attributes.get("planVersion"));
+        if (checkpointVersion == null || checkpointVersion != planVersion) {
+            return PlanResumeState.unavailable("Plan task checkpoint 版本不一致");
+        }
+        String taskId = attributes.getOrDefault("taskId", "").trim();
+        PlanTaskResumeState previous = tasks.get(taskId);
+        if (previous == null) {
+            return PlanResumeState.unavailable("Plan task checkpoint 引用了未知任务: " + taskId);
+        }
+        String status = attributes.getOrDefault("taskStatus", "").trim().toUpperCase();
+        Integer retryCount = parseNonNegativeInt(attributes.get("retryCount"));
+        if (!PLAN_TASK_STATUSES.contains(status) || retryCount == null
+                || !attributes.containsKey("result") || !attributes.containsKey("error")) {
+            return PlanResumeState.unavailable("Plan task checkpoint 字段非法: " + taskId);
+        }
+        tasks.put(taskId, withCheckpoint(
+                previous, status, attributes.get("result"), attributes.get("error"), retryCount));
+        return null;
+    }
+
+    private static PlanTaskResumeState withCheckpoint(PlanTaskResumeState task, String status,
+                                                       String result, String error, int retryCount) {
+        return new PlanTaskResumeState(
+                task.id(), task.description(), task.type(), task.dependencies(), task.critical(),
+                task.maxRetries(), task.degradation(), task.expectedEvidence(), task.requiredTools(),
+                task.preferredAgent(), task.riskLevel(), status, result, error, retryCount);
+    }
+
     private static ReActResumeState unavailable(String reason) {
         return new ReActResumeState(false, List.of(), reason);
     }
@@ -155,6 +270,11 @@ public final class RunRecoveryService {
         } catch (NumberFormatException ignored) {
             return null;
         }
+    }
+
+    private static Integer parsePositiveInt(String value) {
+        Integer parsed = parseNonNegativeInt(value);
+        return parsed == null || parsed == 0 ? null : parsed;
     }
 
     private static List<LlmClient.ToolCall> parseToolCalls(String json) {
@@ -216,6 +336,47 @@ public final class RunRecoveryService {
         if (incomplete) return new RunResumePlan(false, true, "UNKNOWN", "存在未完成或非成功的工具调用", tools);
         if (sideEffect) return new RunResumePlan(false, true, "HIGH", "包含可能产生副作用的工具调用", tools);
         return new RunResumePlan(true, false, "LOW", "仅包含可安全重试的只读或无工具步骤", tools);
+    }
+
+    private static RunResumePlan classifyPlan(List<AgentRunEvent> events) {
+        LinkedHashSet<String> tools = new LinkedHashSet<>();
+        boolean sideEffect = false;
+        for (AgentRunEvent event : events) {
+            if (event == null) continue;
+            if (event.type() == AgentRunEventType.TOOL_CALL_REQUESTED) {
+                for (String name : event.attributes().getOrDefault("toolNames", "").split(",")) {
+                    if (!name.isBlank()) tools.add(name.trim());
+                }
+            } else if (event.type() == AgentRunEventType.TOOL_OUTCOME) {
+                String name = event.attributes().getOrDefault("toolName", "").trim();
+                if (!name.isEmpty()) tools.add(name);
+                if (ToolOutcomeStatus.COMPLETED.name().equalsIgnoreCase(
+                        event.attributes().getOrDefault("status", ""))) {
+                    sideEffect |= isPlanSideEffect(name);
+                }
+            }
+        }
+        if (sideEffect) {
+            return new RunResumePlan(false, true, "HIGH", "已完成任务包含可能产生副作用的工具调用", List.copyOf(tools));
+        }
+        return new RunResumePlan(true, false, "LOW", "Plan checkpoint 完整，仅继续安全的未完成任务", List.copyOf(tools));
+    }
+
+    private static boolean isPlanSideEffect(String toolName) {
+        return toolName == null || toolName.isBlank() || !PLAN_READ_ONLY_TOOLS.contains(toolName);
+    }
+
+    private static boolean isTerminalPlanTask(String status) {
+        return "COMPLETED".equals(status) || "SKIPPED".equals(status);
+    }
+
+    private static int lastIndexOf(List<AgentRunEvent> events, AgentRunEventType type) {
+        if (events == null) return -1;
+        for (int i = events.size() - 1; i >= 0; i--) {
+            AgentRunEvent event = events.get(i);
+            if (event != null && event.type() == type) return i;
+        }
+        return -1;
     }
 
     private static AgentMode firstMode(List<AgentRunEvent> events) {

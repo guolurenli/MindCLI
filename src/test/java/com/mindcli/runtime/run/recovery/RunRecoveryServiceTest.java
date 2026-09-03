@@ -12,11 +12,103 @@ import com.mindcli.runtime.run.store.*;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RunRecoveryServiceTest {
+
+    @Test
+    void reconstructsLatestPlanVersionAndRetriesSafeRunningTaskAsPending() {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "goal", "workspace");
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED,
+                Map.of("input", context.input())));
+        appendPlanDefinition(runStore, context, planState(1, "old", "PENDING"));
+        appendTaskCheckpoint(runStore, context, 1, "task_1", "COMPLETED", "old result");
+        appendPlanDefinition(runStore, context, planState(2, "new", "PENDING"));
+        appendTaskCheckpoint(runStore, context, 2, "task_1", "RUNNING", "");
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_OUTCOME, Map.of(
+                "taskId", "task_1", "toolId", "read_1", "toolName", "read_file",
+                "status", "COMPLETED", "text", "content")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+
+        PlanResumeState restored = new RunRecoveryService(runStore).reconstructPlanState(context.runId());
+
+        assertTrue(restored.available(), restored.reason());
+        assertEquals(2, restored.planVersion());
+        assertEquals("new", restored.summary());
+        assertEquals("PENDING", restored.tasks().get(0).status());
+    }
+
+    @Test
+    void planInspectionRejectsSuccessfulSideEffectWithoutTerminalTaskCheckpoint() {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "goal", "workspace");
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED,
+                Map.of("input", context.input())));
+        appendPlanDefinition(runStore, context, planState(1, "plan", "RUNNING"));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_OUTCOME, Map.of(
+                "taskId", "task_1", "toolId", "write_1", "toolName", "write_file",
+                "status", "COMPLETED", "text", "written")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+
+        RunRecoveryPlan inspected = new RunRecoveryService(runStore).inspect(context.runId());
+
+        assertTrue(!inspected.resumeAvailable());
+        assertTrue(inspected.resumePlan().reason().contains("副作用"), inspected.resumePlan().reason());
+    }
+
+    @Test
+    void planInspectionKeepsCompletedSideEffectAsConfirmationRequired() {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "goal", "workspace");
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED,
+                Map.of("input", context.input())));
+        appendPlanDefinition(runStore, context, planState(1, "plan", "RUNNING"));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_OUTCOME, Map.of(
+                "taskId", "task_1", "toolId", "write_1", "toolName", "write_file",
+                "status", "COMPLETED", "text", "written")));
+        appendTaskCheckpoint(runStore, context, 1, "task_1", "COMPLETED", "done");
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+
+        RunRecoveryPlan inspected = new RunRecoveryService(runStore).inspect(context.runId());
+
+        assertTrue(inspected.resumeAvailable(), inspected.resumePlan().reason());
+        assertEquals("HIGH", inspected.resumePlan().risk());
+        assertTrue(inspected.resumePlan().requiresConfirmation());
+    }
+
+    @Test
+    void rejectsPlanCheckpointThatReferencesUnknownTaskOrWrongVersion() {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "goal", "workspace");
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED,
+                Map.of("input", context.input())));
+        appendPlanDefinition(runStore, context, planState(1, "plan", "PENDING"));
+        appendTaskCheckpoint(runStore, context, 2, "missing", "COMPLETED", "done");
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+
+        PlanResumeState restored = new RunRecoveryService(runStore).reconstructPlanState(context.runId());
+
+        assertTrue(!restored.available());
+        assertTrue(restored.reason().contains("版本"), restored.reason());
+    }
+
+    @Test
+    void oldPlanLedgerWithoutDefinitionIsNotResumeAvailable() {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "goal", "workspace");
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED,
+                Map.of("input", context.input())));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+
+        RunRecoveryPlan inspected = new RunRecoveryService(runStore).inspect(context.runId());
+
+        assertTrue(!inspected.resumeAvailable());
+        assertTrue(inspected.resumePlan().reason().contains("旧 Plan run"), inspected.resumePlan().reason());
+    }
 
     @Test
     void inspectsResumableRunFromRunStore() {
@@ -178,6 +270,32 @@ class RunRecoveryServiceTest {
         runStore.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_OUTCOME, java.util.Map.of(
                 "toolId", callId, "toolName", "read_file", "argumentsJson", "{}",
                 "text", text, "status", "COMPLETED")));
+    }
+
+    private static PlanResumeState planState(int version, String summary, String status) {
+        return new PlanResumeState(true, version, "plan-1", "goal", summary, List.of(
+                new PlanTaskResumeState(
+                        "task_1", "task", "ANALYSIS", List.of(), true, 1, "REPLAN",
+                        List.of(), List.of(), "", "low", status, "", "", 0)), "");
+    }
+
+    private static void appendPlanDefinition(InMemoryRunStore store, AgentRunContext context,
+                                             PlanResumeState state) {
+        store.append(AgentRunEvent.of(context, AgentRunEventType.PLAN_DEFINED, Map.of(
+                "planVersion", Integer.toString(state.planVersion()),
+                "reason", state.planVersion() == 1 ? "INITIAL" : "REPLAN",
+                "planJson", new PlanCheckpointCodec().encode(state))));
+    }
+
+    private static void appendTaskCheckpoint(InMemoryRunStore store, AgentRunContext context,
+                                             int version, String taskId, String status, String result) {
+        store.append(AgentRunEvent.of(context, AgentRunEventType.PLAN_TASK_CHECKPOINT, Map.of(
+                "planVersion", Integer.toString(version),
+                "taskId", taskId,
+                "taskStatus", status,
+                "result", result,
+                "error", "",
+                "retryCount", "0")));
     }
 
     @Test
