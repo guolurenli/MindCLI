@@ -21,6 +21,10 @@ import com.mindcli.app.cli.interaction.MindCliCompleter;
 import com.mindcli.app.cli.interaction.MindCliHighlighter;
 import com.mindcli.app.cli.interaction.MindCliHistory;
 import com.mindcli.app.cli.runtime.CliRuntimeCoordinator;
+import com.mindcli.app.cli.runtime.CliModeFactory;
+import com.mindcli.app.cli.runtime.CliRecoverableRunDiscovery;
+import com.mindcli.app.cli.runtime.CliRunResumer;
+import com.mindcli.app.cli.runtime.CliRuntimeServerBootstrap;
 import com.mindcli.platform.config.MindCliConfig;
 import com.mindcli.platform.hitl.HitlHandler;
 import com.mindcli.platform.hitl.HitlToolRegistry;
@@ -54,12 +58,9 @@ import com.mindcli.runtime.run.recovery.RunRecoveryService;
 import com.mindcli.runtime.run.session.SessionContext;
 import com.mindcli.runtime.run.mode.SingleAgentAdapter;
 import com.mindcli.runtime.run.mode.TeamModeAdapter;
-import com.mindcli.runtime.api.RuntimeApiServer;
-import com.mindcli.runtime.api.RuntimeThreadStore;
 import com.mindcli.runtime.task.DurableTaskManager;
 import com.mindcli.platform.snapshot.SnapshotService;
 import com.mindcli.capability.skill.SkillRegistry;
-import com.mindcli.capability.tool.ToolRegistry;
 import com.mindcli.platform.render.terminal.AnsiStyle;
 import com.mindcli.app.wechat.WechatCommandMain;
 import org.jline.terminal.Terminal;
@@ -90,7 +91,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -169,9 +169,9 @@ public class Main {
             }
             return;
         }
-        if (isRuntimeServeCommand(args)) {
+        if (CliRuntimeServerBootstrap.isRuntimeServeCommand(args)) {
             configureLogging();
-            startRuntimeApiAndBlock(args);
+            CliRuntimeServerBootstrap.startRuntimeApiAndBlock(args);
             return;
         }
 
@@ -260,11 +260,13 @@ public class Main {
             hitlToolRegistry.setSkillRegistry(skillRegistry);
 
             Agent reactAgent = new Agent(llmClient, hitlToolRegistry);
+            startupNote = appendStartupNote(startupNote,
+                    CliRecoverableRunDiscovery.startupNotice(reactAgent.runStore()));
             SessionContext sessionContext = new SessionContext();
             reactAgent.setSessionContext(sessionContext);
             reactAgent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
             reactAgent.setSkillRegistry(skillRegistry);
-            DurableTaskManager taskManager = openTaskManager(llmClientRef);
+            DurableTaskManager taskManager = CliRuntimeServerBootstrap.openTaskManager(llmClientRef);
             taskManager.start();
             Runtime.getRuntime().addShutdownHook(new Thread(taskManager::close, "mindcli-task-shutdown"));
             WechatCliCommandHandler.WechatRuntimeController wechatRuntime =
@@ -550,75 +552,6 @@ public class Main {
         }
     }
 
-    private static boolean isRuntimeServeCommand(String[] args) {
-        return args != null
-                && args.length >= 1
-                && "serve".equalsIgnoreCase(args[0])
-                && java.util.Arrays.stream(args).anyMatch("--http"::equalsIgnoreCase);
-    }
-
-    private static void startRuntimeApiAndBlock(String[] args) {
-        MindCliConfig config = MindCliConfig.load();
-        LlmClient client = LlmClientFactory.createFromConfig(config);
-        if (client == null) {
-            System.err.println("❌ 错误: 未找到可用的 API Key");
-            System.exit(1);
-        }
-        int port = parseServePort(args, 8080);
-        try {
-            RuntimeThreadStore store = new RuntimeThreadStore(RuntimeThreadStore.defaultDbPath());
-            RuntimeApiServer server = new RuntimeApiServer(
-                    store,
-                    prompt -> runHeadlessTask(prompt, client),
-                    port,
-                    RuntimeApiServer.configuredApiKey());
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                server.close();
-                store.close();
-            }, "mindcli-runtime-api-shutdown"));
-            server.start();
-            System.out.println("✅ MindCLI Runtime API 已启动: http://127.0.0.1:" + server.port());
-            System.out.println("   认证: Authorization: Bearer <MINDCLI_RUNTIME_API_KEY>");
-            new CountDownLatch(1).await();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        } catch (Exception e) {
-            System.err.println("❌ Runtime API 启动失败: " + e.getMessage());
-            System.exit(1);
-        }
-    }
-
-    private static int parseServePort(String[] args, int defaultPort) {
-        if (args == null) {
-            return defaultPort;
-        }
-        for (int i = 0; i < args.length - 1; i++) {
-            if ("--port".equalsIgnoreCase(args[i])) {
-                try {
-                    return Integer.parseInt(args[i + 1]);
-                } catch (NumberFormatException ignored) {
-                    return defaultPort;
-                }
-            }
-        }
-        return defaultPort;
-    }
-
-    private static String runHeadlessTask(String prompt, LlmClient llmClient) {
-        ToolRegistry registry = new ToolRegistry();
-        registry.setProjectPath(Path.of(".").toAbsolutePath().normalize().toString());
-        Agent agent = new Agent(llmClient, registry);
-        return agent.run(prompt);
-    }
-
-    private static DurableTaskManager openTaskManager(AtomicReference<LlmClient> llmClientRef) {
-        try {
-            return DurableTaskManager.openDefault(prompt -> runHeadlessTask(prompt, llmClientRef.get()));
-        } catch (Exception e) {
-            throw new IllegalStateException("后台任务管理器初始化失败: " + e.getMessage(), e);
-        }
-    }
-
     static String handleWechatCommand(String payload,
                                       LineReader lineReader,
                                       Renderer renderer,
@@ -629,40 +562,26 @@ public class Main {
 
     static PlanExecuteAgent createPlanAgent(LlmClient llmClient, Agent reactAgent,
                                             PlanExecuteAgent.PlanReviewHandler reviewHandler) {
-        return new PlanExecuteAgent(
-                llmClient,
-                reactAgent.getToolRegistry(),
-                reactAgent.getMemoryManager(),
-                reviewHandler,
-                System.out
-        );
+        return CliModeFactory.createPlanAgent(llmClient, reactAgent, reviewHandler, System.out);
     }
 
     private static PlanExecuteAgent createPlanAgent(LlmClient llmClient, Agent reactAgent,
                                                     Terminal terminal, LineReader lineReader, PrintStream out) {
         out.println("📋 使用 Plan-and-Execute 模式\n");
-        return new PlanExecuteAgent(
-                llmClient,
-                reactAgent.getToolRegistry(),
-                reactAgent.getMemoryManager(),
-                createPlanReviewHandler(terminal, lineReader, out),
-                out
-        );
+        return CliModeFactory.createPlanAgent(llmClient, reactAgent,
+                createPlanReviewHandler(terminal, lineReader, out), out);
     }
 
     private static AgentOrchestrator createTeamAgent(LlmClient llmClient, Agent reactAgent, PrintStream out) {
         out.println("👥 使用 Multi-Agent 协作模式\n");
-        return new AgentOrchestrator(llmClient, reactAgent.getToolRegistry(), reactAgent.getMemoryManager(), out);
+        return CliModeFactory.createTeamAgent(llmClient, reactAgent, out);
     }
 
     private static SubAgent createSingleAgent(AgentProfile profile, LlmClient llmClient, Agent reactAgent,
                                               McpServerManager mcpServerManager,
                                               SkillRegistry skillRegistry) {
-        SubAgent agent = new SubAgent(profile, llmClient, reactAgent.getToolRegistry());
-        agent.setMemoryManager(reactAgent.getMemoryManager());
-        agent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
-        agent.setSkillRegistry(skillRegistry);
-        return agent;
+        return CliModeFactory.createSingleAgent(profile, llmClient, reactAgent,
+                mcpServerManager, skillRegistry);
     }
 
     static String runModeWithRuntime(AgentMode mode, String input, String workspace,
@@ -675,41 +594,8 @@ public class Main {
                                     Terminal terminal, LineReader lineReader, PrintStream out,
                                     McpServerManager mcpServerManager, SkillRegistry skillRegistry,
                                     SessionContext sessionContext) {
-        RunStore store = reactAgent.runStore();
-        RunRecoveryPlan plan = new RunRecoveryService(store).inspect(runId);
-        if (!plan.resumeAvailable()) {
-            return "❌ 无法恢复: " + (plan.resumable() ? "历史 run 缺少原始输入或工作区信息" : plan.stateStatus());
-        }
-        Path currentWorkspace = Path.of(reactAgent.getToolRegistry().getProjectPath()).toAbsolutePath().normalize();
-        Path recordedWorkspace = Path.of(plan.workspace()).toAbsolutePath().normalize();
-        if (!currentWorkspace.equals(recordedWorkspace)) {
-            return "❌ 无法恢复: run workspace 与当前项目不一致（" + plan.workspace() + "）";
-        }
-        ModeAdapter adapter;
-        if (plan.mode() == AgentMode.REACT) {
-            adapter = new ReActModeAdapter(reactAgent);
-        } else if (plan.mode() == AgentMode.PLAN) {
-            PlanExecuteAgent agent = createPlanAgent(llmClient, reactAgent, terminal, lineReader, out);
-            agent.setSessionContext(sessionContext);
-            agent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
-            agent.setSkillRegistry(skillRegistry);
-            adapter = new PlanModeAdapter(agent);
-        } else if (plan.mode() == AgentMode.TEAM) {
-            AgentOrchestrator orchestrator = createTeamAgent(llmClient, reactAgent, out);
-            orchestrator.setSessionContext(sessionContext);
-            orchestrator.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
-            orchestrator.setSkillSystem(skillRegistry);
-            adapter = new TeamModeAdapter(orchestrator);
-        } else {
-            return "❌ 不支持恢复 mode: " + plan.mode();
-        }
-        AgentRunResult result = new AgentRuntime(store, reactAgent.getToolRegistry().getSnapshotService())
-                .resume(runId, adapter);
-        if (sessionContext != null) {
-            sessionContext.record(result, adapter instanceof ReActModeAdapter react
-                    ? react.latestAssistantResponse() : null);
-        }
-        return runtimeUserFacingContent(result);
+        return CliRunResumer.resume(runId, reactAgent, llmClient, terminal, lineReader, out,
+                mcpServerManager, skillRegistry, sessionContext);
     }
 
     static String runModeWithRuntime(AgentMode mode, String input, String workspace,
@@ -945,8 +831,8 @@ public class Main {
     }
 
     private static PlanExecuteAgent.PlanReviewHandler createPlanReviewHandler(Terminal terminal,
-                                                                              LineReader lineReader,
-                                                                              PrintStream out) {
+                                                                               LineReader lineReader,
+                                                                               PrintStream out) {
         return (String goal, ExecutionPlan plan) -> {
             boolean expanded = false;
             out.println(plan.summarize());
@@ -1018,6 +904,12 @@ public class Main {
                 return mapReviewDecision(decision);
             }
         };
+    }
+
+    /** Compatibility seam for runtime helpers that need the interactive plan reviewer. */
+    public static PlanExecuteAgent.PlanReviewHandler createPlanReviewHandlerForRuntime(
+            Terminal terminal, LineReader lineReader, PrintStream out) {
+        return createPlanReviewHandler(terminal, lineReader, out);
     }
 
     private static KeyReadResult readSingleKeyFromTerminal(Terminal terminal) {

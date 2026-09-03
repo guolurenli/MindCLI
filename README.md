@@ -83,7 +83,7 @@ sequenceDiagram
 ```text
 src/main/java/com/mindcli/
 ├── agent/       ReAct / Plan / Multi-Agent 编排，plan/ 含 DependencyGraph，team/ 是 Team 编排与调度模型，profile/ 是 Agent Profile 与 profile lease
-├── app/         cli / wechat 用户入口与命令 handler；cli/runtime/CliRuntimeCoordinator 负责模式运行与 SessionContext 交接，CliCommandRouter 负责低风险 slash 命令分发
+├── app/         cli / wechat 用户入口与命令 handler；cli/runtime/ 下由 CliRuntimeCoordinator 负责模式运行、CliModeFactory 负责共享依赖组装、CliRunResumer 负责恢复编排、CliRuntimeServerBootstrap 负责 Runtime API/headless 启动，CliCommandRouter 负责低风险 slash 命令分发
 ├── capability/  browser / image / lsp / mcp / memory（policy/） / skill / tool（builtin/registry/namespace/search/） / web
 ├── platform/    config / hitl / llm / prompt / render / security / snapshot / text
 └── runtime/     run/（facade + store/dispatch/loop/mode/recovery/hook/legacy/session）、api/、task/
@@ -220,11 +220,13 @@ CLI 启动默认最多等待 MCP server 初始化 8 秒；超时后会先进入�
 | `/audit [N]` | 查看今日最近 N 条危险工具审计 |
 | `/snapshot` / `/snapshot status` / `/snapshot clean` | 查看、检查或清理 Side-Git 快照 |
 | `/restore <N>` | 回滚到最近第 N 个 pre-turn 快照 |
-| `/run inspect <runId>` | 检查 run ledger、snapshot checkpoint 与恢复提示 |
-| `/run resume <runId>` | 恢复可恢复 run；ReAct 会按账本重建单份消息并复用已完成工具结果，每个工具调用必须有对应成功结果；已知高风险调用需 `--confirm`，不确定调用必须人工检查 |
+| `/run inspect <runId>` | 检查 run ledger、snapshot checkpoint、工具调用 ID/状态/参数摘要与恢复提示 |
+| `/run resume <runId>` | 恢复可恢复 run；ReAct 会按账本重建单份消息并复用已完成工具结果，同一 `runId + toolCallId + 工具名 + 参数` 再次出现时由 dispatcher 幂等复用，不重复执行；已知高风险调用需 `--confirm`，不确定调用必须人工检查 |
 | `/task` / `/task list [N]` | 查看后台任务 |
 | `/task add <任务>` | 提交后台任务 |
 | `/task cancel <id>` / `/task log <id>` | 取消任务或查看任务日志 |
+
+CLI 启动时会只读扫描当前持久化账本根目录，最多在 Banner 中提示最近 3 个可恢复的父 run；Multi-Agent child run 不会被当成独立任务。该提示不会自动恢复或执行任务，仍需先用 `/run inspect <runId>` 检查，再显式调用 `/run resume <runId>`，原有风险确认、HITL 与策略校验保持不变。
 
 ### 微信通道
 

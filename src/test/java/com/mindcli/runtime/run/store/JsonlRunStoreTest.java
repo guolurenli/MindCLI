@@ -20,6 +20,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -187,6 +188,25 @@ class JsonlRunStoreTest {
         assertEquals("WORKER", childSummary.path("profileRole").asText());
         assertEquals("WRITE_LIMITED", childSummary.path("permissionMode").asText());
         assertEquals("preferredAgent matched", childSummary.path("selectedReason").asText());
+    }
+
+    @Test
+    void listsOnlyTopLevelRunsWithLedgers() throws Exception {
+        Path runsRoot = tempDir.resolve("runs");
+        JsonlRunStore runStore = new JsonlRunStore(runsRoot);
+        AgentRunContext firstParent = AgentRunContext.create(AgentMode.REACT, "first", tempDir.toString());
+        AgentRunContext secondParent = AgentRunContext.create(AgentMode.PLAN, "second", tempDir.toString());
+        AgentRunContext child = AgentRunContext.create(AgentMode.TEAM, "child", tempDir.toString(), Map.of(
+                "parentRunId", firstParent.runId(),
+                "rootRunId", firstParent.runId()));
+
+        runStore.append(AgentRunEvent.of(firstParent, AgentRunEventType.RUN_STARTED));
+        runStore.append(AgentRunEvent.of(secondParent, AgentRunEventType.RUN_STARTED));
+        runStore.append(AgentRunEvent.of(child, AgentRunEventType.RUN_STARTED));
+        Files.createDirectories(runsRoot.resolve("not-a-run"));
+
+        assertEquals(Set.of(firstParent.runId(), secondParent.runId()),
+                Set.copyOf(runStore.topLevelRunIds()));
     }
 
     @Test

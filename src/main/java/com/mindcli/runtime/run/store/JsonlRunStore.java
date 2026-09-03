@@ -100,6 +100,23 @@ public final class JsonlRunStore implements RunStore {
         return runDir(runId).resolve("children");
     }
 
+    /** Returns only persisted parent runs directly below the configured runs root. */
+    public List<String> topLevelRunIds() {
+        if (!Files.isDirectory(runsRoot)) {
+            return List.of();
+        }
+        try (Stream<Path> paths = Files.list(runsRoot)) {
+            return paths
+                    .filter(Files::isDirectory)
+                    .filter(path -> Files.isRegularFile(path.resolve("run.jsonl")))
+                    .map(path -> path.getFileName().toString())
+                    .sorted()
+                    .toList();
+        } catch (IOException | SecurityException ignored) {
+            return List.of();
+        }
+    }
+
     private Path ledgerFile(String runId) {
         return ledgerPath(runId);
     }

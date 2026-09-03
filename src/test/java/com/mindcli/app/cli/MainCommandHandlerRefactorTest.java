@@ -107,6 +107,32 @@ class MainCommandHandlerRefactorTest {
     }
 
     @Test
+    void runHandlerShowsToolDiagnosticsForInspect(@TempDir Path tempDir) {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext context = new AgentRunContext("run_tools", AgentMode.REACT, "hello", tempDir.toString(),
+                Instant.now(), Map.of());
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED,
+                Map.of("input", "hello")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.LLM_RESPONSE, Map.of(
+                "toolCallCount", "1",
+                "toolCallsJson", "[{\"id\":\"call_1\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"a.txt\\\"}\"}}]")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_OUTCOME, Map.of(
+                "toolId", "call_1", "toolName", "write_file", "argumentsJson", "{\"path\":\"a.txt\"}",
+                "status", "COMPLETED", "text", "written")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+
+        RunCommandHandler.printRunInspect(printStream(sink), runStore, "inspect run_tools");
+
+        String output = sink.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("Tool calls:"), output);
+        assertTrue(output.contains("call_1"), output);
+        assertTrue(output.contains("write_file"), output);
+        assertTrue(output.contains("COMPLETED"), output);
+        assertTrue(output.contains("a.txt"), output);
+    }
+
+    @Test
     void runHandlerBlocksHighRiskResumeWithoutConfirmation(@TempDir Path tempDir) {
         InMemoryRunStore runStore = new InMemoryRunStore();
         AgentRunContext context = new AgentRunContext("run_resume", AgentMode.REACT, "hello", tempDir.toString(),

@@ -276,7 +276,8 @@ public class Agent {
             }
         };
 
-        AgentLoopResult loopResult = new AgentLoopExecutor(llmClient, new ToolDispatcher(toolRegistry), effectiveRunStore)
+        AgentLoopResult loopResult = new AgentLoopExecutor(llmClient,
+                new ToolDispatcher(toolRegistry, effectiveRunStore), effectiveRunStore)
                 .execute(new AgentLoopContext(
                         runContext,
                         conversationHistory,

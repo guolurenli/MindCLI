@@ -35,6 +35,60 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ToolDispatcherTest {
 
     @Test
+    void reusesCompletedOutcomeForSameRunAndToolCallId() {
+        InMemoryRunStore store = new InMemoryRunStore();
+        AgentRunContext context = AgentRunContext.create(
+                AgentMode.REACT, "resume", "workspace", Map.of("resumed", "true"));
+        store.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_OUTCOME, Map.of(
+                "toolId", "call_1",
+                "toolName", "write_file",
+                "argumentsJson", "{\"path\":\"a.txt\",\"content\":\"x\"}",
+                "status", ToolOutcomeStatus.COMPLETED.name(),
+                "text", "already written")));
+
+        AtomicInteger executions = new AtomicInteger();
+        ToolDispatcher dispatcher = new ToolDispatcher(invocation -> {
+            executions.incrementAndGet();
+            return completed(invocation, "must not execute");
+        }, store);
+
+        List<ToolOutcome> outcomes = dispatcher.dispatch(List.of(
+                toolCall("call_1", "write_file", "{\"path\":\"a.txt\",\"content\":\"x\"}")), context);
+
+        assertEquals(0, executions.get());
+        assertEquals(ToolOutcomeStatus.COMPLETED, outcomes.get(0).status());
+        assertEquals("already written", outcomes.get(0).text());
+        assertEquals("replayed", outcomes.get(0).metadata().get("idempotency"));
+    }
+
+    @Test
+    void rejectsIdempotencyKeyCollisionWithDifferentArguments() {
+        InMemoryRunStore store = new InMemoryRunStore();
+        AgentRunContext context = AgentRunContext.create(
+                AgentMode.REACT, "resume", "workspace", Map.of("resumed", "true"));
+        store.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_OUTCOME, Map.of(
+                "toolId", "call_1",
+                "toolName", "write_file",
+                "argumentsJson", "{\"path\":\"a.txt\",\"content\":\"original\"}",
+                "status", ToolOutcomeStatus.COMPLETED.name(),
+                "text", "already written")));
+
+        AtomicInteger executions = new AtomicInteger();
+        ToolDispatcher dispatcher = new ToolDispatcher(invocation -> {
+            executions.incrementAndGet();
+            return completed(invocation, "must not execute");
+        }, store);
+
+        List<ToolOutcome> outcomes = dispatcher.dispatch(List.of(
+                toolCall("call_1", "write_file", "{\"path\":\"a.txt\",\"content\":\"changed\"}")), context);
+
+        assertEquals(0, executions.get());
+        assertEquals(ToolOutcomeStatus.FAILED, outcomes.get(0).status());
+        assertEquals("IDEMPOTENCY_KEY_COLLISION", outcomes.get(0).errorCategory());
+        assertEquals("collision", outcomes.get(0).metadata().get("idempotency"));
+    }
+
+    @Test
     void dispatchPreservesToolCallOrderAndArguments() {
         Map<String, ToolRegistry.ToolInvocation> seen = new java.util.concurrent.ConcurrentHashMap<>();
         ToolDispatcher dispatcher = new ToolDispatcher(invocation -> {

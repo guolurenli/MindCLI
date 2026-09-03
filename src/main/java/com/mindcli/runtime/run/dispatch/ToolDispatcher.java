@@ -36,6 +36,7 @@ public final class ToolDispatcher {
     private final ResourceLockManager lockManager;
     private final HookManager hookManager;
     private final long batchTimeoutSeconds;
+    private final RunStore runStore;
 
     public ToolDispatcher(ToolRegistry toolRegistry) {
         this((ToolInvocationExecutor) invocation -> Objects.requireNonNull(toolRegistry, "toolRegistry")
@@ -43,19 +44,35 @@ public final class ToolDispatcher {
                 new ToolResourceClassifier(),
                 SHARED_LOCK_MANAGER,
                 HookManager.noop(),
-                toolRegistry.getToolBatchTimeoutSeconds());
+                toolRegistry.getToolBatchTimeoutSeconds(),
+                null);
+    }
+
+    public ToolDispatcher(ToolRegistry toolRegistry, RunStore runStore) {
+        this((ToolInvocationExecutor) invocation -> Objects.requireNonNull(toolRegistry, "toolRegistry")
+                        .executeToolExecution(invocation.name(), invocation.argumentsJson()),
+                new ToolResourceClassifier(),
+                SHARED_LOCK_MANAGER,
+                HookManager.noop(),
+                toolRegistry.getToolBatchTimeoutSeconds(),
+                runStore);
     }
 
     public ToolDispatcher(ToolInvocationExecutor executor) {
         this(executor, new ToolResourceClassifier(), SHARED_LOCK_MANAGER, HookManager.noop(),
-                DEFAULT_BATCH_TIMEOUT_SECONDS);
+                DEFAULT_BATCH_TIMEOUT_SECONDS, null);
+    }
+
+    public ToolDispatcher(ToolInvocationExecutor executor, RunStore runStore) {
+        this(executor, new ToolResourceClassifier(), SHARED_LOCK_MANAGER, HookManager.noop(),
+                DEFAULT_BATCH_TIMEOUT_SECONDS, runStore);
     }
 
     public ToolDispatcher(ToolInvocationExecutor executor,
                    ToolResourceClassifier resourceClassifier,
                    ResourceLockManager lockManager,
                    HookManager hookManager) {
-        this(executor, resourceClassifier, lockManager, hookManager, DEFAULT_BATCH_TIMEOUT_SECONDS);
+        this(executor, resourceClassifier, lockManager, hookManager, DEFAULT_BATCH_TIMEOUT_SECONDS, null);
     }
 
     public ToolDispatcher(ToolInvocationExecutor executor,
@@ -63,11 +80,21 @@ public final class ToolDispatcher {
                    ResourceLockManager lockManager,
                    HookManager hookManager,
                    long batchTimeoutSeconds) {
+        this(executor, resourceClassifier, lockManager, hookManager, batchTimeoutSeconds, null);
+    }
+
+    private ToolDispatcher(ToolInvocationExecutor executor,
+                   ToolResourceClassifier resourceClassifier,
+                   ResourceLockManager lockManager,
+                   HookManager hookManager,
+                   long batchTimeoutSeconds,
+                   RunStore runStore) {
         this.executor = Objects.requireNonNull(executor, "executor");
         this.resourceClassifier = Objects.requireNonNull(resourceClassifier, "resourceClassifier");
         this.lockManager = Objects.requireNonNull(lockManager, "lockManager");
         this.hookManager = hookManager == null ? HookManager.noop() : hookManager;
         this.batchTimeoutSeconds = Math.max(1, batchTimeoutSeconds);
+        this.runStore = runStore;
     }
 
     public List<ToolOutcome> dispatch(List<LlmClient.ToolCall> toolCalls) {
@@ -131,6 +158,12 @@ public final class ToolDispatcher {
                         policyDecision.reason(), metadata);
                 fireTerminalHook(effectiveContext, effectiveInvocation, outcome);
                 outcomes.set(i, outcome);
+                continue;
+            }
+            ToolOutcome replayed = replayedOutcome(effectiveContext, effectiveInvocation, metadata);
+            if (replayed != null) {
+                fireTerminalHook(effectiveContext, effectiveInvocation, replayed);
+                outcomes.set(i, replayed);
                 continue;
             }
             List<ResourceKey> resourceKeys = resourceClassifier.classify(effectiveInvocation, effectiveContext);
@@ -281,6 +314,72 @@ public final class ToolDispatcher {
             case DENIED_BY_POLICY, DENIED_BY_USER, TIMED_OUT, CANCELLED, FAILED -> HookType.TOOL_ERROR;
         };
         hookManager.fire(HookEvent.withOutcome(type, invocation, context, outcome));
+    }
+
+    private ToolOutcome replayedOutcome(AgentRunContext context,
+                                         ToolRegistry.ToolInvocation invocation,
+                                         Map<String, String> metadata) {
+        if (runStore == null || context == null
+                || !"true".equalsIgnoreCase(context.metadata().getOrDefault("resumed", "false"))
+                || invocation == null || invocation.id() == null
+                || invocation.id().isBlank()) {
+            return null;
+        }
+        List<AgentRunEvent> events = runStore.events(context.runId());
+        if (events == null) {
+            return null;
+        }
+        for (int i = events.size() - 1; i >= 0; i--) {
+            AgentRunEvent event = events.get(i);
+            if (event == null || event.type() != AgentRunEventType.TOOL_OUTCOME) {
+                continue;
+            }
+            Map<String, String> attributes = event.attributes();
+            if (!invocation.id().equals(attributes.get("toolId"))) {
+                continue;
+            }
+            boolean completed = ToolOutcomeStatus.COMPLETED.name().equalsIgnoreCase(attributes.get("status"));
+            boolean exactMatch = completed
+                    && invocation.name().equals(attributes.getOrDefault("toolName", ""))
+                    && invocation.argumentsJson().equals(attributes.getOrDefault("argumentsJson", ""));
+            if (!exactMatch) {
+                Map<String, String> collisionMetadata = new LinkedHashMap<>();
+                if (metadata != null) {
+                    collisionMetadata.putAll(metadata);
+                }
+                collisionMetadata.put("idempotency", "collision");
+                return new ToolOutcome(
+                        invocation.id(), invocation.name(), invocation.argumentsJson(),
+                        ToolOutcomeStatus.FAILED,
+                        "恢复时发现 toolCallId 已对应不同的工具调用，已阻止重复执行",
+                        0,
+                        "toolCallId 与历史调用不匹配",
+                        "IDEMPOTENCY_KEY_COLLISION",
+                        List.of(), collisionMetadata);
+            }
+            Map<String, String> replayMetadata = new LinkedHashMap<>();
+            if (metadata != null) {
+                replayMetadata.putAll(metadata);
+            }
+            replayMetadata.put("idempotency", "replayed");
+            return new ToolOutcome(
+                    invocation.id(), invocation.name(), invocation.argumentsJson(),
+                    ToolOutcomeStatus.COMPLETED,
+                    attributes.getOrDefault("text", ""),
+                    parseLong(attributes.get("elapsedMillis")),
+                    attributes.getOrDefault("errorMessage", ""),
+                    attributes.getOrDefault("errorCategory", ""),
+                    List.of(), replayMetadata);
+        }
+        return null;
+    }
+
+    private static long parseLong(String value) {
+        try {
+            return value == null ? 0L : Math.max(0L, Long.parseLong(value));
+        } catch (NumberFormatException ignored) {
+            return 0L;
+        }
     }
 
     private static Map<String, String> baseMetadata(AgentRunContext context, int index, HookDecision decision) {
