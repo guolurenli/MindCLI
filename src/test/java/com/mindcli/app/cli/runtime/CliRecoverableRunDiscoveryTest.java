@@ -7,6 +7,9 @@ import com.mindcli.runtime.run.recovery.RunRecoveryPlan;
 import com.mindcli.runtime.run.recovery.PlanCheckpointCodec;
 import com.mindcli.runtime.run.recovery.PlanResumeState;
 import com.mindcli.runtime.run.recovery.PlanTaskResumeState;
+import com.mindcli.runtime.run.recovery.TeamCheckpointCodec;
+import com.mindcli.runtime.run.recovery.TeamResumeState;
+import com.mindcli.runtime.run.recovery.TeamStepResumeState;
 import com.mindcli.runtime.run.store.InMemoryRunStore;
 import com.mindcli.runtime.run.store.JsonlRunStore;
 import org.junit.jupiter.api.Test;
@@ -31,6 +34,7 @@ class CliRecoverableRunDiscoveryTest {
         appendResumable(store, "run_old", AgentMode.REACT, Instant.parse("2026-01-01T00:00:00Z"));
         appendResumable(store, "run_middle", AgentMode.PLAN, Instant.parse("2026-01-02T00:00:00Z"));
         appendResumable(store, "run_new", AgentMode.TEAM, Instant.parse("2026-01-03T00:00:00Z"));
+        appendLegacyTeam(store, "run_legacy_team", Instant.parse("2026-01-03T12:00:00Z"));
         appendResumable(store, "run_newest", AgentMode.REACT, Instant.parse("2026-01-04T00:00:00Z"));
         appendTerminal(store, "run_done", Instant.parse("2026-01-05T00:00:00Z"));
         appendMissingInput(store, "run_without_input", Instant.parse("2026-01-06T00:00:00Z"));
@@ -91,7 +95,25 @@ class CliRecoverableRunDiscoveryTest {
                     "planVersion", "1",
                     "reason", "INITIAL",
                     "planJson", new PlanCheckpointCodec().encode(state))));
+        } else if (mode == AgentMode.TEAM) {
+            TeamResumeState state = new TeamResumeState(true, 1, 1, List.of(
+                    new TeamStepResumeState("step_1", "remaining step", "ANALYSIS", List.of(), List.of(),
+                            "", "low", "PENDING", "", 0, "", "", List.of())), "");
+            store.append(event(runId, AgentRunEventType.TEAM_PLAN_DEFINED, timestamp.plusMillis(500), Map.of(
+                    "mode", mode.name(),
+                    "workspace", tempDir.toString(),
+                    "schemaVersion", "1",
+                    "planVersion", "1",
+                    "planJson", new TeamCheckpointCodec().encodePlan(state))));
         }
+        store.append(event(runId, AgentRunEventType.RUN_CANCELLED, timestamp.plusSeconds(1), Map.of()));
+    }
+
+    private void appendLegacyTeam(JsonlRunStore store, String runId, Instant timestamp) {
+        store.append(event(runId, AgentRunEventType.RUN_STARTED, timestamp, Map.of(
+                "mode", AgentMode.TEAM.name(),
+                "workspace", tempDir.toString(),
+                "input", "legacy team task")));
         store.append(event(runId, AgentRunEventType.RUN_CANCELLED, timestamp.plusSeconds(1), Map.of()));
     }
 

@@ -40,7 +40,7 @@ mvn test -DskipTests=false                  # 全量回归
 /export                  # 导出当前 ReAct 会话为 Markdown，包含完整 system prompt
 /memory export --audit   # 导出记忆审计证据 Markdown
 /run inspect <runId>     # 检查指定 Agent Runtime run 的状态、工具调用诊断、snapshot checkpoint 与恢复提示
-/run resume <runId>      # 恢复 ReAct 消息边界或 Plan 原 DAG 的安全 task checkpoint
+/run resume <runId>      # 恢复 ReAct 消息边界、Plan task 或 Team step 的安全 checkpoint
 ```
 
 ## 架构概览
@@ -57,7 +57,7 @@ mvn test -DskipTests=false                  # 全量回归
 
 ReAct 的多轮控制由 `runtime/run/loop/AgentLoopExecutor.java` 承担，单轮 LLM/tool 交互由 `runtime/run/loop/AgentTurnKernel.java` 承担；`Agent.java` 继续负责 prompt / memory / renderer / 状态栏等 ReAct 周边体验。CLI 生产入口中，ReAct、`/plan`、`/team` 都会先经 `AgentModeRouter` 选择 `ReActModeAdapter` / `PlanModeAdapter` / `TeamModeAdapter`，再进入 `AgentRuntime`；runtime 提供的 `AgentRunContext` 与共享 `RunStore` 会向下传递，避免分裂 runId / store。三条路径的工具调用都会先经 `runtime/run/dispatch/ToolDispatcher.java` 进入内部 Hook、资源分类和资源锁，再映射为结构化 `ToolOutcome`；Plan 仍保留任务级 loop、DAG 和失败恢复，但每个任务的单轮 LLM/tool 交互也复用 `AgentTurnKernel`，任务级预算、结果聚合和 `TOOL_OUTCOME` 事件仍由 Plan 外层负责；SubAgent 的单轮 LLM/tool 交互同样复用 `AgentTurnKernel`，其 profile / 只读 / 自审逻辑仍由 `SubAgent` 自己负责，并继续写入 `TOOL_OUTCOME` 事件。`/team` 已接入 `AgentProfile` / `AgentPool`：内置 `EXPLORER` / `WORKER` 两个子代理硬编码在源码（`AgentProfile.builtinExplorer` / `builtinWorker`），实例固定为 `explorer#1`、`explorer#2`、`worker#1`；规划职责收编到 orchestrator 内建（直接调 LLM + `TEAM_PLANNER` prompt），不再有独立 planner 子代理，也不再读取 `.mindcli/config.toml` 的 `[team.*]` 或 `.mindcli/agents.json`。Profile 的 `commandAllowlist` 为空时表示不增加 Profile 级命令限制，实际命令仍必须经过全局命令策略、HITL 和路径/工作区防护；`AgentPool` 按 profile semaphore 原子 `tryAcquire` 分配 lease，避免并行步骤争抢同一个 profile 后串行化；child run 与 `TOOL_OUTCOME` 会记录 `profileName`、`permissionMode`、`selectedReason` 和 profile policy 决策。
 
-Agent Runtime 账本默认通过 `RunStoreFactory` 写到 `~/.mindcli/runs`（可用 `mindcli.runs.dir` / `MINDCLI_RUNS_DIR` 改写），`InMemoryRunStore` 仅保留给测试和降级。JSONL ledger 是 source of truth：每个事件包含 run 内递增 `seq` 和唯一 `eventId`，`run.meta.json` / `run.state.json` 由事件投影生成；append 会单次加载当前 ledger，并复用同一事件快照完成 seq 分配、坏尾修复与派生文件投影，读取会忽略尾部坏行，继续 append 前会先截断坏尾，`runId` 只能使用安全路径字符。Plan 在审阅通过及局部重规划合并后写 `PLAN_DEFINED`，并在 task 的 `RUNNING` / `PENDING` / `COMPLETED` / `SKIPPED` / `FAILED` 状态变化后写 `PLAN_TASK_CHECKPOINT`；恢复时只使用最新完整定义和同版本 checkpoint，终态 task 不重跑。AgentRuntime 可写 `SNAPSHOT_CREATED`，把 `PRE_RUN` / `POST_RUN` Side-Git checkpoint 与 runId 关联；CLI Agent 主路径不再额外套 `SnapshotService.runTurn(...)`，避免同一 run 产生旧 turn snapshot 与 runtime snapshot 两套快照；`/run inspect <runId>` 通过 `RunRecoveryService` 展示状态、checkpoint 和恢复提示。CLI 启动时只读发现最近 3 个具备恢复上下文的顶层父 run 并写入 Banner note，不扫描 `children/`、不自动恢复，也不绕过 `/run resume` 的风险确认、HITL 或策略校验。Multi-Agent 的规划阶段由 parent run 直接记录 `LLM_RESPONSE phase=plan`；explorer / worker 的执行与自审会写入 child run，目录布局为 `parentRun/children/childRun/`，事件 attributes 带 `parentRunId`、`rootRunId`、`role`、`stepId`、`attempt`、`phase=execute|review`；parent `run.state.json` 会 materialize child run 摘要。自审调用失败、输出不可解析、重试后仍拒绝时必须 fail closed，不能把执行候选结果标记为完成；review phase 摘要要保留 `approved` / `businessStatus`，供恢复和审计判断。
+Agent Runtime 账本默认通过 `RunStoreFactory` 写到 `~/.mindcli/runs`（可用 `mindcli.runs.dir` / `MINDCLI_RUNS_DIR` 改写），`InMemoryRunStore` 仅保留给测试和降级。JSONL ledger 是 source of truth：每个事件包含 run 内递增 `seq` 和唯一 `eventId`，`run.meta.json` / `run.state.json` 由事件投影生成；append 会单次加载当前 ledger，并复用同一事件快照完成 seq 分配、坏尾修复与派生文件投影，读取会忽略尾部坏行，继续 append 前会先截断坏尾，`runId` 只能使用安全路径字符。Plan 在审阅通过及局部重规划合并后写 `PLAN_DEFINED`，并在 task 状态变化后写 `PLAN_TASK_CHECKPOINT`；Team 在规划确定后写 `TEAM_PLAN_DEFINED`，execute/review child 启动前及 step 终态写 `TEAM_STEP_CHECKPOINT`。Team 恢复复用原 DAG 并跳过 `COMPLETED` / `FAILED` / `SKIPPED` step；child 工具请求与结果必须完整匹配，`REVIEWING`、`AWAITING_MERGE`、未完成调用或非终态成功副作用一律 fail closed。重复步骤用一条 checkpoint 原子确认，worktree 写入只有成功合并主工作区后才可落为 `COMPLETED`。AgentRuntime 可写 `SNAPSHOT_CREATED`，把 `PRE_RUN` / `POST_RUN` Side-Git checkpoint 与 runId 关联；CLI Agent 主路径不再额外套 `SnapshotService.runTurn(...)`，避免同一 run 产生旧 turn snapshot 与 runtime snapshot 两套快照；`/run inspect <runId>` 通过 `RunRecoveryService` 展示状态、checkpoint、风险和恢复提示。CLI 启动时只读发现最近 3 个具备恢复上下文的顶层父 run并写入 Banner note，不扫描 `children/`、不自动恢复，也不绕过 `/run resume` 的风险确认、HITL 或策略校验。Multi-Agent 的 explorer / worker 执行与自审写入 child run，事件带 `parentRunId`、`rootRunId`、`role`、`stepId`、`attempt`、`phase=execute|review`；parent `run.state.json` 会 materialize child run 摘要。自审调用失败、输出不可解析、重试后仍拒绝时必须 fail closed，不能把执行候选结果标记为完成；review phase 摘要保留 `approved` / `businessStatus`，供恢复和审计判断。
 
 核心内置工具 13 个：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `create_project` / `web_search` / `web_fetch` / `save_memory` / `search_memory` / `read_memory` / `revert_turn`
 
@@ -219,9 +219,9 @@ src/main/java/com/mindcli/
 |------|------|
 | 代码搜索工具 | `mvn test -Dtest=ToolRegistryTest,CodeSearchGoldenSetTest,ApprovalPolicyTest` |
 | 命令解析 | `mvn test -Dtest=CliCommandParserTest,CliCommandRouterTest,PlanReviewInputParserTest,MainInputNormalizationTest,MainCliBootstrapRefactorTest,MainCliStartupViewRefactorTest,MainMemoryCommandHandlerRefactorTest,MainCommandHandlerRefactorTest,MainConfigCommandHandlerRefactorTest,MainWechatCommandHandlerRefactorTest` |
-| DAG/Plan / 恢复 | `mvn test -Dtest=ExecutionPlanTest,PlanExecuteAgentTest,PlanCheckpointCodecTest,RunRecoveryServiceTest,AgentRuntimeTest,PlanExactResumeEvalTest` |
+| DAG/Plan / 恢复 | `mvn test -Dtest=ExecutionPlanTest,PlanExecuteAgentTest,PlanCheckpointCodecTest,RunRecoveryServiceTest,AgentRuntimeTest,PlanExactResumeEvalTest,TeamExactResumeEvalTest` |
 | Multi-Agent | `mvn test -Dtest=AgentRoleTest,AgentMessageTest,SubAgentTest,AgentProfileLoaderTest,AgentOrchestratorTest` |
-| Agent 结果评测 | `mvn test "-Dtest=com.mindcli.eval.*Test" -DskipTests=false`（10 个离线场景 + 1 个 fixture smoke，不需要 API Key） |
+| Agent 结果评测 | `mvn test "-Dtest=com.mindcli.eval.*Test" -DskipTests=false`（17 个离线场景 + 1 个 fixture smoke，不需要 API Key） |
 | 终端/渲染 | `mvn test -Pphase16-smoke` |
 | 常规回归 | `mvn test -Pquick` |
 
@@ -245,8 +245,8 @@ src/main/java/com/mindcli/
 
 以下在路线图但未交付：容器/VM 沙箱 / MCP OAuth + sampling + server 自动重启
 
-- `/run resume <runId>` 已支持安全重入：仅接受有原始输入且状态为 `RESUMABLE` 的 run，继续使用现有策略/HITL；包含已知写入、命令或 MCP 调用时，必须追加 `--confirm`。ReAct run 会从 ledger 重建规范的 `user -> assistant(tool_call) -> tool_result` 消息边界并复用已完成工具结果；Plan run 会恢复最新已批准/重规划 DAG，保留 `COMPLETED` / `SKIPPED` task，只继续安全的未完成 task，且不再调用 Planner 或 Plan review。旧 Plan 账本、损坏/跨版本 checkpoint、或非终态 task 已产生成功副作用时不会追加 `RUN_RESUMED`，即使 `--confirm` 也必须人工检查。Team 仍是同一 runId 下的整 run 安全重试。
-- 后续恢复工作只包含 Team parent step / child execute / review 精确恢复和更细粒度副作用幂等；启动期继续只做候选发现，不自动执行恢复。
+- `/run resume <runId>` 已支持安全重入：仅接受有原始输入且状态为 `RESUMABLE` 的 run，继续使用现有策略/HITL；包含已知写入、命令或 MCP 调用时，必须追加 `--confirm`。ReAct 按消息/工具调用边界恢复并复用已完成结果；Plan 恢复原 DAG 的安全 task；Team 恢复原 DAG 的安全 step，跳过终态 step，不重新规划。旧或损坏 checkpoint、非终态成功副作用、不完整 child 调用、`REVIEWING` 与 `AWAITING_MERGE` 都不会追加 `RUN_RESUMED`，即使 `--confirm` 也必须人工检查。
+- 后续恢复工作只包含 child 内部 LLM/tool loop 断点续跑、崩溃遗留 worktree 自动接管和跨机器恢复；启动期继续只做候选发现，不自动执行恢复。
 
 不要把 `ROADMAP.md` 中"将来要做"误读成"现在已有"。
 

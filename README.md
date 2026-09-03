@@ -221,7 +221,7 @@ CLI 启动默认最多等待 MCP server 初始化 8 秒；超时后会先进入�
 | `/snapshot` / `/snapshot status` / `/snapshot clean` | 查看、检查或清理 Side-Git 快照 |
 | `/restore <N>` | 回滚到最近第 N 个 pre-turn 快照 |
 | `/run inspect <runId>` | 检查 run ledger、snapshot checkpoint、工具调用 ID/状态/参数摘要与恢复提示 |
-| `/run resume <runId>` | 恢复可恢复 run；ReAct 会按账本重建单份消息并复用已完成工具结果；Plan 会从 `PLAN_DEFINED` + task checkpoint 恢复原 DAG，跳过 `COMPLETED` / `SKIPPED`，只继续安全的未完成 task，不重新规划或审阅；已知高风险调用需 `--confirm`，旧 Plan 账本或终态前已有成功副作用时必须人工检查 |
+| `/run resume <runId>` | 恢复可恢复 run；ReAct 按工具调用边界幂等恢复，Plan 按 task checkpoint 恢复原 DAG，Team 按 parent step checkpoint 恢复原 DAG并跳过终态 step；已知高风险调用需 `--confirm`，旧/损坏 checkpoint、未完成 child 调用、未确认 review/worktree merge 或终态前成功副作用必须人工检查 |
 | `/task` / `/task list [N]` | 查看后台任务 |
 | `/task add <任务>` | 提交后台任务 |
 | `/task cancel <id>` / `/task log <id>` | 取消任务或查看任务日志 |
@@ -327,7 +327,7 @@ mvn test "-Dtest=com.mindcli.eval.*Test" -DskipTests=false
 mvn test -DskipTests=false
 ```
 
-`com.mindcli.eval` 包含 10 个离线确定性场景，覆盖 ReAct 代码探索与修改、Plan DAG 与显式降级、Team Profile 路由与审查 fail-closed、策略拒绝无副作用、ReAct 恢复工具幂等，以及 Plan 在 `JsonlRunStore` 重开后的 task 边界精确恢复。评测使用 scripted LLM，不联网、不需要 API Key，并同时核对最终工作区 Outcome 与 RunStore ledger。
+`com.mindcli.eval` 包含 17 个离线确定性场景，覆盖 ReAct 代码探索与修改、Plan DAG 与显式降级、Team Profile 路由与审查 fail-closed、策略拒绝无副作用、ReAct 工具幂等恢复，以及 Plan task / Team step 在 `JsonlRunStore` 重开后的精确恢复。Team 故障注入还覆盖成功副作用无终态、review 中断、`AWAITING_MERGE`、合并后幂等、重复步骤原子 checkpoint 和不完整 child 工具调用。评测使用 scripted LLM，不联网、不需要 API Key，并同时核对最终工作区 Outcome 与 RunStore ledger。
 
 常用文档入口：
 

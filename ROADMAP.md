@@ -78,6 +78,7 @@
 - **Side-Git 快照** —— turn 前后自动快照，`/restore` / `revert_turn` 一键回滚，不污染用户 `.git`。
 - **Agent Runtime 账本** —— JSONL ledger 是 source of truth，`/run inspect <runId>` 检查状态与 checkpoint。
 - **Plan task 边界精确恢复** —— 账本记录完整 Plan 定义和 task checkpoint；恢复复用原 DAG、跳过终态 task，并对未落终态前的成功副作用 fail closed。
+- **Team step 边界精确恢复** —— parent 记录计划与 step checkpoint，恢复复用原 DAG并跳过终态 step；child 请求证据不完整、review/merge 未确认或非终态成功副作用时 fail closed。
 
 ### 12. 扩展接口
 
@@ -104,8 +105,8 @@
 | 已完成 P1 | Memory policy 包结构整理 | `MemoryPolicyContext`、`MemoryPolicyDecision`、`MemoryPolicyEngine` 归入 `capability/memory/policy/`；`MemoryManager` 继续作为记忆 facade，存储与检索链路保持原包和原接口。 |
 | 已完成 P1 | Tool search 包结构整理 | `CodeSearchToolExecutor` 与 ripgrep/Java 搜索引擎归入 `capability/tool/search/`；`ToolRegistry` 保留工具 facade，其他 builtin、registry、namespace 边界不变。 |
 | 已完成 P1 | AgentOrchestrator 职责瘦身 | 纯步骤状态诊断、阻塞依赖格式化和最终结果汇总提取到 `agent/team/TeamStepFormatter`；编排器继续负责计划执行、并行、worktree 与审查链路。 |
-| 已完成 P1 | Agent 结果评测基线 | `com.mindcli.eval` 已提供 10 个离线确定性场景，覆盖 ReAct、Plan、Team、策略拒绝、ReAct 恢复幂等与 Plan 跨 `JsonlRunStore` 重开的 task 边界恢复；以最终工作区 Outcome 为主、RunStore ledger 为辅，不调用真实模型。真实模型能力评测仍是后续独立阶段。 |
-| 部分完成 P1 | `/run resume` 与启动期恢复发现 | `/run resume` 已支持风险计划、ReAct 消息/工具结果恢复、同一 `runId + toolCallId + 工具名 + 参数` 的成功结果幂等复用，以及 Plan 最新 DAG + task checkpoint 精确恢复；启动期会只读提示最近 3 个可恢复父 run，不自动执行且不展示 child run。Team 仍为同一 runId 下的整 run 安全重试，未完成 child run 的精确恢复仍待完成。 |
+| 已完成 P1 | Agent 结果评测基线 | `com.mindcli.eval` 已提供 17 个离线确定性场景，覆盖 ReAct、Plan、Team、策略拒绝、ReAct 工具幂等，以及 Plan task / Team step 跨 `JsonlRunStore` 重开的边界恢复；以最终工作区 Outcome 为主、RunStore ledger 为辅，不调用真实模型。真实模型能力评测仍是后续独立阶段。 |
+| 已完成 P1 | `/run resume` 与启动期恢复发现 | `/run resume` 已支持风险计划、ReAct 消息/工具结果恢复、Plan 最新 DAG + task checkpoint，以及 Team 原 DAG + parent step checkpoint 精确恢复；Team 会跳过终态 step，并对不完整 child 调用、未确认 review/worktree merge 和非终态成功副作用 fail closed。启动期只读提示最近 3 个可恢复父 run，不自动执行且不展示 child run。 |
 | 已完成 P2 | 清理兼容 API | 已确认仓库生产代码没有旧入口调用，删除 `MemoryManager` / `MemoryExtractor` 的旧提取方法、`ToolRegistry` 的旧 memory saver setter 与 `MemoryWriteResult.legacyWritten`；测试已迁移到增量提取和 `setScopedMemoryWriter`。 |
 | 已完成 P2 | 依赖审计 | 已运行 `mvn dependency:analyze -DskipTests` 与 runtime dependency tree；直接使用的 Jackson annotations/core、SLF4J、Okio 与 JUnit API 已补为显式依赖，Logback/SQLite 标为 `runtime`。剩余 Logback、SQLite、JUnit 聚合依赖的 `unused` 告警分别来自 `logback.xml`、JDBC ServiceLoader 和 Surefire 聚合加载，属于已确认误报；JLine、JGit、JavaParser、ZXing、Tomlj、Jsoup 均有实际用途，没有可安全删除的核心依赖。后续仅在版本升级时复查。 |
 | 已完成 P2 | JSON / MCP 内部瘦身 | 新增共享 `platform/serialization/JsonSupport`，生产代码统一默认 `ObjectMapper`；`McpServerManager` 保留 facade，启动并发/超时和官方 stdio/HTTP transport 创建分别下沉到 `capability/mcp/lifecycle/`，不改变 MCP 协议或公开接口。 |
@@ -118,7 +119,7 @@
 
 - **容器 / VM 沙箱** —— 真正的隔离执行环境（Docker / microVM）。当前安全模型是 HITL + 路径校验 + 命令拒绝 + 审计，而非隔离；沙箱方案参考「Pro 升级版本」章节。
 - **MCP OAuth 2.0 + sampling + server 自动重启** —— OAuth（Authorization Code + PKCE）、`sampling/createMessage`、server 崩溃自动拉起均未实现。
-- **Team 精确恢复** —— ReAct 基础断点恢复、Plan task 边界恢复和启动期只读候选发现已交付；后续补 parent step / child execute / review 恢复与更细粒度副作用幂等。
+- **更细粒度恢复** —— ReAct、Plan task 与 Team parent step 边界恢复已交付；child 内部 LLM/tool loop 断点续跑、崩溃遗留 worktree 自动接管和跨机器恢复仍未交付。
 - **视频 / 音频输入** —— 多模态暂只支持图片，视频音频留作后续独立迭代。
 
 ---
