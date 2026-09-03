@@ -203,13 +203,22 @@ class SubAgentTest {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         PrintStream ps = new PrintStream(baos, true, StandardCharsets.UTF_8);
         AgentRunContext context = AgentRunContext.create(AgentMode.TEAM, "review", tempDir.toString());
+        RecordingRunStore runStore = new RecordingRunStore();
 
-        worker.review("原始任务", "执行结果", ps, context, null);
+        worker.review("原始任务", "执行结果", ps, context, runStore);
 
         assertFalse(dispatched.contains("write_file"),
                 "自审阶段 write_file 应被程序级拦截，不进 ToolRegistry");
         assertTrue(dispatched.contains("read_file"),
                 "自审阶段只读工具 read_file 应正常执行");
+        AgentRunEvent denied = runStore.events(context.runId()).stream()
+                .filter(event -> event.type() == AgentRunEventType.TOOL_OUTCOME)
+                .filter(event -> "call_w".equals(event.attributes().get("toolId")))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("DENIED_BY_POLICY", denied.attributes().get("status"));
+        assertEquals("{\"path\":\"x.txt\",\"content\":\"x\"}",
+                denied.attributes().get("argumentsJson"));
     }
 
     @Test

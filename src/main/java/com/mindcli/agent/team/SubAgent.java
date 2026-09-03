@@ -585,17 +585,19 @@ public class SubAgent {
             dispatchIndices.add(i);
         }
 
+        AgentRunContext dispatchContext = toolDispatchContext();
         if (!invocations.isEmpty()) {
             if (invocations.size() > 1) {
                 log.info("[{}] executing {} tool calls in parallel", name, invocations.size());
             }
-            AgentRunContext dispatchContext = toolDispatchContext();
             List<ToolOutcome> outcomes = toolDispatcher.dispatchInvocations(invocations, dispatchContext);
-            appendToolOutcomeEvents(dispatchContext, outcomes);
             for (int j = 0; j < outcomes.size(); j++) {
                 ordered.set(dispatchIndices.get(j), outcomes.get(j));
             }
         }
+        appendToolOutcomeEvents(dispatchContext, ordered.stream()
+                .filter(outcome -> outcome != null)
+                .toList());
         return ordered;
     }
 
