@@ -36,6 +36,9 @@ docs/*
 # Claude Code
 .claude/
 
+# Agent isolated worktrees
+.worktrees/
+
 # IDE
 .idea/
 .idea.bak
