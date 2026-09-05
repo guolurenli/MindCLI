@@ -31,8 +31,4 @@ public record MemoryWriteResult(
         return new MemoryWriteResult(Status.DENIED, policyId, message, null, null);
     }
 
-    public static MemoryWriteResult legacyWritten(String fact, String scope) {
-        String normalizedScope = scope == null || scope.isBlank() ? "project" : scope.trim().toLowerCase();
-        return written(null, "legacy.write", "已保存到长期记忆(" + normalizedScope + "): " + fact);
-    }
 }

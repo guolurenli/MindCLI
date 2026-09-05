@@ -1,5 +1,7 @@
 package com.mindcli.runtime.api;
 
+import com.mindcli.platform.config.ConfigValueResolver;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.*;
@@ -22,13 +24,9 @@ public class RuntimeThreadStore implements AutoCloseable {
     }
 
     public static Path defaultDbPath() {
-        String configured = System.getProperty("mindcli.runtime.dir");
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv("MINDCLI_RUNTIME_DIR");
-        }
-        if (configured == null || configured.isBlank()) {
-            configured = Path.of(System.getProperty("user.home"), ".mindcli", "runtime").toString();
-        }
+        String configured = ConfigValueResolver.current().resolve(
+                "mindcli.runtime.dir", "MINDCLI_RUNTIME_DIR",
+                Path.of(System.getProperty("user.home"), ".mindcli", "runtime").toString());
         return Path.of(configured).resolve("runtime.db");
     }
 

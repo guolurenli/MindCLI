@@ -1,11 +1,16 @@
 package com.mindcli.capability.memory;
 
+import com.mindcli.capability.memory.policy.MemoryPolicyContext;
+import com.mindcli.capability.memory.policy.MemoryPolicyDecision;
+import com.mindcli.capability.memory.policy.MemoryPolicyEngine;
+import com.mindcli.platform.config.ConfigValueResolver;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.platform.llm.context.ContextProfile;
 import com.mindcli.runtime.run.AgentRunContext;
 import com.mindcli.runtime.run.AgentRunEvent;
 import com.mindcli.runtime.run.AgentRunEventType;
-import com.mindcli.runtime.run.RunStore;
+import com.mindcli.runtime.run.store.RunStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -14,12 +19,12 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 /**
@@ -32,6 +37,7 @@ public class MemoryManager {
     private static final Logger log = LoggerFactory.getLogger(MemoryManager.class);
     private static final String AUTO_EXTRACT_PROPERTY = "mindcli.memory.autoExtract.enabled";
     private static final String AUTO_EXTRACT_ENV = "MINDCLI_MEMORY_AUTO_EXTRACT";
+    private static final ObjectMapper TOOL_MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private final LongTermMemory longTermMemory;
     private final MemoryExtractor extractor;
     private final MemoryRetriever retriever;
@@ -42,9 +48,6 @@ public class MemoryManager {
     private TokenBudget tokenBudget;
     private ContextProfile contextProfile;
     private String currentProject;
-
-    /** 本轮是否已有手动记忆写入（互斥保护，避免自动提取产生重复） */
-    private final AtomicBoolean memoryWrittenThisRun = new AtomicBoolean(false);
 
     public MemoryManager(LlmClient llmClient) {
         this(llmClient, ContextProfile.from(llmClient), null);
@@ -66,7 +69,7 @@ public class MemoryManager {
         this.contextProfile = contextProfile;
         this.longTermMemory = longTermMemory != null ? longTermMemory : new LongTermMemory();
         this.extractor = new MemoryExtractor(llmClient, this.longTermMemory);
-        this.retriever = new MemoryRetriever(llmClient, this.longTermMemory);
+        this.retriever = new MemoryRetriever(this.longTermMemory);
         this.proposalStore = new JsonlMemoryProposalStore(resolveProposalStorePath(this.longTermMemory));
         this.policyEngine = new MemoryPolicyEngine();
         this.auditService = new MemoryAuditService(resolveAuditStorePath(this.longTermMemory));
@@ -94,49 +97,20 @@ public class MemoryManager {
     }
 
     /**
-     * 从对话历史中提取事实并存入长期记忆。
-     * 替代旧版 ContextCompressor.extractFacts()。
-     * 默认关闭自动提取；只有显式开启兼容开关时才执行。
-     * 如果本轮已有手动记忆写入，跳过自动提取（互斥保护）。
-     */
-    public void extractFacts(List<LlmClient.Message> conversationHistory) {
-        if (!isAutoExtractEnabled()) {
-            log.debug("自动长期记忆提取默认关闭，跳过本轮提取");
-            return;
-        }
-        if (memoryWrittenThisRun.getAndSet(false)) {
-            log.debug("本轮已有手动记忆写入，跳过自动提取");
-            return;
-        }
-        addPendingProposals(extractor.extractFactProposalsIncremental(conversationHistory), null, null);
-    }
-
-    /**
-     * 异步提取事实（fire-and-forget），不阻塞主对话响应。
-     * 对齐 Claude Code 的 stopHooks 异步模式。
-     * @deprecated 改为 {@link #extractFactsIncrementalAsync}，只传本轮新增消息
-     */
-    public void extractFactsAsync(List<LlmClient.Message> conversationHistory) {
-        CompletableFuture.runAsync(() -> {
-            extractFacts(conversationHistory);
-        });
-    }
-
-    /**
      * 增量异步提取 —— 只处理本轮新增的对话消息。
      * 对齐 Claude Code Stop hook：hook 每次只收到新增 exchange，不是整段历史。
      */
-    public void extractFactsIncrementalAsync(List<LlmClient.Message> conversationHistory) {
-        extractFactsIncrementalAsync(conversationHistory, null, null);
+    public CompletableFuture<Void> extractFactsIncrementalAsync(List<LlmClient.Message> conversationHistory) {
+        return extractFactsIncrementalAsync(conversationHistory, null, null);
     }
 
-    public void extractFactsIncrementalAsync(List<LlmClient.Message> conversationHistory,
-                                             AgentRunContext runContext, RunStore runStore) {
+    public CompletableFuture<Void> extractFactsIncrementalAsync(List<LlmClient.Message> conversationHistory,
+                                                                AgentRunContext runContext, RunStore runStore) {
         if (!isAutoExtractEnabled()) {
             log.debug("自动长期记忆提取默认关闭，跳过本轮增量提取");
-            return;
+            return CompletableFuture.completedFuture(null);
         }
-        CompletableFuture.runAsync(() -> {
+        return runBackground("增量长期记忆候选提取", () -> {
             List<MemoryProposal> proposals = extractor.extractFactProposalsIncremental(conversationHistory);
             List<MemoryProposal> accepted = addPendingProposals(proposals, runContext, runStore);
             appendMemoryProposedEvent(runContext, runStore, accepted, "extractor");
@@ -219,6 +193,85 @@ public class MemoryManager {
         return longTermMemory.search(query, limit, currentProject);
     }
 
+    /** 构建当前项目可见的短记忆目录，供 system prompt 注入。 */
+    public String buildMemoryIndex(int maxLines, int maxChars) {
+        return longTermMemory.buildIndex(currentProject, maxLines, maxChars);
+    }
+
+    /** 为 search_memory 工具返回不含正文的结构化摘要。 */
+    public String searchMemory(String query, int limit) {
+        return searchMemory(query, limit, null, null);
+    }
+
+    public String searchMemory(String query, int limit, AgentRunContext runContext, RunStore runStore) {
+        List<MemoryEntry> results = longTermMemory.search(query, limit, currentProject);
+        List<Map<String, String>> summaries = results.stream().map(entry -> {
+            Map<String, String> summary = new LinkedHashMap<>();
+            summary.put("id", entry.getId());
+            summary.put("name", entry.getName());
+            summary.put("type", entry.getType().name());
+            summary.put("scope", LongTermMemory.scopeOf(entry));
+            summary.put("snippet", snippet(entry.getContent()));
+            summary.put("updatedAt", entry.getTimestamp().toString());
+            return summary;
+        }).toList();
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("candidates", summaries);
+        response.put("candidateCount", results.size());
+        response.put("multipleCandidates", results.size() > 1);
+        response.put("guidance", results.size() > 1
+                ? "这些是可能相关的记忆候选，不代表已验证事实；请先用 read_memory 比较内容。若内容影响当前代码，再用 glob_files、grep_code、read_file 检查当前代码和配置，以当前任务相关的最新证据为准。"
+                : "搜索结果只是定位信息，不代表已验证事实；需要使用时请用 read_memory 读取记忆内容，涉及当前代码时以实时代码和配置为准。");
+        Map<String, String> audit = Map.of(
+                "queryLength", String.valueOf(query == null ? 0 : query.length()),
+                "limit", String.valueOf(limit),
+                "resultCount", String.valueOf(results.size()),
+                "project", currentProject
+        );
+        recordMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_SEARCHED, audit);
+        try {
+            return TOOL_MAPPER.writeValueAsString(response);
+        } catch (IOException e) {
+            return "检索长期记忆失败: 无法序列化检索结果";
+        }
+    }
+
+    /** 按 ID 读取当前项目可见的单条记忆正文。 */
+    public String readMemory(String id) {
+        return readMemory(id, null, null);
+    }
+
+    public String readMemory(String id, AgentRunContext runContext, RunStore runStore) {
+        String normalizedId = id == null ? "" : id.trim();
+        MemoryEntry entry = longTermMemory.retrieve(normalizedId)
+                .filter(candidate -> LongTermMemory.isVisible(candidate, currentProject))
+                .orElse(null);
+        Map<String, String> audit = Map.of(
+                "memoryId", normalizedId,
+                "found", String.valueOf(entry != null),
+                "project", currentProject
+        );
+        recordMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_READ, audit);
+        if (entry == null) {
+            return "读取长期记忆失败: 未找到或当前项目不可见的记忆 " + normalizedId;
+        }
+        return "## 长期记忆 " + entry.getId() + "\n"
+                + "name: " + entry.getName() + "\n"
+                + "type: " + entry.getType() + "\n"
+                + "scope: " + LongTermMemory.scopeOf(entry) + "\n"
+                + "updatedAt: " + entry.getTimestamp() + "\n\n"
+                + entry.getContent();
+    }
+
+    private static String snippet(String content) {
+        String normalized = content == null ? "" : content.replace('\n', ' ').trim();
+        // 搜索阶段只用于定位候选；短正文不重复回显，避免摘要被误认为已读取事实。
+        if (normalized.isEmpty()) return "";
+        return normalized.length() <= 80
+                ? "短记忆，请使用 read_memory 读取"
+                : normalized.substring(0, 80) + "...";
+    }
+
     public boolean deleteLongTerm(String id) {
         return deleteLongTerm(id, null, null);
     }
@@ -232,42 +285,6 @@ public class MemoryManager {
             ));
         }
         return deleted;
-    }
-
-    /**
-     * 构建用于 LLM 的记忆上下文
-     */
-    public String buildContextForQuery(String query, int maxTokens) {
-        return buildContextForQuery(query, maxTokens, Set.of(), null, null);
-    }
-
-    public String buildContextForQuery(String query, int maxTokens, AgentRunContext runContext, RunStore runStore) {
-        return buildContextForQuery(query, maxTokens, Set.of(), runContext, runStore);
-    }
-
-    /**
-     * 构建用于 LLM 的记忆上下文，支持工具感知过滤。
-     */
-    public String buildContextForQuery(String query, int maxTokens, Set<String> activeToolNames) {
-        return buildContextForQuery(query, maxTokens, activeToolNames, null, null);
-    }
-
-    public String buildContextForQuery(String query, int maxTokens, Set<String> activeToolNames,
-                                       AgentRunContext runContext, RunStore runStore) {
-        Set<String> effectiveToolNames = activeToolNames == null ? Set.of() : activeToolNames;
-        String context = retriever.buildContextForQuery(query, maxTokens, currentProject, effectiveToolNames);
-        Map<String, String> attributes = Map.of(
-                "queryLength", String.valueOf(query == null ? 0 : query.length()),
-                "maxTokens", String.valueOf(maxTokens),
-                "activeToolCount", String.valueOf(effectiveToolNames.size()),
-                "contextChars", String.valueOf(context.length()),
-                "injected", String.valueOf(!context.isBlank())
-        );
-        recordMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_CONTEXT_BUILT, attributes);
-        if (!context.isBlank()) {
-            recordMemoryEvent(runContext, runStore, AgentRunEventType.MEMORY_INJECTED, attributes);
-        }
-        return context;
     }
 
     /**
@@ -334,7 +351,6 @@ public class MemoryManager {
     // Getters
     public LongTermMemory getLongTermMemory() { return longTermMemory; }
     public MemoryStore getMemoryStore() { return longTermMemory; }
-    public MemoryRetriever getMemoryRetriever() { return retriever; }
     public MemoryAuditService getMemoryAuditService() { return auditService; }
     public TokenBudget getTokenBudget() { return tokenBudget; }
     public ContextProfile getContextProfile() { return contextProfile; }
@@ -433,11 +449,11 @@ public class MemoryManager {
         if (accepted.isEmpty()) {
             return List.of();
         }
-        synchronized (pendingMemoryProposals) {
-            pendingMemoryProposals.addAll(accepted);
-        }
         for (MemoryProposal proposal : accepted) {
             proposalStore.save(proposal);
+        }
+        synchronized (pendingMemoryProposals) {
+            pendingMemoryProposals.addAll(accepted);
         }
         log.info("生成了 {} 条待确认长期记忆候选", accepted.size());
         return List.copyOf(accepted);
@@ -450,7 +466,6 @@ public class MemoryManager {
     private void storeMemoryEntry(MemoryEntry entry, AgentRunContext runContext, RunStore runStore,
                                   Map<String, String> extraAttributes) {
         longTermMemory.store(entry);
-        memoryWrittenThisRun.set(true);
         Map<String, String> attributes = new java.util.LinkedHashMap<>();
         attributes.put("memoryId", entry.getId());
         attributes.put("scope", LongTermMemory.scopeOf(entry));
@@ -500,17 +515,7 @@ public class MemoryManager {
     }
 
     static boolean isAutoExtractEnabled() {
-        String value = System.getProperty(AUTO_EXTRACT_PROPERTY);
-        if (value == null || value.isBlank()) {
-            value = System.getenv(AUTO_EXTRACT_ENV);
-        }
-        if (value == null) {
-            return false;
-        }
-        return switch (value.trim().toLowerCase()) {
-            case "true", "1", "yes", "on" -> true;
-            default -> false;
-        };
+        return ConfigValueResolver.current().resolveBoolean(AUTO_EXTRACT_PROPERTY, AUTO_EXTRACT_ENV, false);
     }
 
     private static String normalizeScope(String scope) {
@@ -562,15 +567,29 @@ public class MemoryManager {
         return memoryPath.resolve("audit.jsonl");
     }
 
+    private static CompletableFuture<Void> runBackground(String operation, Runnable task) {
+        return CompletableFuture.runAsync(task).whenComplete((ignored, error) -> {
+            if (error != null) {
+                log.warn("{}失败", operation, error);
+            }
+        });
+    }
+
     private static String normalizeProjectKey(String path) {
         try {
-            Path candidate = Path.of(path).toAbsolutePath().normalize();
+            Path input = Path.of(path.trim());
+            Path candidate = input.toAbsolutePath().normalize();
             if (java.nio.file.Files.exists(candidate)) {
                 return candidate.toRealPath().toString();
             }
-            return candidate.toString();
+            // 不存在的路径可能是测试或外部传入的逻辑项目键，不要在 Windows
+            // 上擅自拼接当前盘符，确保同一逻辑键可以稳定匹配记忆作用域。
+            String raw = path.trim().replace('\\', '/');
+            // Unix 风格的 /repo/key 在 Windows 上也可能只是逻辑项目键；
+            // 只有带盘符的路径才按本机绝对路径处理。
+            return raw.startsWith("/") && !raw.matches("^[A-Za-z]:/.*") ? raw : candidate.toString();
         } catch (Exception e) {
-            return Path.of(path).toAbsolutePath().normalize().toString();
+            return path.trim().replace('\\', '/');
         }
     }
 }

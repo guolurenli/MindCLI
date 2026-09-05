@@ -5,6 +5,8 @@ import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.capability.tool.ToolOutput;
 import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
 import com.mindcli.capability.tool.ToolRegistry;
+import com.mindcli.capability.tool.ToolExecution;
+import com.mindcli.capability.tool.ToolExecutionStatus;
 import com.mindcli.capability.tool.namespace.McpToolNamespace;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -53,19 +55,36 @@ class McpToolRegistrationTest {
     }
 
     @Test
-    void structuredMcpOutputSurvivesBatchExecution(@TempDir Path tempDir) throws Exception {
+    void structuredMcpOutputSurvivesRegistryExecution(@TempDir Path tempDir) throws Exception {
         withAuditDir(tempDir, () -> {
             ToolRegistry registry = new ToolRegistry();
             registry.registerMcpToolOutput(sampleDescriptor(), args -> new ToolOutput(
                     "screenshot",
                     List.of(LlmClient.ContentPart.imageBase64("aGVsbG8=", "image/png"))));
 
-            List<ToolRegistry.ToolExecutionResult> results = registry.executeTools(List.of(
-                    new ToolRegistry.ToolInvocation("call-1", "mcp__demo__echo", "{}")));
+            ToolExecution execution = registry.executeToolExecution("mcp__demo__echo", "{}");
 
-            assertEquals("screenshot", results.get(0).result());
-            assertTrue(results.get(0).hasImageParts());
-            assertEquals("image/png", results.get(0).imageParts().get(0).mimeType());
+            assertEquals("screenshot", execution.output().text());
+            assertTrue(execution.output().hasImageParts());
+            assertEquals("image/png", execution.output().imageParts().get(0).mimeType());
+        });
+    }
+
+    @Test
+    void structuredMcpErrorSurvivesRegistryRouting(@TempDir Path tempDir) throws Exception {
+        withAuditDir(tempDir, () -> {
+            ToolRegistry registry = new ToolRegistry();
+            registry.registerMcpToolExecution(sampleDescriptor(), args -> ToolExecution.failed(
+                    ToolOutput.text("MCP 工具返回错误: upstream rejected"),
+                    args,
+                    "upstream rejected",
+                    "MCP_TOOL_ERROR"));
+
+            ToolExecution execution = registry.executeToolExecution("mcp__demo__echo", "{}");
+
+            assertEquals(ToolExecutionStatus.FAILED, execution.status());
+            assertEquals("MCP_TOOL_ERROR", execution.errorCategory());
+            assertTrue(execution.output().text().contains("upstream rejected"));
         });
     }
 

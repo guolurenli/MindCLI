@@ -311,19 +311,17 @@ class CliCommandParserTest {
     }
 
     @Test
-    void parsesSearchWithoutPayload() {
+    void removedSearchCommandIsUnknown() {
         CliCommandParser.ParsedCommand command = CliCommandParser.parse("/search");
 
-        assertEquals(CliCommandParser.CommandType.SEARCH_CODE, command.type());
-        assertNull(command.payload());
+        assertEquals(CliCommandParser.CommandType.UNKNOWN_COMMAND, command.type());
     }
 
     @Test
-    void parsesGraphWithoutPayload() {
+    void removedGraphCommandIsUnknown() {
         CliCommandParser.ParsedCommand command = CliCommandParser.parse("/graph");
 
-        assertEquals(CliCommandParser.CommandType.GRAPH_QUERY, command.type());
-        assertNull(command.payload());
+        assertEquals(CliCommandParser.CommandType.UNKNOWN_COMMAND, command.type());
     }
 
     @Test
@@ -437,7 +435,7 @@ class CliCommandParserTest {
         assertEquals(CliCommandParser.CommandType.BROWSER, CliCommandParser.parse("/browser status").type());
         assertEquals("status", CliCommandParser.parse("/browser status").payload());
         assertEquals("connect", CliCommandParser.parse("/browser connect").payload());
-        assertEquals("connect 9333", CliCommandParser.parse("/browser connect 9333").payload());
+        assertEquals("connect", CliCommandParser.parse("/browser connect").payload());
         assertEquals("disconnect", CliCommandParser.parse("/browser disconnect").payload());
         assertEquals("tabs", CliCommandParser.parse("/browser tabs").payload());
     }
@@ -457,6 +455,14 @@ class CliCommandParserTest {
 
         assertEquals(CliCommandParser.CommandType.RUN_INSPECT, command.type());
         assertEquals("inspect run_abc123", command.payload());
+    }
+
+    @Test
+    void parsesRunResumeCommand() {
+        CliCommandParser.ParsedCommand command = CliCommandParser.parse("/run resume run_abc123");
+
+        assertEquals(CliCommandParser.CommandType.RUN_RESUME, command.type());
+        assertEquals("run_abc123", command.payload());
     }
 
     @Test

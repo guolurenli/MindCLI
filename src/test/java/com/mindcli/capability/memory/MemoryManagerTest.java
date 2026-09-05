@@ -6,21 +6,25 @@ import com.mindcli.runtime.run.AgentMode;
 import com.mindcli.runtime.run.AgentRunContext;
 import com.mindcli.runtime.run.AgentRunEvent;
 import com.mindcli.runtime.run.AgentRunEventType;
-import com.mindcli.runtime.run.InMemoryRunStore;
+import com.mindcli.runtime.run.store.InMemoryRunStore;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MemoryManagerTest {
@@ -105,6 +109,64 @@ class MemoryManagerTest {
     }
 
     @Test
+    void shouldSearchMemoryWithSummariesAndReadByVisibleId() {
+        LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
+        MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 128000, longTermMemory);
+        memoryManager.setProjectPath("/repo/current");
+        longTermMemory.store(new MemoryEntry("current", "测试命令", "完整正文: mvn test -Pquick",
+                MemoryEntry.MemoryType.PROJECT_FACT,
+                Map.of("scope", "project", "project", "/repo/current"), 10));
+        longTermMemory.store(new MemoryEntry("other", "测试命令", "其他项目正文",
+                MemoryEntry.MemoryType.PROJECT_FACT,
+                Map.of("scope", "project", "project", "/repo/other"), 10));
+
+        String results = memoryManager.searchMemory("测试命令", 5);
+        String body = memoryManager.readMemory("current");
+
+        assertTrue(results.contains("current"), results);
+        assertTrue(results.contains("测试命令"), results);
+        assertFalse(results.contains("完整正文"), "搜索结果不应默认返回完整正文");
+        assertFalse(results.contains("other"), "搜索结果不应泄露其他项目记忆");
+        assertTrue(body.contains("完整正文: mvn test -Pquick"), body);
+        assertTrue(body.contains("current"), body);
+        assertTrue(memoryManager.readMemory("other").contains("不可见"));
+    }
+
+    @Test
+    void shouldWarnWhenSearchReturnsMultipleMemoryCandidates() {
+        LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
+        MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 128000, longTermMemory);
+        memoryManager.setProjectPath("/repo/current");
+        longTermMemory.store(new MemoryEntry("stack-old", "技术栈", "项目使用 Java 17",
+                MemoryEntry.MemoryType.PROJECT_FACT,
+                Map.of("scope", "project", "project", "/repo/current"), 10));
+        longTermMemory.store(new MemoryEntry("stack-new", "技术栈升级记录", "项目已升级到 Java 21",
+                MemoryEntry.MemoryType.PROJECT_FACT,
+                Map.of("scope", "project", "project", "/repo/current"), 10));
+
+        String results = memoryManager.searchMemory("Java", 5);
+
+        assertTrue(results.contains("stack-old"), results);
+        assertTrue(results.contains("stack-new"), results);
+        assertTrue(results.contains("multipleCandidates"), results);
+        assertTrue(results.contains("read_memory"), results);
+        assertTrue(results.contains("当前代码"), results);
+    }
+
+    @Test
+    void shouldSearchMemoryWithUntitledEntryWithoutSerializationFailure() {
+        LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
+        MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 128000, longTermMemory);
+        longTermMemory.store(new MemoryEntry("untitled", "Java 21 配置",
+                MemoryEntry.MemoryType.PROJECT_FACT, Map.of("scope", "global"), 10));
+
+        String results = memoryManager.searchMemory("Java", 5);
+
+        assertTrue(results.contains("untitled"), results);
+        assertFalse(results.contains("检索长期记忆失败"), results);
+    }
+
+    @Test
     void shouldNotAutoExtractLongTermMemoryByDefault() throws Exception {
         LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
         CountingMemoryClient llmClient = new CountingMemoryClient(new LlmClient.ChatResponse(
@@ -139,16 +201,47 @@ class MemoryManagerTest {
             ));
             MemoryManager memoryManager = new MemoryManager(llmClient, 128000, longTermMemory);
 
-            memoryManager.extractFactsIncrementalAsync(memoryExtractionMessages());
+            CompletableFuture<Void> extraction = memoryManager.extractFactsIncrementalAsync(memoryExtractionMessages());
+            extraction.get(2, TimeUnit.SECONDS);
 
             assertTrue(llmClient.awaitChatCall(1_000), "显式开启后应保留旧自动提取路径");
-            waitUntilProposalCount(memoryManager, 1);
+            assertEquals(1, memoryManager.listPendingMemoryProposals().size());
             assertEquals(0, longTermMemory.size());
             MemoryProposal proposal = memoryManager.listPendingMemoryProposals().get(0);
             assertEquals(MemoryProposal.Status.PROPOSED, proposal.status());
             assertEquals(MemoryEntry.MemoryType.USER_PREFERENCE, proposal.type());
             assertEquals("用户偏好使用中文回答", proposal.content());
         assertEquals("extractor", proposal.metadata().get("source"));
+        } finally {
+            if (previous == null) {
+                System.clearProperty("mindcli.memory.autoExtract.enabled");
+            } else {
+                System.setProperty("mindcli.memory.autoExtract.enabled", previous);
+            }
+        }
+    }
+
+    @Test
+    void shouldNotPublishProposalWhenPersistenceFails() throws Exception {
+        String previous = System.getProperty("mindcli.memory.autoExtract.enabled");
+        System.setProperty("mindcli.memory.autoExtract.enabled", "true");
+        try {
+            LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
+            CountingMemoryClient llmClient = new CountingMemoryClient(new LlmClient.ChatResponse(
+                    "assistant",
+                    "[中文]: [USER_PREFERENCE] 用户偏好使用中文回答",
+                    null,
+                    10,
+                    5
+            ));
+            MemoryManager memoryManager = new MemoryManager(llmClient, 128000, longTermMemory);
+            Files.createDirectory(tempDir.resolve("proposals.jsonl"));
+
+            CompletableFuture<Void> extraction = memoryManager.extractFactsIncrementalAsync(memoryExtractionMessages());
+
+            assertThrows(ExecutionException.class, () -> extraction.get(2, TimeUnit.SECONDS));
+            assertEquals(0, memoryManager.listPendingMemoryProposals().size());
+            assertEquals(0, memoryManager.listMemoryProposals().size());
         } finally {
             if (previous == null) {
                 System.clearProperty("mindcli.memory.autoExtract.enabled");
@@ -259,26 +352,6 @@ class MemoryManagerTest {
                 System.setProperty("mindcli.memory.autoExtract.enabled", previous);
             }
         }
-    }
-
-    @Test
-    void shouldAppendMemoryContextBuiltEventWhenAudited() {
-        LongTermMemory longTermMemory = new LongTermMemory(tempDir.toFile());
-        MemoryManager memoryManager = new MemoryManager(new StubGLMClient(List.of()), 128000, longTermMemory);
-        memoryManager.setProjectPath("/repo/current");
-        memoryManager.storeFact("当前项目使用 Java 17");
-        InMemoryRunStore runStore = new InMemoryRunStore();
-        AgentRunContext runContext = AgentRunContext.create(AgentMode.REACT, "Java", "/repo/current");
-
-        String context = memoryManager.buildContextForQuery("Java", 200, runContext, runStore);
-
-        assertTrue(context.contains("Java 17"));
-        AgentRunEvent event = runStore.events(runContext.runId()).get(0);
-        assertEquals(AgentRunEventType.MEMORY_CONTEXT_BUILT, event.type());
-        assertEquals("true", event.attributes().get("injected"));
-        assertEquals("200", event.attributes().get("maxTokens"));
-        assertTrue(runStore.events(runContext.runId()).stream()
-                .anyMatch(item -> item.type() == AgentRunEventType.MEMORY_INJECTED));
     }
 
     @Test

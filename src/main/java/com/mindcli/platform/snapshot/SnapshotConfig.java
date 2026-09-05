@@ -1,10 +1,11 @@
 package com.mindcli.platform.snapshot;
 
+import com.mindcli.platform.config.ConfigValueResolver;
+
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 public record SnapshotConfig(
@@ -25,53 +26,17 @@ public record SnapshotConfig(
     );
 
     public static SnapshotConfig fromEnvironment() {
-        boolean enabled = readBoolean("mindcli.snapshot.enabled", "MINDCLI_SNAPSHOT_ENABLED", true);
-        Path root = Path.of(readString("mindcli.snapshot.dir", "MINDCLI_SNAPSHOT_DIR",
+        ConfigValueResolver config = ConfigValueResolver.current();
+        boolean enabled = config.resolveBoolean("mindcli.snapshot.enabled", "MINDCLI_SNAPSHOT_ENABLED", true);
+        Path root = Path.of(config.resolve("mindcli.snapshot.dir", "MINDCLI_SNAPSHOT_DIR",
                 Path.of(System.getProperty("user.home"), ".mindcli", "snapshots").toString()));
-        int max = readInt("mindcli.snapshot.max", "MINDCLI_SNAPSHOT_MAX", 50);
-        List<String> excludes = mergeExcludes(readString("mindcli.snapshot.excludes", "MINDCLI_SNAPSHOT_EXCLUDES", ""));
+        int max = config.resolveInt("mindcli.snapshot.max", "MINDCLI_SNAPSHOT_MAX", 50);
+        List<String> excludes = mergeExcludes(config.resolve("mindcli.snapshot.excludes", "MINDCLI_SNAPSHOT_EXCLUDES", ""));
         return new SnapshotConfig(enabled, root, Math.max(1, max), excludes);
     }
 
     public SnapshotConfig withEnabled(boolean enabled) {
         return new SnapshotConfig(enabled, snapshotsRoot, maxSnapshots, excludes);
-    }
-
-    private static boolean readBoolean(String property, String env, boolean fallback) {
-        String value = readNullable(property, env);
-        if (value == null || value.isBlank()) {
-            return fallback;
-        }
-        return switch (value.trim().toLowerCase(Locale.ROOT)) {
-            case "1", "true", "yes", "on" -> true;
-            case "0", "false", "no", "off" -> false;
-            default -> fallback;
-        };
-    }
-
-    private static int readInt(String property, String env, int fallback) {
-        String value = readNullable(property, env);
-        if (value == null || value.isBlank()) {
-            return fallback;
-        }
-        try {
-            return Integer.parseInt(value.trim());
-        } catch (NumberFormatException ignored) {
-            return fallback;
-        }
-    }
-
-    private static String readString(String property, String env, String fallback) {
-        String value = readNullable(property, env);
-        return value == null || value.isBlank() ? fallback : value.trim();
-    }
-
-    private static String readNullable(String property, String env) {
-        String value = System.getProperty(property);
-        if (value != null) {
-            return value;
-        }
-        return System.getenv(env);
     }
 
     private static List<String> mergeExcludes(String configured) {

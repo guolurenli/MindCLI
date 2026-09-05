@@ -11,7 +11,7 @@ import java.util.Optional;
 import java.util.Set;
 
 public class WechatAccountStore {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private final Path root;
 
     public WechatAccountStore(Path root) {

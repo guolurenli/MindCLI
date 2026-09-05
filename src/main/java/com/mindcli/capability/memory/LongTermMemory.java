@@ -1,6 +1,8 @@
 package com.mindcli.capability.memory;
 
+import com.mindcli.platform.config.ConfigValueResolver;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.mindcli.platform.text.MarkdownFrontmatterParser;
 import com.mindcli.platform.llm.LlmClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -50,7 +52,7 @@ public class LongTermMemory implements MemoryStore {
     public LongTermMemory(File storageDir) {
         this.entries = new ConcurrentHashMap<>();
         this.tokenCounter = new AtomicInteger(0);
-        this.mapper = new ObjectMapper();
+        this.mapper = com.mindcli.platform.serialization.JsonSupport.mapper();
 
         // 确保存储目录存在
         File dir = storageDir;
@@ -92,13 +94,21 @@ public class LongTermMemory implements MemoryStore {
     }
 
     public List<MemoryEntry> search(String query, int limit, String projectKey) {
-        String queryLower = query.toLowerCase();
+        if (query == null || query.isBlank() || limit <= 0) {
+            return List.of();
+        }
+        String queryLower = query.trim().toLowerCase(Locale.ROOT);
         return entries.values().stream()
-                .filter(entry -> isVisibleInProject(entry, projectKey))
-                .filter(entry -> entry.getContent().toLowerCase().contains(queryLower)
-                        || entry.getMetadata().values().stream()
-                            .anyMatch(v -> v.toLowerCase().contains(queryLower)))
+                .filter(entry -> isVisible(entry, projectKey))
+                .map(entry -> Map.entry(entry, searchScore(entry, queryLower)))
+                .filter(result -> result.getValue() > 0)
+                .sorted(Comparator
+                        .<Map.Entry<MemoryEntry, Integer>>comparingInt(Map.Entry::getValue)
+                        .reversed()
+                        .thenComparing(result -> result.getKey().getTimestamp(), Comparator.reverseOrder())
+                        .thenComparing(result -> result.getKey().getId()))
                 .limit(limit)
+                .map(Map.Entry::getKey)
                 .collect(Collectors.toList());
     }
 
@@ -109,8 +119,38 @@ public class LongTermMemory implements MemoryStore {
 
     public List<MemoryEntry> getAll(String projectKey) {
         return entries.values().stream()
-                .filter(entry -> isVisibleInProject(entry, projectKey))
+                .filter(entry -> isVisible(entry, projectKey))
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * 构建供 prompt 注入的项目级记忆目录，不包含正文和绝对路径。
+     */
+    public String buildIndex(String projectKey, int maxLines, int maxChars) {
+        int lineLimit = Math.max(0, maxLines);
+        int charLimit = Math.max(0, maxChars);
+        StringBuilder index = new StringBuilder("# 长期记忆索引\n\n");
+        if (lineLimit == 0 || charLimit <= index.length()) {
+            return index.substring(0, Math.min(index.length(), charLimit));
+        }
+
+        List<MemoryEntry> visible = entries.values().stream()
+                .filter(entry -> isVisible(entry, projectKey))
+                .sorted(Comparator.comparing(MemoryEntry::getTimestamp, Comparator.reverseOrder())
+                        .thenComparing(MemoryEntry::getId))
+                .toList();
+        int count = 0;
+        for (MemoryEntry entry : visible) {
+            if (count >= lineLimit) break;
+            String title = entry.getName() == null || entry.getName().isBlank()
+                    ? entry.getId() : entry.getName().replace("\n", " ");
+            String line = "- " + entry.getId() + " | " + title + " | "
+                    + entry.getType() + " | " + scopeOf(entry) + " | " + entry.getTimestamp() + "\n";
+            if (index.length() + line.length() > charLimit) break;
+            index.append(line);
+            count++;
+        }
+        return index.toString();
     }
 
     @Override
@@ -187,6 +227,50 @@ public class LongTermMemory implements MemoryStore {
         return "global";
     }
 
+    /** 统一判断条目是否可被当前项目的搜索、读取或索引看到。 */
+    public static boolean isVisible(MemoryEntry entry, String projectKey) {
+        return entry != null
+                && isVisibleInProject(entry, projectKey)
+                && !isGovernedOut(entry);
+    }
+
+    private static boolean isGovernedOut(MemoryEntry entry) {
+        String status = entry.getMetadata().get("status");
+        if (status != null) {
+            switch (status.trim().toLowerCase(Locale.ROOT)) {
+                case "revoked", "deleted", "expired", "conflict", "superseded" -> {
+                    return true;
+                }
+                default -> {
+                    // Keep legacy records without a recognized terminal status visible.
+                }
+            }
+        }
+        String expiresAt = entry.getMetadata().get("expiresAt");
+        if (expiresAt == null || expiresAt.isBlank()) {
+            return false;
+        }
+        try {
+            return !Instant.parse(expiresAt.trim()).isAfter(Instant.now());
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static int searchScore(MemoryEntry entry, String queryLower) {
+        int score = 0;
+        if (containsIgnoreCase(entry.getName(), queryLower)) score += 100;
+        if (entry.getMetadata().values().stream().anyMatch(value -> containsIgnoreCase(value, queryLower))) {
+            score += 10;
+        }
+        if (containsIgnoreCase(entry.getContent(), queryLower)) score += 1;
+        return score;
+    }
+
+    private static boolean containsIgnoreCase(String value, String queryLower) {
+        return value != null && value.toLowerCase(Locale.ROOT).contains(queryLower);
+    }
+
     // ===== 文件 I/O =====
 
     private File entryFile(String id) {
@@ -214,7 +298,12 @@ public class LongTermMemory implements MemoryStore {
         try {
             StringBuilder index = new StringBuilder("# 长期记忆索引\n\n");
             int count = 0;
-            for (MemoryEntry entry : entries.values()) {
+            List<MemoryEntry> visible = entries.values().stream()
+                    .filter(entry -> !isGovernedOut(entry))
+                    .sorted(Comparator.comparing(MemoryEntry::getTimestamp, Comparator.reverseOrder())
+                            .thenComparing(MemoryEntry::getId))
+                    .toList();
+            for (MemoryEntry entry : visible) {
                 if (count >= MAX_INDEX_ENTRIES) break;
                 String preview = entry.getName() != null && !entry.getName().isBlank()
                         ? entry.getName()
@@ -259,14 +348,9 @@ public class LongTermMemory implements MemoryStore {
 
     private MemoryEntry parseEntryFile(File file) throws IOException {
         String content = Files.readString(file.toPath());
-        if (!content.startsWith("---")) return null;
-
-        // 解析 YAML frontmatter（简易解析，不引入 full YAML parser）
-        int endFrontmatter = content.indexOf("---", 3);
-        if (endFrontmatter < 0) return null;
-
-        String frontmatter = content.substring(3, endFrontmatter);
-        String body = content.substring(endFrontmatter + 3).trim();
+        MarkdownFrontmatterParser.ParseResult parsed = MarkdownFrontmatterParser.parse(content);
+        if (parsed.metadata().isEmpty()) return null;
+        String body = parsed.body().trim();
 
         Map<String, String> metadata = new HashMap<>();
         String typeStr = "PROJECT_FACT";
@@ -274,11 +358,9 @@ public class LongTermMemory implements MemoryStore {
         Instant timestamp = Instant.now();
         String entryId = file.getName().replaceFirst("\\.md$", "");
 
-        for (String line : frontmatter.split("\n")) {
-            int colonIdx = line.indexOf(':');
-            if (colonIdx < 0) continue;
-            String key = line.substring(0, colonIdx).trim();
-            String value = line.substring(colonIdx + 1).trim();
+        for (Map.Entry<String, Object> field : parsed.metadata().entrySet()) {
+            String key = field.getKey();
+            String value = field.getValue() == null ? "" : String.valueOf(field.getValue()).trim();
 
             if ("name".equals(key)) {
                 name = value.isEmpty() ? null : value;
@@ -513,14 +595,10 @@ public class LongTermMemory implements MemoryStore {
     }
 
     private static File resolveStorageDir() {
-        String configuredDir = System.getProperty(STORAGE_DIR_PROPERTY);
-        if (configuredDir == null || configuredDir.isBlank()) {
-            configuredDir = System.getenv(STORAGE_DIR_ENV);
-        }
-        if (configuredDir != null && !configuredDir.isBlank()) {
-            return new File(configuredDir);
-        }
-        return new File(new File(System.getProperty("user.home"), ".mindcli"), "memory");
+        String configuredDir = ConfigValueResolver.current().resolve(
+                STORAGE_DIR_PROPERTY, STORAGE_DIR_ENV,
+                new File(new File(System.getProperty("user.home"), ".mindcli"), "memory").getPath());
+        return new File(configuredDir);
     }
 
     /**

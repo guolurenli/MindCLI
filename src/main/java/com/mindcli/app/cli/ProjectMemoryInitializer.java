@@ -8,11 +8,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-final class ProjectMemoryInitializer {
+public final class ProjectMemoryInitializer {
     private ProjectMemoryInitializer() {
     }
 
-    static InitResult initialize(Path projectRoot, boolean force) throws IOException {
+    public static InitResult initialize(Path projectRoot, boolean force) throws IOException {
         Path root = projectRoot == null ? Path.of(".").toAbsolutePath().normalize()
                 : projectRoot.toAbsolutePath().normalize();
         Path target = root.resolve("MIND.md");
@@ -25,7 +25,7 @@ final class ProjectMemoryInitializer {
         return new InitResult(true, target, "已生成项目级记忆 MIND.md。");
     }
 
-    static String generate(Path projectRoot) throws IOException {
+    public static String generate(Path projectRoot) throws IOException {
         Path root = projectRoot == null ? Path.of(".").toAbsolutePath().normalize()
                 : projectRoot.toAbsolutePath().normalize();
         ProjectFacts facts = inspect(root);
@@ -89,11 +89,11 @@ final class ProjectMemoryInitializer {
             description = "MindCLI 是面向商业使用的 Java Agent CLI 产品，对标 Claude Code；主路径是 ReAct、Plan-and-Execute、Multi-Agent 三套执行模式。";
             commands = List.of(
                     "构建：`mvn clean package` 默认跳过测试，优先产出可手工验收 jar。",
-                    "常规回归：`mvn test -Pquick`；TUI 相关跑 `mvn test -Pphase16-smoke`。",
+                    "常规回归：`mvn test -Pquick`；终端渲染跑 `mvn test -Pphase16-smoke`。",
                     "针对性测试：`mvn test -Dtest=XxxTest -DskipTests=false`。"
             );
             architecture.add("三条执行路径共享 `ToolRegistry` / `MemoryManager` / `SnapshotService`，不要为某个模式创建孤立能力。");
-            architecture.add("精确代码定位优先 `glob_files` / `grep_code` / `read_file`，`search_code` 只做 RAG 语义辅助。");
+            architecture.add("代码定位优先 `glob_files` / `grep_code` / `read_file`，按需逐步缩小范围并读取具体行段。");
             architecture.add("system prompt 由 `PromptAssembler` 分层组装；内置 prompt 在 `src/main/resources/prompts/`。");
             pitfalls.add("改行为要同步 `AGENTS.md` / `README.md` / `ROADMAP.md`；路线图只在状态变化时更新。");
             pitfalls.add("改命令入口要联动 `Main.java`、`CliCommandParser.java`、测试、`README.md`、`AGENTS.md`。");
@@ -136,7 +136,7 @@ final class ProjectMemoryInitializer {
         return Files.isRegularFile(path) ? Files.readString(path, StandardCharsets.UTF_8) : "";
     }
 
-    record InitResult(boolean written, Path path, String message) {
+    public record InitResult(boolean written, Path path, String message) {
     }
 
     private record ProjectFacts(

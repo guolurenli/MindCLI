@@ -14,7 +14,7 @@ public final class McpResourceTool {
     public static final String LIST_RESOURCES = "list_resources";
     public static final String READ_RESOURCE = "read_resource";
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
 
     private McpResourceTool() {
     }

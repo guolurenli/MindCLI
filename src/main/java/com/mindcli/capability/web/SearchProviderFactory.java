@@ -1,11 +1,10 @@
 package com.mindcli.capability.web;
 
+import com.mindcli.platform.config.ConfigValueResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
+import java.nio.file.Path;
 import java.util.Locale;
 
 /**
@@ -30,11 +29,13 @@ public final class SearchProviderFactory {
     private SearchProviderFactory() {}
 
     public static SearchProvider create() {
-        String provider = readEnv("SEARCH_PROVIDER");
-        String glmKey = readEnv("GLM_API_KEY");
-        String zhipuEngine = readEnv("ZHIPU_SEARCH_ENGINE");
-        String serpKey = readEnv("SERPAPI_KEY");
-        String searxngUrl = readEnv("SEARXNG_URL");
+        ConfigValueResolver values = new ConfigValueResolver(
+                Path.of("."), Path.of(System.getProperty("user.home")));
+        String provider = values.resolve("SEARCH_PROVIDER", null);
+        String glmKey = values.resolve("GLM_API_KEY", null);
+        String zhipuEngine = values.resolve("ZHIPU_SEARCH_ENGINE", null);
+        String serpKey = values.resolve("SERPAPI_KEY", null);
+        String searxngUrl = values.resolve("SEARXNG_URL", null);
 
         String chosen = pickProvider(provider, glmKey, serpKey, searxngUrl);
         log.info("SearchProvider chosen: {}", chosen);
@@ -62,34 +63,4 @@ public final class SearchProviderFactory {
         return "zhipu"; // 默认占位（MindCLI 主要面向 GLM 用户），isReady() 会为 false
     }
 
-    private static String readEnv(String key) {
-        String fromEnv = System.getenv(key);
-        if (fromEnv != null && !fromEnv.isBlank()) {
-            return fromEnv.trim();
-        }
-        String fromProp = System.getProperty(key);
-        if (fromProp != null && !fromProp.isBlank()) {
-            return fromProp.trim();
-        }
-        return readFromDotEnv(key);
-    }
-
-    private static String readFromDotEnv(String key) {
-        File[] envFiles = {new File(".env"), new File(System.getProperty("user.home"), ".env")};
-        for (File envFile : envFiles) {
-            if (!envFile.exists()) continue;
-            try (BufferedReader reader = new BufferedReader(new FileReader(envFile))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    line = line.trim();
-                    if (line.isEmpty() || line.startsWith("#")) continue;
-                    if (line.startsWith(key + "=")) {
-                        return line.substring((key + "=").length()).trim();
-                    }
-                }
-            } catch (Exception ignored) {
-            }
-        }
-        return null;
-    }
 }

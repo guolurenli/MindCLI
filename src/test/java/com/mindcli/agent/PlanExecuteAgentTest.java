@@ -11,10 +11,14 @@ import com.mindcli.runtime.run.AgentMode;
 import com.mindcli.runtime.run.AgentRunContext;
 import com.mindcli.runtime.run.AgentRunEvent;
 import com.mindcli.runtime.run.AgentRunEventType;
-import com.mindcli.runtime.run.InMemoryRunStore;
-import com.mindcli.runtime.run.ToolDispatcher;
+import com.mindcli.runtime.run.loop.AgentTurnKernel;
+import com.mindcli.runtime.run.recovery.PlanResumeState;
+import com.mindcli.runtime.run.recovery.PlanTaskResumeState;
+import com.mindcli.runtime.CancellationContext;
+import com.mindcli.runtime.CancellationToken;
+import com.mindcli.runtime.run.store.InMemoryRunStore;
+import com.mindcli.runtime.run.dispatch.ToolDispatcher;
 import com.mindcli.capability.tool.ToolRegistry;
-import com.mindcli.capability.tool.ToolRegistry.ToolExecutionResult;
 import com.mindcli.capability.tool.ToolRegistry.ToolInvocation;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -24,6 +28,7 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.lang.reflect.Field;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Queue;
@@ -43,6 +48,12 @@ class PlanExecuteAgentTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void planAgentUsesSharedSingleTurnKernelSeam() throws Exception {
+        Field field = PlanExecuteAgent.class.getDeclaredField("turnKernel");
+        assertEquals(AgentTurnKernel.class, field.getType());
+    }
 
     @Test
     void shouldNotRepeatStreamedTaskOutputInFinalPlanSummary() throws Exception {
@@ -263,6 +274,124 @@ class PlanExecuteAgentTest {
     }
 
     @Test
+    void recordsPlanDefinitionAndTaskBoundaryCheckpoints() {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        StubGLMClient llmClient = StubGLMClient.streaming(List.of(
+                StubResponse.streamed(new LlmClient.ChatResponse(
+                        "assistant", "done", null, null, 10, 5))));
+        PlanExecuteAgent agent = new PlanExecuteAgent(
+                llmClient,
+                new ToolRegistry(),
+                new StubPlanner(llmClient),
+                null,
+                (goal, plan) -> PlanExecuteAgent.PlanReviewDecision.execute(),
+                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
+                runStore);
+        AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "goal", tempDir.toString());
+
+        String result = agent.run(context, runStore);
+
+        assertTrue(result.startsWith("✅"), result);
+        assertEquals(List.of(
+                        AgentRunEventType.PLAN_DEFINED,
+                        AgentRunEventType.PLAN_TASK_CHECKPOINT,
+                        AgentRunEventType.PLAN_TASK_CHECKPOINT),
+                runStore.events(context.runId()).stream()
+                        .map(AgentRunEvent::type)
+                        .filter(type -> type == AgentRunEventType.PLAN_DEFINED
+                                || type == AgentRunEventType.PLAN_TASK_CHECKPOINT)
+                        .toList());
+        assertEquals(List.of("RUNNING", "COMPLETED"),
+                runStore.events(context.runId()).stream()
+                        .filter(event -> event.type() == AgentRunEventType.PLAN_TASK_CHECKPOINT)
+                        .map(event -> event.attributes().get("taskStatus"))
+                        .toList());
+    }
+
+    @Test
+    void recoveredPlanSkipsCompletedTaskWithoutPlannerOrReview() {
+        AtomicInteger plannerCalls = new AtomicInteger();
+        AtomicInteger reviewCalls = new AtomicInteger();
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        StubGLMClient llmClient = StubGLMClient.streaming(List.of(
+                StubResponse.streamed(new LlmClient.ChatResponse(
+                        "assistant", "second done", null, null, 10, 5))));
+        Planner planner = new Planner(llmClient) {
+            @Override
+            public ExecutionPlan createPlan(String goal) {
+                plannerCalls.incrementAndGet();
+                throw new AssertionError("recovery must not create a new plan");
+            }
+        };
+        PlanExecuteAgent agent = new PlanExecuteAgent(
+                llmClient,
+                new ToolRegistry(),
+                planner,
+                null,
+                (goal, plan) -> {
+                    reviewCalls.incrementAndGet();
+                    return PlanExecuteAgent.PlanReviewDecision.execute();
+                },
+                new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
+                runStore);
+        AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "goal", tempDir.toString());
+        PlanResumeState state = new PlanResumeState(
+                true,
+                3,
+                "plan-resume",
+                "goal",
+                "two tasks",
+                List.of(
+                        resumeTask("task_1", List.of(), "COMPLETED", "first done"),
+                        resumeTask("task_2", List.of("task_1"), "PENDING", "")),
+                "");
+
+        String result = agent.runRecovered(context, runStore, state);
+
+        assertTrue(result.startsWith("✅"), result);
+        assertEquals(0, plannerCalls.get());
+        assertEquals(0, reviewCalls.get());
+        assertEquals(List.of("task_2"),
+                runStore.events(context.runId()).stream()
+                        .filter(event -> event.type() == AgentRunEventType.PLAN_TASK_CHECKPOINT)
+                        .filter(event -> "RUNNING".equals(event.attributes().get("taskStatus")))
+                        .map(event -> event.attributes().get("taskId"))
+                        .toList());
+        assertTrue(runStore.events(context.runId()).stream()
+                .noneMatch(event -> event.type() == AgentRunEventType.PLAN_DEFINED));
+    }
+
+    @Test
+    void cancellationInsideTaskDoesNotWriteCompletedCheckpoint() {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        CancellationToken token = CancellationContext.startRun();
+        try {
+            StubGLMClient llmClient = StubGLMClient.streaming(List.of(
+                    StubResponse.scripted(listener -> token.cancel(), new LlmClient.ChatResponse(
+                            "assistant", "cancelled response", null, null, 10, 5))));
+            PlanExecuteAgent agent = new PlanExecuteAgent(
+                    llmClient,
+                    new ToolRegistry(),
+                    new StubPlanner(llmClient),
+                    null,
+                    (goal, plan) -> PlanExecuteAgent.PlanReviewDecision.execute(),
+                    new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8),
+                    runStore);
+            AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "goal", tempDir.toString());
+
+            String result = agent.run(context, runStore);
+
+            assertTrue(result.startsWith("⏹"), result);
+            assertEquals(List.of("RUNNING"), runStore.events(context.runId()).stream()
+                    .filter(event -> event.type() == AgentRunEventType.PLAN_TASK_CHECKPOINT)
+                    .map(event -> event.attributes().get("taskStatus"))
+                    .toList());
+        } finally {
+            CancellationContext.clear(token);
+        }
+    }
+
+    @Test
     void nonCriticalSkipDegradationSkipsFailedTaskEvenWithDownstream() throws Exception {
         FailsFirstThenSucceedsClient llmClient = new FailsFirstThenSucceedsClient();
         AtomicInteger replanCalls = new AtomicInteger();
@@ -334,6 +463,26 @@ class PlanExecuteAgentTest {
         }
     }
 
+    private static PlanTaskResumeState resumeTask(String id, List<String> dependencies,
+                                                   String status, String result) {
+        return new PlanTaskResumeState(
+                id,
+                "execute " + id,
+                "ANALYSIS",
+                dependencies,
+                true,
+                0,
+                "BLOCK",
+                List.of(),
+                List.of(),
+                "",
+                "low",
+                status,
+                result,
+                "",
+                0);
+    }
+
     private static final class RecordingToolRegistry extends ToolRegistry {
         private final CountDownLatch toolStarted;
         private final CountDownLatch releaseLock;
@@ -371,18 +520,15 @@ class PlanExecuteAgentTest {
         }
 
         @Override
-        public List<ToolExecutionResult> executeTools(List<ToolInvocation> invocations) {
+        public com.mindcli.capability.tool.ToolExecution executeToolExecution(String name, String argumentsJson) {
             lockEntered.countDown();
             try {
                 releaseLock.await(30, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            return invocations.stream()
-                    .map(invocation -> new ToolExecutionResult(
-                            invocation.id(), invocation.name(), invocation.argumentsJson(),
-                            "lock released", 1, false, List.of()))
-                    .toList();
+            return com.mindcli.capability.tool.ToolExecution.completed(
+                    com.mindcli.capability.tool.ToolOutput.text("lock released"), argumentsJson);
         }
     }
 

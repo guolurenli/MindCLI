@@ -13,22 +13,25 @@ import com.mindcli.platform.prompt.ProjectMemoryLoader;
 import com.mindcli.platform.render.PlainRenderer;
 import com.mindcli.platform.render.Renderer;
 import com.mindcli.platform.render.StatusInfo;
-import com.mindcli.runtime.run.AgentLoopContext;
-import com.mindcli.runtime.run.AgentLoopExecutor;
-import com.mindcli.runtime.run.AgentLoopObserver;
-import com.mindcli.runtime.run.AgentLoopPolicy;
-import com.mindcli.runtime.run.AgentLoopResult;
-import com.mindcli.runtime.run.AgentLoopStatus;
+import com.mindcli.runtime.run.loop.AgentLoopContext;
+import com.mindcli.runtime.run.loop.AgentLoopExecutor;
+import com.mindcli.runtime.run.loop.AgentLoopObserver;
+import com.mindcli.runtime.run.loop.AgentLoopPolicy;
+import com.mindcli.runtime.run.loop.AgentLoopResult;
+import com.mindcli.runtime.run.loop.AgentLoopStatus;
 import com.mindcli.runtime.run.AgentMode;
 import com.mindcli.runtime.run.AgentRuntime;
+import com.mindcli.runtime.run.AgentRunEvent;
 import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.runtime.run.AgentRunEventType;
 import com.mindcli.runtime.run.AgentRunResult;
-import com.mindcli.runtime.run.InMemoryRunStore;
-import com.mindcli.runtime.run.ReActModeAdapter;
-import com.mindcli.runtime.run.RunStoreFactory;
-import com.mindcli.runtime.run.RunStore;
-import com.mindcli.runtime.run.ToolDispatcher;
-import com.mindcli.runtime.run.ToolOutcome;
+import com.mindcli.runtime.run.store.InMemoryRunStore;
+import com.mindcli.runtime.run.mode.ReActModeAdapter;
+import com.mindcli.runtime.run.store.RunStoreFactory;
+import com.mindcli.runtime.run.store.RunStore;
+import com.mindcli.runtime.run.session.SessionContext;
+import com.mindcli.runtime.run.dispatch.ToolDispatcher;
+import com.mindcli.runtime.run.dispatch.ToolOutcome;
 import com.mindcli.capability.skill.SkillIndexFormatter;
 import com.mindcli.capability.skill.SkillRegistry;
 import com.mindcli.platform.render.terminal.AnsiStyle;
@@ -47,6 +50,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 
 /**
@@ -76,6 +80,7 @@ public class Agent {
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
     //运行时事件账本（Phase 2 先使用内存实现）
     private final RunStore runStore;
+    private volatile SessionContext sessionContext;
 
     public Agent(LlmClient llmClient) {
         this(llmClient, new ToolRegistry(), RunStoreFactory.create());
@@ -95,6 +100,8 @@ public class Agent {
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
         this.memoryManager.setProjectPath(this.toolRegistry.getProjectPath());
         this.toolRegistry.setScopedMemoryWriter(memoryManager::storeFact);
+        this.toolRegistry.setMemorySearcher(memoryManager::searchMemory);
+        this.toolRegistry.setMemoryReader(memoryManager::readMemory);
         conversationHistory.add(LlmClient.Message.system(buildSystemPrompt("")));
     }
 
@@ -103,6 +110,10 @@ public class Agent {
         this.memoryManager.setLlmClient(llmClient);
         this.toolRegistry.setContextProfile(memoryManager.getContextProfile());
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
+    }
+
+    public void setSessionContext(SessionContext sessionContext) {
+        this.sessionContext = sessionContext;
     }
 
     public void setExternalContextSupplier(Supplier<String> externalContextSupplier) {
@@ -157,6 +168,23 @@ public class Agent {
     }
 
     public AgentRunResult run(AgentRunContext runContext, RunStore runStore) {
+        return runInternal(runContext, runStore, true);
+    }
+
+    public AgentRunResult runRecovered(AgentRunContext runContext, RunStore runStore,
+                                       List<LlmClient.Message> recoveredMessages) {
+        conversationHistory.clear();
+        if (recoveredMessages != null) {
+            conversationHistory.addAll(recoveredMessages);
+        }
+        if (conversationHistory.isEmpty() || !"system".equals(conversationHistory.get(0).role())) {
+            conversationHistory.add(0, LlmClient.Message.system(buildSystemPrompt("")));
+        }
+        return runInternal(runContext, runStore, false);
+    }
+
+    private AgentRunResult runInternal(AgentRunContext runContext, RunStore runStore,
+                                       boolean appendUserInput) {
         if (runContext == null) {
             throw new IllegalArgumentException("runContext must not be null");
         }
@@ -165,16 +193,16 @@ public class Agent {
         log.info("ReAct run started: inputLength={}", userInput == null ? 0 : userInput.length());
         pruneHistoricalImagePayloads();
 
-        // 重置本轮已注入记忆的去重集合
-        memoryManager.resetSurfaced();
-
-        // 检索相关长期记忆，注入到 system prompt（支持工具感知过滤）
+        // 仅注入会话级记忆目录；记忆正文由模型按需通过 search_memory/read_memory 获取。
         ContextProfile contextProfile = memoryManager.getContextProfile();
-        java.util.Set<String> activeToolNames = toolRegistry.getToolDefinitions().stream()
-                .map(LlmClient.Tool::name)
-                .collect(java.util.stream.Collectors.toSet());
-        String memoryContext = memoryManager.buildContextForQuery(
-                userInput, contextProfile.memoryContextTokens(), activeToolNames, runContext, effectiveRunStore);
+        String memoryContext = "";
+
+        String sessionContextText = sessionContext == null
+                ? ""
+                : sessionContext.promptContext(contextProfile.memoryContextTokens());
+        if (!sessionContextText.isBlank()) {
+            memoryContext = sessionContextText + "\n\n" + memoryContext;
+        }
 
         // 预加载 MEMORY.md 索引（会话级缓存，只在首次运行时加载）
         String memoryIndexSection = buildMemoryIndexSection();
@@ -183,12 +211,20 @@ public class Agent {
         }
 
         updateSystemPromptWithMemory(memoryContext);
+        effectiveRunStore.append(AgentRunEvent.of(runContext, AgentRunEventType.MEMORY_CONTEXT_BUILT,
+                Map.of(
+                        "strategy", "INDEX_ONLY",
+                        "bodyInjected", "false",
+                        "indexInjected", String.valueOf(!memoryIndexSection.isEmpty())
+                )));
 
         // 添加用户输入到历史
         String userMessageContent = userInput;
-        conversationHistory.add(ImageReferenceParser.userMessage(
-                userMessageContent,
-                Path.of(toolRegistry.getProjectPath())));
+        if (appendUserInput) {
+            conversationHistory.add(ImageReferenceParser.userMessage(
+                    userMessageContent,
+                    Path.of(toolRegistry.getProjectPath())));
+        }
         StreamRenderer streamRenderer = new StreamRenderer(renderer());
 
         long startNanos = System.nanoTime();
@@ -240,7 +276,8 @@ public class Agent {
             }
         };
 
-        AgentLoopResult loopResult = new AgentLoopExecutor(llmClient, new ToolDispatcher(toolRegistry), effectiveRunStore)
+        AgentLoopResult loopResult = new AgentLoopExecutor(llmClient,
+                new ToolDispatcher(toolRegistry, effectiveRunStore), effectiveRunStore)
                 .execute(new AgentLoopContext(
                         runContext,
                         conversationHistory,
@@ -563,26 +600,14 @@ public class Agent {
     }
 
     /**
-     * 读取 MEMORY.md 索引文件，注入到 system prompt。
+     * 构建受当前项目作用域约束的 MEMORY.md 目录，注入到 system prompt。
      * 对齐 Claude Code：会话启动时预加载记忆索引（≤200 行 / 25KB），
      * 让 LLM 在全局层面知道有哪些已知信息域。
      */
     private String buildMemoryIndexSection() {
         try {
-            java.io.File storageDir = memoryManager.getLongTermMemory().getStorageDir();
-            java.io.File indexFile = new java.io.File(storageDir, "MEMORY.md");
-            if (!indexFile.exists() || indexFile.length() == 0) return "";
-
-            String content = java.nio.file.Files.readString(indexFile.toPath());
-            String[] lines = content.split("\n");
-            if (lines.length > 200) {
-                content = String.join("\n", java.util.Arrays.copyOf(lines, 200))
-                        + "\n\n<!-- 索引已截断，更多记忆通过查询检索 -->";
-            }
-            if (content.length() > 25000) {
-                content = content.substring(0, 25000) + "\n<!-- 索引已截断 -->";
-            }
-            return "\n## 长期记忆索引\n" + content + "\n";
+            String content = memoryManager.buildMemoryIndex(200, 25_000);
+            return content.isBlank() ? "" : "\n## 长期记忆索引\n" + content + "\n";
         } catch (Exception e) {
             log.warn("读取 MEMORY.md 索引失败: {}", e.getMessage());
             return "";
@@ -594,6 +619,18 @@ public class Agent {
      */
     public List<LlmClient.Message> getConversationHistory() {
         return new ArrayList<>(conversationHistory);
+    }
+
+    /** 返回最近一条可用于跨 run 摘要的 assistant 文本。 */
+    public String latestAssistantResponse() {
+        for (int i = conversationHistory.size() - 1; i >= 0; i--) {
+            LlmClient.Message message = conversationHistory.get(i);
+            if ("assistant".equals(message.role()) && message.content() != null
+                    && !message.content().isBlank()) {
+                return message.content().trim();
+            }
+        }
+        return "";
     }
 
     /**
@@ -655,7 +692,7 @@ public class Agent {
     private int estimateToolsSchemaTokens() {
         try {
             return com.mindcli.capability.memory.MemoryEntry.estimateTokens(
-                    new ObjectMapper().writeValueAsString(toolRegistry.getToolDefinitions()));
+                    com.mindcli.platform.serialization.JsonSupport.mapper().writeValueAsString(toolRegistry.getToolDefinitions()));
         } catch (Exception e) {
             return 0;
         }
@@ -697,7 +734,7 @@ public class Agent {
         if (tools != null && !tools.isEmpty()) {
             try {
                 toolsSchemaTokens = com.mindcli.capability.memory.MemoryEntry.estimateTokens(
-                        new ObjectMapper().writeValueAsString(tools));
+                        com.mindcli.platform.serialization.JsonSupport.mapper().writeValueAsString(tools));
             } catch (Exception e) {
                 log.debug("Failed to estimate tools schema tokens", e);
             }
@@ -877,7 +914,7 @@ public class Agent {
             return "";
         }
         try {
-            return new ObjectMapper().readTree(json).path(key).asText("");
+            return com.mindcli.platform.serialization.JsonSupport.mapper().readTree(json).path(key).asText("");
         } catch (Exception e) {
             return "";
         }

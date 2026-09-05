@@ -1,5 +1,6 @@
 package com.mindcli.app.cli.interaction;
 
+import com.mindcli.platform.config.ConfigValueResolver;
 import org.jline.reader.History;
 import org.jline.reader.LineReader;
 
@@ -105,11 +106,12 @@ public final class CliInputSupport {
     }
 
     public static Path resolveHistoryFile(Path homeDir) {
-        String configured = firstNonBlank(System.getProperty(HISTORY_FILE_PROPERTY), System.getenv("MINDCLI_HISTORY_FILE"));
+        Path base = homeDir == null ? Path.of(System.getProperty("user.home")) : homeDir;
+        String configured = new ConfigValueResolver(Path.of("."), base).resolve(
+                HISTORY_FILE_PROPERTY, "MINDCLI_HISTORY_FILE", null);
         if (configured != null) {
             return normalizeHistoryFile(Path.of(configured));
         }
-        Path base = homeDir == null ? Path.of(System.getProperty("user.home")) : homeDir;
         return base.resolve(".mindcli").resolve("history").resolve(DEFAULT_HISTORY_FILE_NAME)
                 .toAbsolutePath().normalize();
     }
@@ -172,25 +174,7 @@ public final class CliInputSupport {
     }
 
     private static int configuredPositiveInt(String property, String env, int fallback) {
-        String raw = firstNonBlank(System.getProperty(property), System.getenv(env));
-        if (raw == null) {
-            return fallback;
-        }
-        try {
-            int value = Integer.parseInt(raw.trim());
-            return value > 0 ? value : fallback;
-        } catch (NumberFormatException e) {
-            return fallback;
-        }
-    }
-
-    private static String firstNonBlank(String first, String second) {
-        if (first != null && !first.isBlank()) {
-            return first;
-        }
-        if (second != null && !second.isBlank()) {
-            return second;
-        }
-        return null;
+        int value = ConfigValueResolver.current().resolveInt(property, env, fallback);
+        return value > 0 ? value : fallback;
     }
 }

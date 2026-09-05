@@ -71,14 +71,6 @@ public class MemoryExtractor {
     }
 
     /**
-     * 从对话历史中提取事实，直接存入 LongTermMemory（单轮提取）。
-     * @deprecated 改为 {@link #extractFactsIncremental}，只传本轮新增消息
-     */
-    public void extractFacts(List<LlmClient.Message> conversationHistory) {
-        extractFacts(conversationHistory, 1);
-    }
-
-    /**
      * 增量提取 —— 只处理本轮新增的对话，不重传整个 conversationHistory。
      *
      * 对齐 Claude Code Stop hook 语义：
@@ -134,45 +126,6 @@ public class MemoryExtractor {
             log.warn("增量事实提取失败，跳过: {}", e.getMessage());
         }
         return List.of();
-    }
-
-    /**
-     * 多轮提取：对于长对话（>20 条消息），最多执行 maxTurns 轮 LLM 调用，
-     * 每轮回读确认后再写入。短对话退化为单轮。
-     *
-     * @param conversationHistory ReAct 主循环的消息历史
-     * @param maxTurns            最大轮次（建议 1-3）
-     */
-    public void extractFacts(List<LlmClient.Message> conversationHistory, int maxTurns) {
-        if (conversationHistory == null || conversationHistory.size() < 4) {
-            return;
-        }
-
-        String dialogue = conversationHistory.stream()
-                .filter(MemoryExtractor::isMemoryExtractionCandidate)
-                .map(m -> m.role().toUpperCase() + ": " + truncate(m.content(), 2000))
-                .reduce("", (a, b) -> a + "\n\n" + b);
-
-        if (dialogue.length() < 500) return;
-
-        // 短对话单轮即可，长对话使用多轮
-        int turns = Math.min(maxTurns, conversationHistory.size() > 20 ? 3 : 1);
-
-        try {
-            String result = null;
-            for (int i = 0; i < turns; i++) {
-                result = doExtractRound(dialogue, result, i, turns);
-                if (result == null || "NO_FACTS".equals(result.trim())) {
-                    return;
-                }
-            }
-            // 最终轮结果已包含确认后的事实，直接解析存储
-            if (result != null && !"NO_FACTS".equals(result.trim())) {
-                storeProposals(parseExtractedFacts(result));
-            }
-        } catch (IOException e) {
-            log.warn("事实提取 LLM 调用失败，跳过本轮记忆提取: {}", e.getMessage());
-        }
     }
 
     private String doExtractRound(String dialogue, String prevResult, int round, int totalRounds)

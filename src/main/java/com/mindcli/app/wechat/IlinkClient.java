@@ -18,7 +18,7 @@ import java.util.Locale;
 
 public class IlinkClient {
     public static final String DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
     private static final SecureRandom RANDOM = new SecureRandom();
 

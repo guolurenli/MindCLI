@@ -22,7 +22,7 @@ public record ApprovalRequest(
         String callerContext,
         String sensitiveNotice
 ) {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final int BOX_INNER_WIDTH = 58;
     private static final int FIELD_WIDTH = BOX_INNER_WIDTH - 8;  // 为"│  xxx: "留出
     private static final int ARG_LINE_WIDTH = BOX_INNER_WIDTH - 6;

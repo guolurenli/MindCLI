@@ -6,7 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.Locale;
 
 public class WechatPolicyDecider {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private final WechatPolicyConfig config;
 
     public WechatPolicyDecider(WechatPolicyConfig config) {
@@ -29,9 +29,6 @@ public class WechatPolicyDecider {
         }
         if ("revert_turn".equals(name)) {
             return WechatPolicyDecision.deny("微信通道 v1 不允许远程回滚快照");
-        }
-        if ("browser_connect".equals(name) || "browser_disconnect".equals(name)) {
-            return WechatPolicyDecision.deny("微信通道 v1 不允许远程切换浏览器会话");
         }
         if (name.startsWith("mcp__")) {
             return mcpAllowed(name);
@@ -68,8 +65,8 @@ public class WechatPolicyDecider {
 
     private static boolean isReadOnlyBuiltin(String name) {
         return switch (name) {
-            case "read_file", "list_dir", "glob_files", "grep_code", "search_code",
-                    "web_search", "web_fetch", "browser_status" -> true;
+            case "read_file", "list_dir", "glob_files", "grep_code",
+                    "web_search", "web_fetch" -> true;
             default -> false;
         };
     }

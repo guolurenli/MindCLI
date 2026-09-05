@@ -4,9 +4,6 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,7 +15,9 @@ public class MindCliConfig {
 
     private static final Path CONFIG_DIR = Path.of(System.getProperty("user.home"), ".mindcli");
     private static final Path CONFIG_FILE = CONFIG_DIR.resolve("config.json");
-    private static final ObjectMapper mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+    private static final ObjectMapper mapper = com.mindcli.platform.serialization.JsonSupport.prettyMapper();
+    private static final ConfigValueResolver CONFIG_VALUES = new ConfigValueResolver(
+            Path.of("."), Path.of(System.getProperty("user.home")));
 
     private String defaultProvider = "glm";
     private Map<String, ProviderConfig> providers = new LinkedHashMap<>();
@@ -121,36 +120,15 @@ public class MindCliConfig {
             default -> provider.toUpperCase() + "_MODEL";
         };
 
-        String envValue = System.getenv(envKey);
-        if (envValue != null && !envValue.isBlank()) {
-            return envValue.trim();
-        }
-
-        String dotEnvValue = readFromDotEnv(envKey);
-        if (dotEnvValue != null && !dotEnvValue.isBlank()) {
-            return dotEnvValue.trim();
-        }
+        String value = CONFIG_VALUES.resolve(envKey, null);
+        if (value != null) return value;
 
         if ("kimi".equalsIgnoreCase(provider)) {
-            String moonshotValue = System.getenv("MOONSHOT_MODEL");
-            if (moonshotValue != null && !moonshotValue.isBlank()) {
-                return moonshotValue.trim();
-            }
-            String moonshotDotEnvValue = readFromDotEnv("MOONSHOT_MODEL");
-            if (moonshotDotEnvValue != null && !moonshotDotEnvValue.isBlank()) {
-                return moonshotDotEnvValue.trim();
-            }
+            return CONFIG_VALUES.resolve("MOONSHOT_MODEL", null);
         }
 
         if ("xfyun".equalsIgnoreCase(provider)) {
-            String xfyunValue = System.getenv("XFYUN_MODEL");
-            if (xfyunValue != null && !xfyunValue.isBlank()) {
-                return xfyunValue.trim();
-            }
-            String xfyunDotEnvValue = readFromDotEnv("XFYUN_MODEL");
-            if (xfyunDotEnvValue != null && !xfyunDotEnvValue.isBlank()) {
-                return xfyunDotEnvValue.trim();
-            }
+            return CONFIG_VALUES.resolve("XFYUN_MODEL", null);
         }
 
         return null;
@@ -167,36 +145,15 @@ public class MindCliConfig {
             default -> provider.toUpperCase() + "_API_KEY";
         };
 
-        String envValue = System.getenv(envKey);
-        if (envValue != null && !envValue.isBlank()) {
-            return envValue.trim();
-        }
-
-        String dotEnvValue = readFromDotEnv(envKey);
-        if (dotEnvValue != null && !dotEnvValue.isBlank()) {
-            return dotEnvValue.trim();
-        }
+        String value = CONFIG_VALUES.resolve(envKey, null);
+        if (value != null) return value;
 
         if ("kimi".equalsIgnoreCase(provider)) {
-            String moonshotValue = System.getenv("MOONSHOT_API_KEY");
-            if (moonshotValue != null && !moonshotValue.isBlank()) {
-                return moonshotValue.trim();
-            }
-            String moonshotDotEnvValue = readFromDotEnv("MOONSHOT_API_KEY");
-            if (moonshotDotEnvValue != null && !moonshotDotEnvValue.isBlank()) {
-                return moonshotDotEnvValue.trim();
-            }
+            return CONFIG_VALUES.resolve("MOONSHOT_API_KEY", null);
         }
 
         if ("xfyun".equalsIgnoreCase(provider)) {
-            String xfyunValue = System.getenv("XFYUN_API_KEY");
-            if (xfyunValue != null && !xfyunValue.isBlank()) {
-                return xfyunValue.trim();
-            }
-            String xfyunDotEnvValue = readFromDotEnv("XFYUN_API_KEY");
-            if (xfyunDotEnvValue != null && !xfyunDotEnvValue.isBlank()) {
-                return xfyunDotEnvValue.trim();
-            }
+            return CONFIG_VALUES.resolve("XFYUN_API_KEY", null);
         }
 
         return null;
@@ -211,36 +168,15 @@ public class MindCliConfig {
             default -> provider.toUpperCase() + "_BASE_URL";
         };
 
-        String envValue = System.getenv(envKey);
-        if (envValue != null && !envValue.isBlank()) {
-            return envValue.trim();
-        }
-
-        String dotEnvValue = readFromDotEnv(envKey);
-        if (dotEnvValue != null && !dotEnvValue.isBlank()) {
-            return dotEnvValue.trim();
-        }
+        String value = CONFIG_VALUES.resolve(envKey, null);
+        if (value != null) return value;
 
         if ("kimi".equalsIgnoreCase(provider)) {
-            String moonshotValue = System.getenv("MOONSHOT_BASE_URL");
-            if (moonshotValue != null && !moonshotValue.isBlank()) {
-                return moonshotValue.trim();
-            }
-            String moonshotDotEnvValue = readFromDotEnv("MOONSHOT_BASE_URL");
-            if (moonshotDotEnvValue != null && !moonshotDotEnvValue.isBlank()) {
-                return moonshotDotEnvValue.trim();
-            }
+            return CONFIG_VALUES.resolve("MOONSHOT_BASE_URL", null);
         }
 
         if ("xfyun".equalsIgnoreCase(provider)) {
-            String xfyunValue = System.getenv("XFYUN_BASE_URL");
-            if (xfyunValue != null && !xfyunValue.isBlank()) {
-                return xfyunValue.trim();
-            }
-            String xfyunDotEnvValue = readFromDotEnv("XFYUN_BASE_URL");
-            if (xfyunDotEnvValue != null && !xfyunDotEnvValue.isBlank()) {
-                return xfyunDotEnvValue.trim();
-            }
+            return CONFIG_VALUES.resolve("XFYUN_BASE_URL", null);
         }
 
         return null;
@@ -251,43 +187,7 @@ public class MindCliConfig {
             return null;
         }
 
-        String envValue = System.getenv("XFYUN_MAAS_LORA_ID");
-        if (envValue != null && !envValue.isBlank()) {
-            return envValue.trim();
-        }
-
-        String dotEnvValue = readFromDotEnv("XFYUN_MAAS_LORA_ID");
-        if (dotEnvValue != null && !dotEnvValue.isBlank()) {
-            return dotEnvValue.trim();
-        }
-
-        String xfyunValue = System.getenv("XFYUN_LORA_ID");
-        if (xfyunValue != null && !xfyunValue.isBlank()) {
-            return xfyunValue.trim();
-        }
-
-        String xfyunDotEnvValue = readFromDotEnv("XFYUN_LORA_ID");
-        if (xfyunDotEnvValue != null && !xfyunDotEnvValue.isBlank()) {
-            return xfyunDotEnvValue.trim();
-        }
-        return null;
-    }
-
-    private static String readFromDotEnv(String key) {
-        File[] envFiles = { new File(".env"), new File(System.getProperty("user.home"), ".env") };
-        for (File envFile : envFiles) {
-            if (!envFile.exists()) continue;
-            try (BufferedReader reader = new BufferedReader(new FileReader(envFile))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    line = line.trim();
-                    if (line.isEmpty() || line.startsWith("#")) continue;
-                    if (line.startsWith(key + "=")) {
-                        return line.substring((key + "=").length()).trim();
-                    }
-                }
-            } catch (IOException ignored) {}
-        }
-        return null;
+        String value = CONFIG_VALUES.resolve("XFYUN_MAAS_LORA_ID", null);
+        return value != null ? value : CONFIG_VALUES.resolve("XFYUN_LORA_ID", null);
     }
 }

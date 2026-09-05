@@ -29,21 +29,17 @@ public interface ToolRegistrationContext {
 
         String createProjectTool(Map<String, String> args);
 
-        String searchCodeTool(Map<String, String> args);
-
         String webSearchTool(Map<String, String> args);
 
         String webFetchTool(Map<String, String> args);
 
-        String browserConnectTool(Map<String, String> args);
-
-        String browserDisconnectTool(Map<String, String> args);
-
-        String browserStatusTool(Map<String, String> args);
-
         String loadSkillTool(Map<String, String> args);
 
         String saveMemoryTool(Map<String, String> args);
+
+        String searchMemoryTool(Map<String, String> args);
+
+        String readMemoryTool(Map<String, String> args);
 
         String revertTurnTool(Map<String, String> args);
     }

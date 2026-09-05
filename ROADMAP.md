@@ -12,9 +12,9 @@
 
 三条主执行路径,共享 `ToolRegistry` / `MemoryManager` / `SnapshotService`：
 
-- **ReAct**（默认模式）—— 思考-行动-观察循环，LLM/tool 循环委托 `runtime/run/AgentLoopExecutor.java`，`Agent.java` 负责 prompt / memory / renderer。
+- **ReAct**（默认模式）—— 思考-行动-观察循环，LLM/tool 循环委托 `runtime/run/loop/AgentLoopExecutor.java`，`Agent.java` 负责 prompt / memory / renderer。
 - **Plan-and-Execute**（`/plan`）—— 先规划后执行，任务分解 + DAG 依赖管理 + 失败重规划，`PlanExecuteAgent.java` + `agent/plan/*`。
-- **Multi-Agent**（`/team`）—— 编排器内建规划，`EXPLORER` / `WORKER` 双 Profile 分工，`AgentOrchestrator.java` + `SubAgent.java` + `agent/profile/*`。
+- **Multi-Agent**（`/team`）—— 编排器内建规划，`EXPLORER` / `WORKER` 双 Profile 分工，`agent/team/AgentOrchestrator.java` + `agent/team/SubAgent.java` + `agent/profile/*`。
 - **模式路由** —— `AgentModeRouter` 统一把三种模式接入 `AgentRuntime`。
 
 ### 2. 记忆与上下文
@@ -27,12 +27,12 @@
 ### 3. 代码理解与检索
 
 - **精确定位** —— `glob_files` / `grep_code`（优先 ripgrep）/ `read_file`，Claude Code 式实时探索。
-- **RAG 语义** —— `search_code` + `capability/rag/*`（向量化 / 索引 / 语义检索），作为精确搜索之外的辅助。
+- **实时代码探索** —— `glob_files` / `grep_code` / `read_file` 逐步定位代码；语义检索不再由 MindCLI 内置维护，按需通过官方 MCP 接入外部能力。
 - **LSP 诊断** —— `LspManager` 惰性启动语言服务，编辑后注入编译诊断（`capability/lsp/*`）。
 
 ### 4. 内置工具集
 
-11 个内置工具：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `create_project` / `search_code` / `web_search` / `web_fetch` / `revert_turn`。
+10 个内置工具：`read_file` / `write_file` / `list_dir` / `glob_files` / `grep_code` / `execute_command` / `create_project` / `web_search` / `web_fetch` / `revert_turn`。
 
 - `ToolRegistry` 作为工具 facade，`ToolRegistrar` 维护内置工具 schema。
 - 并行工具调用统一走 `ToolDispatcher`，产出结构化 `ToolOutcome`。
@@ -70,14 +70,15 @@
 
 ### 10. 交互界面
 
-- **inline 流式 TUI**（默认，Claude Code 风格）—— 主屏直出 + 底部状态栏。
-- **Lanterna 全屏 TUI** —— 三栏结构 + HITL 模态审批。
+- **inline 流式渲染**（默认，Claude Code 风格）—— 主屏直出 + 底部状态栏。
 - **微信 iLink 通道** —— 文本 MVP（`/wechat`）。
 
 ### 11. 快照与恢复
 
 - **Side-Git 快照** —— turn 前后自动快照，`/restore` / `revert_turn` 一键回滚，不污染用户 `.git`。
 - **Agent Runtime 账本** —— JSONL ledger 是 source of truth，`/run inspect <runId>` 检查状态与 checkpoint。
+- **Plan task 边界精确恢复** —— 账本记录完整 Plan 定义和 task checkpoint；恢复复用原 DAG、跳过终态 task，并对未落终态前的成功副作用 fail closed。
+- **Team step 边界精确恢复** —— parent 记录计划与 step checkpoint，恢复复用原 DAG并跳过终态 step；child 请求证据不完整、review/merge 未确认或非终态成功副作用时 fail closed。
 
 ### 12. 扩展接口
 
@@ -89,18 +90,43 @@
 
 ## 二、规划中（未交付）
 
+### 当前技术债优先级
+
+以下是当前主线优先级。P0 配置读取统一已经完成，保留在这里作为已关闭项，避免后续盘点时重复提出。
+
+| 优先级 | 方向 | 原因与范围 |
+|---|---|---|
+| 已完成 P0 | 配置读取统一 | `ConfigValueResolver` 已统一 `System property → OS environment → 项目 .env → 用户 ~/.env → 默认值`；原先分散在 `SnapshotConfig`、`RuntimeApiServer`、`DurableTaskManager`、`LspManager`、`AuditLog`、`CliInputSupport`、`McpClient` 等模块的业务配置读取已迁移。 |
+| 已完成 P1 | 继续压薄 `Main.java` | `CliCommandRouter` 已统一承接低风险 slash 命令、session 清理/压缩、配置、HITL、审计、浏览器、MCP、Skill、Wechat 与 Agent 展示；`CliRuntimeCoordinator`、`CliModeFactory`、`CliRunResumer`、`CliRuntimeServerBootstrap` 分别承接运行、模式组装、恢复和 Runtime API/headless 启动；`Main` 保留启动、模式切换和 Agent 直连执行，当前约 1384 行。 |
+| 已完成 P1 | 拆薄 `ToolRegistry` | 文件读写/目录枚举已下沉到 `FileToolExecutor`，`glob_files` / `grep_code` 已下沉到 `CodeSearchToolExecutor`，`create_project` 已下沉到 `ProjectToolExecutor`，`load_skill` 已下沉到 `SkillToolExecutor`，Web 搜索/抓取已下沉到 `WebToolExecutor`，Memory 工具已下沉到 `MemoryToolExecutor`，Shell 命令执行已下沉到 `ShellCommandExecutor`；`ToolRegistry` 保留兼容入口与注册 facade。Snapshot/revert 只是生命周期服务的薄转发，未为少量逻辑增加抽象层。 |
+| 已完成 P1 | 统一三套 Agent 循环 | 已新增 `runtime/run/loop/AgentTurnKernel`，ReAct 的 `AgentLoopExecutor`、Plan 的任务执行 loop 与 Team 的 `SubAgent` 已复用单轮 LLM/tool 内核；Plan 仍保留任务级 DAG/失败恢复，Team 仍保留 profile/自审/child run。模式级编排保持独立，避免强行合并语义。 |
+| 已完成 P1 | Runtime 包结构整理 | `runtime/run` 保留运行时 facade 与核心 run 类型；存储、工具调度、循环、模式适配、恢复、Hook、兼容 runner、session 分别归入 `store/`、`dispatch/`、`loop/`、`mode/`、`recovery/`、`hook/`、`legacy/`、`session/`，仅调整包路径，不改变执行链路与公开行为。 |
+| 已完成 P1 | Team 包结构整理 | Multi-Agent 编排与步骤调度模型归入 `agent/team/`；通用 `AgentRole`、`AgentMessage`、`AgentBudget` 保留在 `agent` 根包，避免跨模式公共类型重复分组。 |
+| 已完成 P1 | Memory policy 包结构整理 | `MemoryPolicyContext`、`MemoryPolicyDecision`、`MemoryPolicyEngine` 归入 `capability/memory/policy/`；`MemoryManager` 继续作为记忆 facade，存储与检索链路保持原包和原接口。 |
+| 已完成 P1 | Tool search 包结构整理 | `CodeSearchToolExecutor` 与 ripgrep/Java 搜索引擎归入 `capability/tool/search/`；`ToolRegistry` 保留工具 facade，其他 builtin、registry、namespace 边界不变。 |
+| 已完成 P1 | AgentOrchestrator 职责瘦身 | 纯步骤状态诊断、阻塞依赖格式化和最终结果汇总提取到 `agent/team/TeamStepFormatter`；编排器继续负责计划执行、并行、worktree 与审查链路。 |
+| 已完成 P1 | Agent 结果评测基线 | `com.mindcli.eval` 已提供 17 个离线确定性场景，覆盖 ReAct、Plan、Team、策略拒绝、ReAct 工具幂等，以及 Plan task / Team step 跨 `JsonlRunStore` 重开的边界恢复；以最终工作区 Outcome 为主、RunStore ledger 为辅，不调用真实模型。真实模型能力评测仍是后续独立阶段。 |
+| 已完成 P1 | `/run resume` 与启动期恢复发现 | `/run resume` 已支持风险计划、ReAct 消息/工具结果恢复、Plan 最新 DAG + task checkpoint，以及 Team 原 DAG + parent step checkpoint 精确恢复；Team 会跳过终态 step，并对不完整 child 调用、未确认 review/worktree merge 和非终态成功副作用 fail closed。启动期只读提示最近 3 个可恢复父 run，不自动执行且不展示 child run。 |
+| 已完成 P2 | 清理兼容 API | 已确认仓库生产代码没有旧入口调用，删除 `MemoryManager` / `MemoryExtractor` 的旧提取方法、`ToolRegistry` 的旧 memory saver setter 与 `MemoryWriteResult.legacyWritten`；测试已迁移到增量提取和 `setScopedMemoryWriter`。 |
+| 已完成 P2 | 依赖审计 | 已运行 `mvn dependency:analyze -DskipTests` 与 runtime dependency tree；直接使用的 Jackson annotations/core、SLF4J、Okio 与 JUnit API 已补为显式依赖，Logback/SQLite 标为 `runtime`。剩余 Logback、SQLite、JUnit 聚合依赖的 `unused` 告警分别来自 `logback.xml`、JDBC ServiceLoader 和 Surefire 聚合加载，属于已确认误报；JLine、JGit、JavaParser、ZXing、Tomlj、Jsoup 均有实际用途，没有可安全删除的核心依赖。后续仅在版本升级时复查。 |
+| 已完成 P2 | JSON / MCP 内部瘦身 | 新增共享 `platform/serialization/JsonSupport`，生产代码统一默认 `ObjectMapper`；`McpServerManager` 保留 facade，启动并发/超时和官方 stdio/HTTP transport 创建分别下沉到 `capability/mcp/lifecycle/`，不改变 MCP 协议或公开接口。 |
+| P2 | Runtime 按 run 粒度加锁 | 当前 `JsonlRunStore` 仍使用实例级全局同步，正确性已保证但多 run 并发时会互相等待。属于性能优化，需单独验证锁顺序和派生状态一致性。 |
+| P2 | MCP OAuth / sampling / server 自动重启 | 路线图中的 MCP 增强能力，当前尚未实现，不应与核心重构混做。 |
+| P2 | 容器 / VM 沙箱 | 当前安全模型仍是 HITL + PathGuard + CommandGuard + 审计，不是真正的进程隔离；属于商业化安全升级。 |
+| P3 | 视频 / 音频输入 | 当前多模态只支持图片，视频和音频作为独立迭代。 |
+
 以下在路线图但**尚未在代码中落地**，不要把「将来要做」当成「现在已有」：
 
 - **容器 / VM 沙箱** —— 真正的隔离执行环境（Docker / microVM）。当前安全模型是 HITL + 路径校验 + 命令拒绝 + 审计，而非隔离；沙箱方案参考「Pro 升级版本」章节。
 - **MCP OAuth 2.0 + sampling + server 自动重启** —— OAuth（Authorization Code + PKCE）、`sampling/createMessage`、server 崩溃自动拉起均未实现。
-- **`/run resume` + 启动期自动恢复** —— 当前只有 `/run inspect` 的检查能力，后续补 resume 与启动期自动发现可恢复 run。
+- **更细粒度恢复** —— ReAct、Plan task 与 Team parent step 边界恢复已交付；child 内部 LLM/tool loop 断点续跑、崩溃遗留 worktree 自动接管和跨机器恢复仍未交付。
 - **视频 / 音频输入** —— 多模态暂只支持图片，视频音频留作后续独立迭代。
 
 ---
 
 ## 三、参考项目
 
-- **Claude Code** —— 人机协同、TUI 界面
+- **Claude Code** —— 人机协同、终端界面
 - **OpenClaw** —— 多 Agent、MCP 集成
 - **PaiAgent** —— 工作流编排、可视化
 - **LangGraph** —— 状态管理、循环控制

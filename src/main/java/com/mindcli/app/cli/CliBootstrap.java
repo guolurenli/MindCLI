@@ -1,8 +1,7 @@
 package com.mindcli.app.cli;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
+import com.mindcli.platform.config.ConfigValueResolver;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -10,7 +9,6 @@ import java.time.Duration;
 import java.util.Locale;
 
 final class CliBootstrap {
-    private static final String ENV_FILE = ".env";
     private static final String LOG_DIR_PROPERTY = "mindcli.log.dir";
     private static final String LOG_LEVEL_PROPERTY = "mindcli.log.level";
     private static final String LOG_MAX_HISTORY_PROPERTY = "mindcli.log.maxHistory";
@@ -57,19 +55,9 @@ final class CliBootstrap {
     }
 
     static Duration mcpStartupWait() {
-        String configured = System.getProperty("mindcli.mcp.startup.wait.seconds");
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv("MINDCLI_MCP_STARTUP_WAIT_SECONDS");
-        }
-        if (configured == null || configured.isBlank()) {
-            return Duration.ofSeconds(8);
-        }
-        try {
-            long seconds = Long.parseLong(configured.trim());
-            return seconds > 0 ? Duration.ofSeconds(seconds) : Duration.ofSeconds(8);
-        } catch (NumberFormatException ignored) {
-            return Duration.ofSeconds(8);
-        }
+        int seconds = resolver().resolveInt(
+                "mindcli.mcp.startup.wait.seconds", "MINDCLI_MCP_STARTUP_WAIT_SECONDS", 8);
+        return Duration.ofSeconds(seconds > 0 ? seconds : 8);
     }
 
     static String appendStartupNote(String current, String next) {
@@ -100,40 +88,11 @@ final class CliBootstrap {
     }
 
     static String loadConfigValue(String key, String defaultValue) {
-        String sysValue = System.getProperty(key);
-        if (sysValue != null && !sysValue.isBlank()) {
-            return sysValue.trim();
-        }
-
-        String envValue = System.getenv(key);
-        if (envValue != null && !envValue.isBlank()) {
-            return envValue.trim();
-        }
-
-        File currentEnv = new File(ENV_FILE);
-        if (currentEnv.exists()) {
-            String value = readValueFromFile(currentEnv, key);
-            if (value != null && !value.isBlank()) {
-                return value.trim();
-            }
-        }
-
-        File homeEnv = new File(System.getProperty("user.home"), ENV_FILE);
-        if (homeEnv.exists()) {
-            String value = readValueFromFile(homeEnv, key);
-            if (value != null && !value.isBlank()) {
-                return value.trim();
-            }
-        }
-
-        return defaultValue;
+        return resolver().resolve(key, defaultValue);
     }
 
     private static void configureLogProperty(String propertyName, String envKey, String defaultValue) {
-        String configuredValue = System.getProperty(propertyName);
-        if (configuredValue == null || configuredValue.isBlank()) {
-            configuredValue = loadConfigValue(envKey, defaultValue);
-        }
+        String configuredValue = resolver().resolve(propertyName, envKey, defaultValue);
         if (configuredValue != null && !configuredValue.isBlank()) {
             if (LOG_DIR_PROPERTY.equals(propertyName)) {
                 configuredValue = expandHome(configuredValue.trim());
@@ -155,21 +114,7 @@ final class CliBootstrap {
         return value;
     }
 
-    private static String readValueFromFile(File file, String key) {
-        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                line = line.trim();
-                if (line.isEmpty() || line.startsWith("#")) {
-                    continue;
-                }
-                if (line.startsWith(key + "=")) {
-                    return line.substring((key + "=").length()).trim();
-                }
-            }
-        } catch (IOException e) {
-            System.err.println("读取 .env 文件失败: " + e.getMessage());
-        }
-        return null;
+    private static ConfigValueResolver resolver() {
+        return new ConfigValueResolver(Path.of("."), Path.of(System.getProperty("user.home")));
     }
 }

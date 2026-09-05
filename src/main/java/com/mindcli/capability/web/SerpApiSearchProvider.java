@@ -22,7 +22,7 @@ import java.util.concurrent.TimeUnit;
 public class SerpApiSearchProvider implements SearchProvider {
 
     private static final Logger log = LoggerFactory.getLogger(SerpApiSearchProvider.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final String ENDPOINT = "https://serpapi.com/search.json";
 
     private final String apiKey;

@@ -8,7 +8,7 @@ import com.mindcli.runtime.run.AgentMode;
 import com.mindcli.runtime.run.AgentRunContext;
 import com.mindcli.runtime.run.AgentRunEvent;
 import com.mindcli.runtime.run.AgentRunEventType;
-import com.mindcli.runtime.run.InMemoryRunStore;
+import com.mindcli.runtime.run.store.InMemoryRunStore;
 import com.mindcli.platform.snapshot.RestoreResult;
 import com.mindcli.platform.snapshot.SideGitManager;
 import com.mindcli.platform.snapshot.SnapshotPhase;
@@ -104,6 +104,90 @@ class MainCommandHandlerRefactorTest {
         assertTrue(output.contains("Status: RESUMABLE"), output);
         assertTrue(output.contains("Last completed: LLM_RESPONSE"), output);
         assertTrue(output.contains("Pre-run snapshot: commit-pre"), output);
+        assertTrue(output.contains("Recovery risk:"), output);
+        assertTrue(output.contains("Recovery reason:"), output);
+    }
+
+    @Test
+    void runHandlerShowsToolDiagnosticsForInspect(@TempDir Path tempDir) {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext context = new AgentRunContext("run_tools", AgentMode.REACT, "hello", tempDir.toString(),
+                Instant.now(), Map.of());
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED,
+                Map.of("input", "hello")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.LLM_RESPONSE, Map.of(
+                "toolCallCount", "1",
+                "toolCallsJson", "[{\"id\":\"call_1\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"a.txt\\\"}\"}}]")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_OUTCOME, Map.of(
+                "toolId", "call_1", "toolName", "write_file", "argumentsJson", "{\"path\":\"a.txt\"}",
+                "status", "COMPLETED", "text", "written")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+
+        RunCommandHandler.printRunInspect(printStream(sink), runStore, "inspect run_tools");
+
+        String output = sink.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("Tool calls:"), output);
+        assertTrue(output.contains("call_1"), output);
+        assertTrue(output.contains("write_file"), output);
+        assertTrue(output.contains("COMPLETED"), output);
+        assertTrue(output.contains("a.txt"), output);
+    }
+
+    @Test
+    void runHandlerBlocksHighRiskResumeWithoutConfirmation(@TempDir Path tempDir) {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext context = new AgentRunContext("run_resume", AgentMode.REACT, "hello", tempDir.toString(),
+                Instant.now(), Map.of());
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED, Map.of("input", "hello")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_CALL_REQUESTED,
+                Map.of("toolNames", "write_file")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_OUTCOME,
+                Map.of("toolName", "write_file", "status", "COMPLETED")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+
+        RunCommandHandler.printRunResume(printStream(sink), runStore, "run_resume", id -> "executed");
+
+        String output = sink.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("需要确认"), output);
+        assertTrue(!output.contains("executed"), output);
+    }
+
+    @Test
+    void runHandlerBlocksIncompleteResumeEvenWithConfirmation(@TempDir Path tempDir) {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext context = new AgentRunContext("run_incomplete", AgentMode.REACT, "hello", tempDir.toString(),
+                Instant.now(), Map.of());
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED, Map.of("input", "hello")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.TOOL_CALL_REQUESTED,
+                Map.of("toolCallCount", "1", "toolNames", "read_file")));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+
+        RunCommandHandler.printRunResume(printStream(sink), runStore, "run_incomplete --confirm", id -> "executed");
+
+        String output = sink.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("无法恢复") || output.contains("不确定"), output);
+        assertTrue(!output.contains("executed"), output);
+    }
+
+    @Test
+    void runHandlerExplainsThatLegacyPlanLedgerHasNoExactCheckpoint(@TempDir Path tempDir) {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext context = new AgentRunContext(
+                "run_legacy_plan", AgentMode.PLAN, "plan it", tempDir.toString(), Instant.now(), Map.of());
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED,
+                Map.of("input", context.input())));
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+
+        RunCommandHandler.printRunResume(
+                printStream(sink), runStore, context.runId(), id -> "must not execute");
+
+        String output = sink.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("旧 Plan run 缺少精确恢复 checkpoint"), output);
+        assertTrue(!output.contains("must not execute"), output);
     }
 
     private static PrintStream printStream(ByteArrayOutputStream sink) {

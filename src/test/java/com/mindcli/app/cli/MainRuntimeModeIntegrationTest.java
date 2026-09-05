@@ -5,9 +5,10 @@ import com.mindcli.runtime.run.AgentRunContext;
 import com.mindcli.runtime.run.AgentRunEvent;
 import com.mindcli.runtime.run.AgentRunEventType;
 import com.mindcli.runtime.run.AgentRunResult;
-import com.mindcli.runtime.run.InMemoryRunStore;
+import com.mindcli.runtime.run.store.InMemoryRunStore;
 import com.mindcli.runtime.run.ModeAdapter;
-import com.mindcli.runtime.run.RunStore;
+import com.mindcli.runtime.run.store.RunStore;
+import com.mindcli.runtime.run.session.SessionContext;
 import com.mindcli.platform.snapshot.SnapshotService;
 import org.junit.jupiter.api.Test;
 
@@ -85,6 +86,24 @@ class MainRuntimeModeIntegrationTest {
                 AgentRunEventType.RUN_STARTED,
                 AgentRunEventType.MODE_SELECTED,
                 AgentRunEventType.RUN_FINISHED);
+    }
+
+    @Test
+    void runtimeHelperPublishesResultToSharedSessionContext() {
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        SessionContext sessionContext = new SessionContext();
+
+        String content = Main.runModeWithRuntime(
+                AgentMode.PLAN,
+                "do plan",
+                "workspace",
+                runStore,
+                null,
+                adapterReturning(AgentMode.PLAN, runStore, new AgentRunContext[1], "plan result"),
+                sessionContext);
+
+        assertEquals("plan result", content);
+        assertTrue(sessionContext.promptContext(1_000).contains("plan result"));
     }
 
     @Test

@@ -43,6 +43,6 @@ class WechatPolicyDeciderTest {
     void deniesToolsNotExplicitlyClassified() {
         WechatPolicyDecider decider = new WechatPolicyDecider(WechatPolicyConfig.forWorkspace(tempDir));
         assertFalse(decider.decide("save_memory", "{\"fact\":\"secret\"}").allowed());
-        assertFalse(decider.decide("browser_connect", "{}").allowed());
+        assertFalse(decider.decide("browser_status", "{}").allowed());
     }
 }

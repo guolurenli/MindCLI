@@ -1,5 +1,6 @@
 package com.mindcli.platform.security;
 
+import com.mindcli.platform.config.ConfigValueResolver;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -44,7 +45,7 @@ public class AuditLog {
     public static final String OUTCOME_DENY = "deny";
     public static final String OUTCOME_ERROR = "error";
 
-    private static final ObjectMapper mapper = new ObjectMapper();
+    private static final ObjectMapper mapper = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.ROOT);
     private static final int MAX_FIELD_CHARS = 1000;
 
@@ -111,15 +112,9 @@ public class AuditLog {
     }
 
     private static Path defaultAuditDir() {
-        String prop = System.getProperty("mindcli.audit.dir");
-        if (prop != null && !prop.isBlank()) {
-            return Path.of(prop);
-        }
-        String env = System.getenv("MINDCLI_AUDIT_DIR");
-        if (env != null && !env.isBlank()) {
-            return Path.of(env);
-        }
-        return Path.of(System.getProperty("user.home"), ".mindcli", "audit");
+        return Path.of(ConfigValueResolver.current().resolve(
+                "mindcli.audit.dir", "MINDCLI_AUDIT_DIR",
+                Path.of(System.getProperty("user.home"), ".mindcli", "audit").toString()));
     }
 
     private static String truncate(String s) {

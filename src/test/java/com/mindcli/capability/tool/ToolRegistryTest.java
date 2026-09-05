@@ -2,16 +2,13 @@ package com.mindcli.capability.tool;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.mindcli.capability.browser.BrowserConnector;
 import com.mindcli.capability.memory.MemoryWriteResult;
 import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
 import com.mindcli.capability.skill.SkillRegistry;
 import com.mindcli.platform.llm.context.ContextProfile;
-import com.mindcli.capability.tool.builtin.BrowserToolRegistrar;
 import com.mindcli.capability.tool.builtin.CodeToolRegistrar;
 import com.mindcli.capability.tool.builtin.FileToolRegistrar;
 import com.mindcli.capability.tool.builtin.MemoryToolRegistrar;
-import com.mindcli.capability.tool.builtin.RagToolRegistrar;
 import com.mindcli.capability.tool.builtin.ShellToolRegistrar;
 import com.mindcli.capability.tool.builtin.SkillToolRegistrar;
 import com.mindcli.capability.tool.builtin.SnapshotToolRegistrar;
@@ -105,14 +102,12 @@ class ToolRegistryTest {
                 "grepCodeTool",
                 "executeCommandTool",
                 "createProjectTool",
-                "searchCodeTool",
                 "webSearchTool",
                 "webFetchTool",
-                "browserConnectTool",
-                "browserDisconnectTool",
-                "browserStatusTool",
                 "loadSkillTool",
                 "saveMemoryTool",
+                "searchMemoryTool",
+                "readMemoryTool",
                 "revertTurnTool")) {
             int modifiers = ToolRegistry.class.getDeclaredMethod(method, Map.class).getModifiers();
 
@@ -139,23 +134,20 @@ class ToolRegistryTest {
 
     @Test
     void shouldKeepRemainingBuiltinToolsInDedicatedRegistrars() {
-        assertInstanceOf(ToolRegistrar.class, new RagToolRegistrar());
         assertInstanceOf(ToolRegistrar.class, new WebToolRegistrar());
-        assertInstanceOf(ToolRegistrar.class, new BrowserToolRegistrar());
         assertInstanceOf(ToolRegistrar.class, new SkillToolRegistrar());
         assertInstanceOf(ToolRegistrar.class, new MemoryToolRegistrar());
         assertInstanceOf(ToolRegistrar.class, new SnapshotToolRegistrar());
 
         ToolRegistry registry = new ToolRegistry();
 
-        assertTrue(registry.hasTool("search_code"));
+        assertFalse(registry.hasTool("search_code"));
         assertTrue(registry.hasTool("web_search"));
         assertTrue(registry.hasTool("web_fetch"));
-        assertTrue(registry.hasTool("browser_connect"));
-        assertTrue(registry.hasTool("browser_disconnect"));
-        assertTrue(registry.hasTool("browser_status"));
         assertTrue(registry.hasTool("load_skill"));
         assertTrue(registry.hasTool("save_memory"));
+        assertTrue(registry.hasTool("search_memory"));
+        assertTrue(registry.hasTool("read_memory"));
         assertTrue(registry.hasTool("revert_turn"));
     }
 
@@ -173,9 +165,23 @@ class ToolRegistryTest {
     void shouldRejectBroadFilesystemScan() {
         ToolRegistry registry = new ToolRegistry();
 
-        String result = registry.executeTool("execute_command", "{\"command\":\"find / -name \\\"pom.xml\\\" -type f | head -20\"}");
+        ToolExecution execution = registry.executeToolExecution(
+                "execute_command", "{\"command\":\"find / -name \\\"pom.xml\\\" -type f | head -20\"}");
 
-        assertTrue(result.contains("策略拒绝"));
+        assertEquals(ToolExecutionStatus.DENIED_BY_POLICY, execution.status());
+        assertTrue(execution.output().text().contains("策略拒绝"));
+        assertFalse(execution.errorMessage().isBlank());
+    }
+
+    @Test
+    void unknownToolReturnsStructuredFailure() {
+        ToolRegistry registry = new ToolRegistry();
+
+        ToolExecution execution = registry.executeToolExecution("missing_tool", "{}");
+
+        assertEquals(ToolExecutionStatus.FAILED, execution.status());
+        assertEquals("未知工具: missing_tool", execution.output().text());
+        assertEquals("UNKNOWN_TOOL", execution.errorCategory());
     }
 
     @Test
@@ -270,9 +276,11 @@ class ToolRegistryTest {
             ToolRegistry registry = new ToolRegistry();
             registry.setProjectPath(tempDir.toString());
 
-            String result = registry.executeTool("grep_code",
+            ToolExecution execution = registry.executeToolExecution("grep_code",
                     "{\"pattern\":\"needle\",\"head_limit\":1,\"max_results\":10}");
+            String result = execution.output().text();
 
+            assertEquals(ToolExecutionStatus.PARTIAL, execution.status());
             assertTrue(result.contains("Many.java:2"));
             assertTrue(!result.contains("Many.java:3"));
             assertTrue(result.contains("partial: true"));
@@ -377,40 +385,6 @@ class ToolRegistryTest {
         assertFalse(result.contains("step-result"));
     }
 
-    @Test
-    void shouldExecuteMultipleToolInvocationsInParallelAndKeepResultOrder() {
-        CountDownLatch bothStarted = new CountDownLatch(2);
-        AtomicInteger current = new AtomicInteger();
-        AtomicInteger peak = new AtomicInteger();
-        ToolRegistry registry = new ToolRegistry() {
-            @Override
-            public String executeTool(String name, String argumentsJson) {
-                int now = current.incrementAndGet();
-                peak.updateAndGet(prev -> Math.max(prev, now));
-                bothStarted.countDown();
-                try {
-                    assertTrue(bothStarted.await(5, TimeUnit.SECONDS), "两个工具调用应同时进入执行区");
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                } finally {
-                    current.decrementAndGet();
-                }
-                return "result-" + name;
-            }
-        };
-
-        List<ToolRegistry.ToolExecutionResult> results = registry.executeTools(List.of(
-                new ToolRegistry.ToolInvocation("call_1", "first", "{}"),
-                new ToolRegistry.ToolInvocation("call_2", "second", "{}")
-        ));
-
-        assertEquals(2, peak.get(), "两个工具调用应并行执行");
-        assertEquals("call_1", results.get(0).id());
-        assertEquals("result-first", results.get(0).result());
-        assertEquals("call_2", results.get(1).id());
-        assertEquals("result-second", results.get(1).result());
-    }
-
     private static McpToolDescriptor stepSearchDescriptor(String name, String schema) throws Exception {
         JsonNode inputSchema = MAPPER.readTree(schema);
         return new McpToolDescriptor(
@@ -422,61 +396,13 @@ class ToolRegistryTest {
     }
 
     @Test
-    void shouldCancelToolInvocationWhenBatchTimeoutIsReached() {
-        ToolRegistry registry = new ToolRegistry(1, 1) {
-            @Override
-            public String executeTool(String name, String argumentsJson) {
-                if ("slow".equals(name)) {
-                    try {
-                        Thread.sleep(3000);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                }
-                return "result-" + name;
-            }
-        };
-
-        List<ToolRegistry.ToolExecutionResult> results = registry.executeTools(List.of(
-                new ToolRegistry.ToolInvocation("call_1", "slow", "{}"),
-                new ToolRegistry.ToolInvocation("call_2", "fast", "{}")
-        ));
-
-        assertTrue(results.get(0).timedOut());
-        assertTrue(results.get(0).result().contains("工具执行超时"));
-        assertEquals("result-fast", results.get(1).result());
-    }
-
-    @Test
-    void browserConnectToolUsesInjectedConnector() {
-        ToolRegistry registry = new ToolRegistry();
-        registry.setBrowserConnector(new BrowserConnector() {
-            @Override
-            public String status() {
-                return "status-ok";
-            }
-
-            @Override
-            public String connectDefault() {
-                return "connected";
-            }
-
-            @Override
-            public String disconnect() {
-                return "disconnected";
-            }
-        });
-
-        assertEquals("connected", registry.executeTool("browser_connect", "{}"));
-        assertEquals("status-ok", registry.executeTool("browser_status", "{}"));
-        assertEquals("disconnected", registry.executeTool("browser_disconnect", "{}"));
-    }
-
-    @Test
     void saveMemoryToolUsesInjectedMemorySaver() {
         ToolRegistry registry = new ToolRegistry();
         List<String> saved = new ArrayList<>();
-        registry.setMemorySaver(saved::add);
+        registry.setScopedMemoryWriter((fact, scope) -> {
+            saved.add(fact);
+            return MemoryWriteResult.written(null, "test", "已保存到长期记忆(" + scope + "): " + fact);
+        });
 
         String result = registry.executeTool("save_memory", "{\"fact\":\"访问 yuque.com 时复用登录态\"}");
 
@@ -488,7 +414,10 @@ class ToolRegistryTest {
     void saveMemoryToolPassesScopeToScopedSaver() {
         ToolRegistry registry = new ToolRegistry();
         List<String> saved = new ArrayList<>();
-        registry.setScopedMemorySaver((fact, scope) -> saved.add(scope + ":" + fact));
+        registry.setScopedMemoryWriter((fact, scope) -> {
+            saved.add(scope + ":" + fact);
+            return MemoryWriteResult.written(null, "test", "已保存到长期记忆(" + scope + "): " + fact);
+        });
 
         String result = registry.executeTool("save_memory", "{\"fact\":\"默认用中文回答\",\"scope\":\"global\"}");
 
@@ -523,6 +452,18 @@ class ToolRegistryTest {
     }
 
     @Test
+    void memoryReadToolsUseInjectedCallbacks() {
+        ToolRegistry registry = new ToolRegistry();
+        registry.setMemorySearcher((query, limit) -> "search:" + query + ":" + limit);
+        registry.setMemoryReader(id -> "read:" + id);
+
+        assertEquals("search:项目测试命令:3",
+                registry.executeTool("search_memory", "{\"query\":\"项目测试命令\",\"limit\":3}"));
+        assertEquals("read:fact-a1b2c3d4",
+                registry.executeTool("read_memory", "{\"id\":\"fact-a1b2c3d4\"}"));
+    }
+
+    @Test
     void forkForProject_redirectsProjectPathAndCopiesSharedConfig() {
         ToolRegistry registry = new ToolRegistry();
         ContextProfile profile = ContextProfile.custom(16_000, 8_000);
@@ -544,7 +485,10 @@ class ToolRegistryTest {
     void forkForProject_doesNotLeakMemoryWriterToFork(@TempDir Path tempDir) {
         ToolRegistry registry = new ToolRegistry();
         List<String> saved = new ArrayList<>();
-        registry.setMemorySaver(saved::add);
+        registry.setScopedMemoryWriter((fact, scope) -> {
+            saved.add(fact);
+            return MemoryWriteResult.written(null, "test", "已保存到长期记忆(" + scope + "): " + fact);
+        });
 
         ToolRegistry fork = registry.forkForProject(tempDir);
 

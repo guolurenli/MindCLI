@@ -1,8 +1,8 @@
 package com.mindcli.app.cli;
 
-final class CliCommandParser {
+public final class CliCommandParser {
 
-    enum CommandType {
+    public enum CommandType {
         NONE,
         UNKNOWN_COMMAND,
         INIT_PROJECT_MEMORY,
@@ -26,13 +26,11 @@ final class CliCommandParser {
         MEMORY_DELETE,
         MEMORY_SEARCH,
         MEMORY_SAVE,
-        INDEX_CODE,
-        SEARCH_CODE,
-        GRAPH_QUERY,
         CONTEXT_STATUS,
         POLICY_STATUS,
         AUDIT_TAIL,
         RUN_INSPECT,
+        RUN_RESUME,
         SNAPSHOT,
         RESTORE_SNAPSHOT,
         MCP_LIST,
@@ -55,8 +53,8 @@ final class CliCommandParser {
         EXPORT
     }
 
-    record ParsedCommand(CommandType type, String payload) {
-        static ParsedCommand none() {
+    public record ParsedCommand(CommandType type, String payload) {
+        public static ParsedCommand none() {
             return new ParsedCommand(CommandType.NONE, null);
         }
     }
@@ -64,7 +62,7 @@ final class CliCommandParser {
     private CliCommandParser() {
     }
 
-    static ParsedCommand parse(String input) {
+    public static ParsedCommand parse(String input) {
         if (input == null) {
             return ParsedCommand.none();
         }
@@ -213,30 +211,6 @@ final class CliCommandParser {
             return new ParsedCommand(CommandType.MEMORY_SAVE, trimmed.substring(6).trim());
         }
 
-        if (trimmed.equalsIgnoreCase("/index")) {
-            return new ParsedCommand(CommandType.INDEX_CODE, null);
-        }
-
-        if (trimmed.regionMatches(true, 0, "/index ", 0, 7)) {
-            return new ParsedCommand(CommandType.INDEX_CODE, trimmed.substring(7).trim());
-        }
-
-        if (trimmed.equalsIgnoreCase("/search")) {
-            return new ParsedCommand(CommandType.SEARCH_CODE, null);
-        }
-
-        if (trimmed.regionMatches(true, 0, "/search ", 0, 8)) {
-            return new ParsedCommand(CommandType.SEARCH_CODE, trimmed.substring(8).trim());
-        }
-
-        if (trimmed.equalsIgnoreCase("/graph")) {
-            return new ParsedCommand(CommandType.GRAPH_QUERY, null);
-        }
-
-        if (trimmed.regionMatches(true, 0, "/graph ", 0, 7)) {
-            return new ParsedCommand(CommandType.GRAPH_QUERY, trimmed.substring(7).trim());
-        }
-
         if (trimmed.equalsIgnoreCase("/context") || trimmed.equalsIgnoreCase("/ctx")) {
             return new ParsedCommand(CommandType.CONTEXT_STATUS, null);
         }
@@ -266,7 +240,12 @@ final class CliCommandParser {
         }
 
         if (trimmed.regionMatches(true, 0, "/run ", 0, 5)) {
-            return new ParsedCommand(CommandType.RUN_INSPECT, trimmed.substring(5).trim());
+            String payload = trimmed.substring(5).trim();
+            if (payload.equalsIgnoreCase("resume") || payload.regionMatches(true, 0, "resume ", 0, 7)) {
+                return new ParsedCommand(CommandType.RUN_RESUME,
+                        payload.equalsIgnoreCase("resume") ? "" : payload.substring(7).trim());
+            }
+            return new ParsedCommand(CommandType.RUN_INSPECT, payload);
         }
 
         if (trimmed.equalsIgnoreCase("/snapshot")) {

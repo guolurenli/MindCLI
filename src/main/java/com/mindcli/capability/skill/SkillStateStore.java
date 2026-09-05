@@ -18,7 +18,7 @@ import java.util.Set;
  */
 public final class SkillStateStore {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
 
     private final Path file;
 

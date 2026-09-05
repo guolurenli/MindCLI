@@ -1,10 +1,9 @@
 package com.mindcli.capability.mcp.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.mindcli.platform.config.ConfigValueResolver;
 
 import java.io.IOException;
-import java.io.BufferedReader;
-import java.io.FileReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -15,7 +14,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class McpConfigLoader {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final Pattern VAR_PATTERN = Pattern.compile("\\$\\{([A-Za-z_][A-Za-z0-9_]*|PROJECT_DIR|HOME)}");
     private static final String STEP_SEARCH_SERVER = "step_search";
     private static final String STEP_SEARCH_URL = "https://api.stepfun.com/step_plan/v1/mcp/web_search/mcp";
@@ -23,6 +22,7 @@ public class McpConfigLoader {
     private final Path userConfig;
     private final Path projectConfig;
     private final Path projectDir;
+    private final ConfigValueResolver configValues;
 
     public McpConfigLoader(Path projectDir) {
         this(
@@ -36,6 +36,8 @@ public class McpConfigLoader {
         this.userConfig = userConfig;
         this.projectConfig = projectConfig;
         this.projectDir = projectDir.toAbsolutePath().normalize();
+        this.configValues = new ConfigValueResolver(
+                this.projectDir, Path.of(System.getProperty("user.home")));
     }
 
     /**
@@ -138,54 +140,6 @@ public class McpConfigLoader {
     }
 
     private String readConfiguredValue(String key) {
-        String fromEnv = System.getenv(key);
-        if (fromEnv != null && !fromEnv.isBlank()) {
-            return fromEnv.trim();
-        }
-        String fromProp = System.getProperty(key);
-        if (fromProp != null && !fromProp.isBlank()) {
-            return fromProp.trim();
-        }
-        String fromProjectEnv = readFromDotEnv(projectDir.resolve(".env"), key);
-        if (fromProjectEnv != null && !fromProjectEnv.isBlank()) {
-            return fromProjectEnv.trim();
-        }
-        String fromHomeEnv = readFromDotEnv(Path.of(System.getProperty("user.home"), ".env"), key);
-        if (fromHomeEnv != null && !fromHomeEnv.isBlank()) {
-            return fromHomeEnv.trim();
-        }
-        return null;
-    }
-
-    private static String readFromDotEnv(Path file, String key) {
-        if (file == null || !Files.exists(file)) {
-            return null;
-        }
-        try (BufferedReader reader = new BufferedReader(new FileReader(file.toFile()))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                line = line.trim();
-                if (line.isEmpty() || line.startsWith("#")) {
-                    continue;
-                }
-                if (line.startsWith(key + "=")) {
-                    return stripOptionalQuotes(line.substring((key + "=").length()).trim());
-                }
-            }
-        } catch (IOException ignored) {
-        }
-        return null;
-    }
-
-    private static String stripOptionalQuotes(String value) {
-        if (value == null || value.length() < 2) {
-            return value;
-        }
-        char first = value.charAt(0);
-        char last = value.charAt(value.length() - 1);
-        if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
-            return value.substring(1, value.length() - 1);
-        }
-        return value;
+        return configValues.resolve(key, null);
     }
 }

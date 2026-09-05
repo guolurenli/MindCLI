@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit;
 
 public abstract class AbstractOpenAiCompatibleClient implements LlmClient {
 
-    protected static final ObjectMapper mapper = new ObjectMapper();
+    protected static final ObjectMapper mapper = com.mindcli.platform.serialization.JsonSupport.mapper();
 
     // SSE 流式接口下，OkHttp 的 readTimeout 是"两次 read 之间的最大间隔"，不是请求总时长。
     // GLM-5.1 在生成大段 reasoning_content 时服务端可能长时间静默，所以默认值放宽到 300s；

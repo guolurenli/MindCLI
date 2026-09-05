@@ -20,7 +20,7 @@ import java.util.Map;
 import java.util.UUID;
 
 public final class MemoryAuditService {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final DateTimeFormatter EXPORT_STAMP =
             DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
     private final Path auditFile;

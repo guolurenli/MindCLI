@@ -2,44 +2,36 @@ package com.mindcli.capability.mcp;
 
 import com.mindcli.capability.mcp.config.McpConfigLoader;
 import com.mindcli.capability.mcp.config.McpServerConfig;
-import com.mindcli.capability.mcp.notifications.NotificationRouter;
 import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
 import com.mindcli.capability.mcp.resources.McpResourceCache;
 import com.mindcli.capability.mcp.resources.McpResourceContent;
 import com.mindcli.capability.mcp.resources.McpResourceDescriptor;
 import com.mindcli.capability.mcp.resources.McpResourceTool;
 import com.mindcli.platform.security.AuditLog;
-import com.mindcli.capability.mcp.transport.McpTransport;
-import com.mindcli.capability.mcp.transport.StdioTransport;
-import com.mindcli.capability.mcp.transport.StreamableHttpTransport;
+import com.mindcli.capability.mcp.lifecycle.McpStartupCoordinator;
+import com.mindcli.capability.mcp.lifecycle.McpTransportFactory;
 import com.mindcli.capability.tool.ToolOutput;
+import com.mindcli.capability.tool.ToolExecution;
 import com.mindcli.capability.tool.ToolRegistry;
 
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Collection;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeoutException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 public class McpServerManager implements AutoCloseable {
-    private static final Duration STARTUP_PROGRESS_INTERVAL = Duration.ofSeconds(5);
-
     private final ToolRegistry toolRegistry;
     private final Path projectDir;
     private final McpConfigLoader configLoader;
+    private final McpStartupCoordinator startupCoordinator = new McpStartupCoordinator();
+    private final McpTransportFactory transportFactory;
     private final Map<String, McpServer> servers = new ConcurrentHashMap<>();
     private final McpResourceCache resourceCache = new McpResourceCache();
 
@@ -51,6 +43,7 @@ public class McpServerManager implements AutoCloseable {
         this.toolRegistry = toolRegistry;
         this.projectDir = projectDir.toAbsolutePath().normalize();
         this.configLoader = configLoader;
+        this.transportFactory = new McpTransportFactory(this.projectDir);
     }
 
     public void loadConfiguredServers() throws IOException {
@@ -77,116 +70,11 @@ public class McpServerManager implements AutoCloseable {
      * by a slow stdio/http server.
      */
     public void startAll(PrintStream progressOut, Duration maxWait) {
-        List<McpServer> targets = servers.values().stream()
-                .filter(server -> !server.config().isDisabled())
-                .toList();
-        if (targets.isEmpty()) {
-            return;
-        }
-        // 用专属 daemon executor，避免 npx/uvx 冷启动期间占满 ForkJoinPool.commonPool 影响其他并发任务。
-        AtomicInteger threadId = new AtomicInteger();
-        ExecutorService executor = Executors.newFixedThreadPool(
-                Math.min(targets.size(), 8),
-                r -> {
-                    Thread t = new Thread(r, "mindcli-mcp-startup-" + threadId.incrementAndGet());
-                    t.setDaemon(true);
-                    return t;
-                });
-        boolean boundedWait = maxWait != null && !maxWait.isZero() && !maxWait.isNegative();
-        Thread progressPrinter = boundedWait ? null : startProgressPrinter(targets, progressOut, STARTUP_PROGRESS_INTERVAL);
-        try {
-            List<CompletableFuture<Void>> futures = targets.stream()
-                    .map(server -> CompletableFuture.runAsync(() -> start(server), executor))
-                    .toList();
-            CompletableFuture<Void> all = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
-            if (!boundedWait) {
-                all.join();
-            } else {
-                try {
-                    all.get(Math.max(1, maxWait.toMillis()), TimeUnit.MILLISECONDS);
-                } catch (TimeoutException e) {
-                    printStartupTimeout(targets, progressOut, maxWait);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    printStartupTimeout(targets, progressOut, maxWait);
-                } catch (Exception e) {
-                    all.join();
-                }
-            }
-        } finally {
-            if (progressPrinter != null) {
-                progressPrinter.interrupt();
-            }
-            executor.shutdown();
-        }
-    }
-
-    private void printStartupTimeout(List<McpServer> targets, PrintStream out, Duration maxWait) {
-        if (out == null) {
-            return;
-        }
-        String line = startupNotice(targets, maxWait);
-        if (line.isBlank()) {
-            return;
-        }
-        out.println(line);
-        out.flush();
+        startupCoordinator.startAll(servers.values(), progressOut, maxWait, this::start);
     }
 
     public String startupNotice(Duration maxWait) {
-        return startupNotice(servers.values().stream()
-                .filter(server -> !server.config().isDisabled())
-                .toList(), maxWait);
-    }
-
-    private String startupNotice(List<McpServer> targets, Duration maxWait) {
-        List<McpServer> stillStarting = targets.stream()
-                .filter(server -> server.status() == McpServerStatus.STARTING)
-                .sorted(Comparator.comparing(McpServer::name))
-                .toList();
-        if (stillStarting.isEmpty()) {
-            return "";
-        }
-        String names = stillStarting.stream()
-                .map(McpServer::name)
-                .reduce((a, b) -> a + ", " + b)
-                .orElse("");
-        long displaySeconds = Math.max(1, (long) Math.ceil(maxWait.toMillis() / 1000.0));
-        return "Mcp 后台继续启动: " + names + "（超过 " + displaySeconds
-                + "s，可用 /mcp 查看，/mcp logs <name> 看日志）";
-    }
-
-    private Thread startProgressPrinter(List<McpServer> targets, PrintStream out, Duration interval) {
-        if (out == null || targets.isEmpty()) {
-            return null;
-        }
-        Map<String, Instant> startedAt = new ConcurrentHashMap<>();
-        targets.forEach(server -> startedAt.put(server.name(), Instant.now()));
-        Thread thread = new Thread(() -> {
-            try {
-                while (!Thread.currentThread().isInterrupted()) {
-                    TimeUnit.MILLISECONDS.sleep(interval.toMillis());
-                    List<McpServer> starting = targets.stream()
-                            .filter(server -> server.status() == McpServerStatus.STARTING)
-                            .sorted(Comparator.comparing(McpServer::name))
-                            .toList();
-                    if (starting.isEmpty()) {
-                        continue;
-                    }
-                    for (McpServer server : starting) {
-                        long waited = Duration.between(startedAt.get(server.name()), Instant.now()).toSeconds();
-                        out.printf("   ⏳ %-16s %-6s 启动中...（已等待 %ds）%n",
-                                server.name(), server.transportName(), waited);
-                    }
-                    out.flush();
-                }
-            } catch (InterruptedException ignored) {
-                Thread.currentThread().interrupt();
-            }
-        }, "mindcli-mcp-startup-progress");
-        thread.setDaemon(true);
-        thread.start();
-        return thread;
+        return startupCoordinator.startupNotice(servers.values(), maxWait);
     }
 
     public synchronized String restart(String name) {
@@ -276,12 +164,11 @@ public class McpServerManager implements AutoCloseable {
                     ? server.tools().size() + (server.tools().size() == 1 ? " tool" : " tools")
                     : "—";
             String uptime = server.status() == McpServerStatus.READY ? "uptime " + formatDuration(server.uptime()) : "";
-            String pid = server.processId() == null ? "" : "pid " + server.processId();
             String error = server.status() == McpServerStatus.ERROR && server.errorMessage() != null
                     ? server.errorMessage()
                     : "";
-            sb.append(String.format("  %-14s %-11s %-6s %-9s %-10s %s %s%n",
-                    server.name(), status, server.transportName(), tools, uptime, pid, error));
+            sb.append(String.format("  %-14s %-11s %-6s %-9s %-10s %s%n",
+                    server.name(), status, server.transportName(), tools, uptime, error));
         }
         return sb.toString().trim();
     }
@@ -425,13 +312,15 @@ public class McpServerManager implements AutoCloseable {
             // 在单 server 启动路径里展开 ${VAR} 与校验 transport，
             // 单个失败仅标 ERROR，不会阻塞其他 server。
             configLoader.prepare(server.config());
-            McpTransport transport = createTransport(server.config());
-            McpClient client = new McpClient(server.name(), transport);
-            client.initialize();
-            registerNotificationHandlers(server, client);
-            List<McpToolDescriptor> tools = buildToolList(server, client);
-            replaceTools(server, client, tools);
-            server.client(client);
+            com.mindcli.capability.mcp.McpClient mcpClient = transportFactory.create(
+                    server,
+                    client -> refreshToolsAfterNotification(server, client),
+                    () -> resourceCache.invalidateServer(server.name()),
+                    uri -> resourceCache.invalidateResource(server.name(), uri));
+            mcpClient.initialize();
+            List<McpToolDescriptor> tools = buildToolList(server, mcpClient);
+            replaceTools(server, mcpClient, tools);
+            server.client(mcpClient);
             server.tools(tools);
             server.markStarted();
             server.status(McpServerStatus.READY);
@@ -454,36 +343,16 @@ public class McpServerManager implements AutoCloseable {
     }
 
     private void replaceTools(McpServer server, McpClient client, List<McpToolDescriptor> tools) {
-        toolRegistry.replaceMcpToolOutputsForServer(server.name(), tools,
+        toolRegistry.replaceMcpToolExecutionsForServer(server.name(), tools,
                 descriptor -> isResourceVirtualTool(descriptor)
-                        ? args -> ToolOutput.text(McpResourceTool.invoker(client, descriptor).apply(args))
-                        : args -> invokeMcpToolOutput(client, descriptor, args));
+                        ? args -> ToolExecution.completed(
+                                ToolOutput.text(McpResourceTool.invoker(client, descriptor).apply(args)), args)
+                        : args -> invokeMcpTool(client, descriptor, args));
     }
 
     private boolean isResourceVirtualTool(McpToolDescriptor descriptor) {
         return McpResourceTool.LIST_RESOURCES.equals(descriptor.name())
                 || McpResourceTool.READ_RESOURCE.equals(descriptor.name());
-    }
-
-    private void registerNotificationHandlers(McpServer server, McpClient client) {
-        NotificationRouter router = new NotificationRouter();
-        router.on("notifications/tools/list_changed", ignored -> {
-            try {
-                List<McpToolDescriptor> tools = buildToolList(server, client);
-                replaceTools(server, client, tools);
-                server.tools(tools);
-            } catch (Exception e) {
-                server.errorMessage("tools/list_changed 处理失败: " + e.getMessage());
-            }
-        });
-        router.on("notifications/resources/list_changed", ignored -> resourceCache.invalidateServer(server.name()));
-        router.on("notifications/resources/updated", params -> {
-            String uri = params.path("uri").asText("");
-            if (!uri.isBlank()) {
-                resourceCache.invalidateResource(server.name(), uri);
-            }
-        });
-        client.onNotification(router);
     }
 
     private List<McpResourceDescriptor> refreshResources(McpServer server) throws IOException {
@@ -499,20 +368,26 @@ public class McpServerManager implements AutoCloseable {
      * MCP 工具执行入口：把 LLM 给的 JSON 参数透传给 server 的 tools/call，并把异常转成 LLM 可读字符串。
      * 提取成独立方法是为了让 server 维度的错误信息（serverName/toolName）在堆栈和日志里清晰可见。
      */
-    private static ToolOutput invokeMcpToolOutput(McpClient client, McpToolDescriptor descriptor, String argumentsJson) {
+    private static ToolExecution invokeMcpTool(McpClient client, McpToolDescriptor descriptor, String argumentsJson) {
         try {
-            return client.callToolOutput(descriptor.name(), argumentsJson);
+            return client.callToolExecution(descriptor.name(), argumentsJson);
         } catch (Exception e) {
-            return ToolOutput.text("MCP 工具调用失败 (" + descriptor.serverName() + "/" + descriptor.name() + "): "
-                    + e.getMessage());
+            String text = "MCP 工具调用失败 (" + descriptor.serverName() + "/" + descriptor.name() + "): "
+                    + e.getMessage();
+            return ToolExecution.failed(ToolOutput.text(text), argumentsJson, e.getMessage(), "MCP_CALL_FAILED");
         }
     }
 
-    private McpTransport createTransport(McpServerConfig config) throws IOException {
-        if (config.isHttp()) {
-            return new StreamableHttpTransport(config.getUrl(), config.getHeaders());
+
+    private void refreshToolsAfterNotification(McpServer server, com.mindcli.capability.mcp.McpClient client) {
+        if (client == null) return;
+        try {
+            List<McpToolDescriptor> tools = buildToolList(server, client);
+            replaceTools(server, client, tools);
+            server.tools(tools);
+        } catch (Exception e) {
+            server.errorMessage("tools/list_changed 处理失败: " + e.getMessage());
         }
-        return new StdioTransport(config.getCommand(), config.getArgs(), config.getEnv(), projectDir);
     }
 
     private void validateNoDuplicateTools(String serverName, List<McpToolDescriptor> tools) {

@@ -1,0 +1,84 @@
+package com.mindcli.runtime.run.mode;
+import com.mindcli.runtime.run.*;
+import com.mindcli.runtime.run.dispatch.*;
+import com.mindcli.runtime.run.hook.*;
+import com.mindcli.runtime.run.legacy.*;
+import com.mindcli.runtime.run.loop.*;
+import com.mindcli.runtime.run.recovery.*;
+import com.mindcli.runtime.run.session.*;
+import com.mindcli.runtime.run.store.*;
+
+import com.mindcli.agent.PlanExecuteAgent;
+
+import java.util.Objects;
+
+public final class PlanModeAdapter implements ModeAdapter {
+    private final PlanExecuteAgent agent;
+    private final ContextualLegacyAgentRunner runner;
+
+    public PlanModeAdapter(PlanExecuteAgent agent) {
+        this.agent = Objects.requireNonNull(agent, "agent");
+        this.runner = agent::run;
+    }
+
+    PlanModeAdapter(LegacyAgentRunner runner) {
+        Objects.requireNonNull(runner, "runner");
+        this.agent = null;
+        this.runner = (context, runStore) -> runner.run(context.input());
+    }
+
+    PlanModeAdapter(ContextualLegacyAgentRunner runner) {
+        this.agent = null;
+        this.runner = Objects.requireNonNull(runner, "runner");
+    }
+
+    @Override
+    public AgentMode mode() {
+        return AgentMode.PLAN;
+    }
+
+    @Override
+    public AgentRunResult execute(AgentRunContext context) {
+        return execute(context, null);
+    }
+
+    @Override
+    public AgentRunResult execute(AgentRunContext context, RunStore runStore) {
+        try {
+            return resultFromContent(context, runner.run(context, runStore));
+        } catch (Exception e) {
+            return AgentRunResult.failed(context, errorMessage(e));
+        }
+    }
+
+    public AgentRunResult executeRecovered(AgentRunContext context, RunStore runStore,
+                                           PlanResumeState state) {
+        if (agent == null) {
+            return AgentRunResult.failed(context, "Plan adapter 不支持 checkpoint 恢复");
+        }
+        try {
+            return resultFromContent(context, agent.runRecovered(context, runStore, state));
+        } catch (Exception e) {
+            return AgentRunResult.failed(context, errorMessage(e));
+        }
+    }
+
+    private static AgentRunResult resultFromContent(AgentRunContext context, String content) {
+        String normalized = content == null ? "" : content.trim();
+        if (normalized.startsWith("⏹")) {
+            return AgentRunResult.cancelled(context, content);
+        }
+        if (normalized.startsWith("❌")) {
+            return AgentRunResult.failed(context, normalized);
+        }
+        if (normalized.startsWith("⚠️") || normalized.startsWith("⚠")) {
+            return AgentRunResult.blocked(context, normalized);
+        }
+        return AgentRunResult.success(context, content);
+    }
+
+    private static String errorMessage(Exception e) {
+        String message = e.getMessage();
+        return message == null || message.isBlank() ? e.getClass().getSimpleName() : message;
+    }
+}

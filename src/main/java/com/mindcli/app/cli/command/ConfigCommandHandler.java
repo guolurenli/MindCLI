@@ -38,8 +38,8 @@ public final class ConfigCommandHandler {
             case 0, 1 -> "💡 GLM: /model glm-5.1 / /model glm-5v-turbo；其它: /model deepseek|step|kimi|freellmapi|xfyun 读取配置模型";
             case 2 -> "💡 切换 HITL: /hitl on / /hitl off";
             case 3 -> "💡 管理 Skill: /skill list / /skill on <name> / /skill off <name>";
-            case 4 -> "💡 切换渲染器（重启后生效）: MINDCLI_RENDERER=inline|lanterna|plain";
-            case 5 -> "💡 当前不在 TUI 内编辑 config.json，建议在编辑器里改完重启";
+            case 4 -> "💡 切换渲染器（重启后生效）: MINDCLI_RENDERER=inline|plain";
+            case 5 -> "💡 当前 CLI 不直接编辑 config.json，建议在编辑器里改完重启";
             default -> "(unknown)";
         };
         renderer.stream().println(hint);

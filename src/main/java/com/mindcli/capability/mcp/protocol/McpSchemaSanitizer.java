@@ -9,7 +9,7 @@ import java.util.Iterator;
 import java.util.Map;
 
 public final class McpSchemaSanitizer {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
     private static final int MAX_DESCRIPTION_CHARS = 1000;
 
     private McpSchemaSanitizer() {

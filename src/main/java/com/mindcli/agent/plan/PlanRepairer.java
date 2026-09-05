@@ -12,7 +12,7 @@ public class PlanRepairer {
 
     public PlanRepairer(LlmClient llmClient, ObjectMapper mapper) {
         this.llmClient = llmClient;
-        this.mapper = mapper == null ? new ObjectMapper() : mapper;
+        this.mapper = mapper == null ? com.mindcli.platform.serialization.JsonSupport.mapper() : mapper;
     }
 
     public String repair(String goal, String rawPlanJson, List<PlanIssue> issues) throws IOException {

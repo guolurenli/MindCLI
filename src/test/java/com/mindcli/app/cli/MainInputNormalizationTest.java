@@ -62,7 +62,6 @@ class MainInputNormalizationTest {
 
         assertTrue(hints.stream().anyMatch(hint -> hint.contains("输入 '/' 后按 Tab 补全命令")));
         assertTrue(hints.stream().noneMatch(hint -> hint.contains("/model")));
-        assertTrue(hints.stream().noneMatch(hint -> hint.contains("/index [路径]")));
         assertTrue(hints.stream().noneMatch(hint -> hint.contains("/skill list")));
     }
 
@@ -189,14 +188,14 @@ class MainInputNormalizationTest {
     }
 
     @Test
-    void slashCommandHintsIncludeRagSlashCommands() {
+    void slashCommandHintsExcludeRemovedRagCommands() {
         List<String> commands = Main.slashCommandHints().stream()
                 .map(Main.SlashCommandHint::display)
                 .toList();
 
-        assertTrue(commands.contains("/index [路径]"));
-        assertTrue(commands.contains("/search <查询>"));
-        assertTrue(commands.contains("/graph <类名>"));
+        assertTrue(commands.stream().noneMatch(command -> command.startsWith("/index")));
+        assertTrue(commands.stream().noneMatch(command -> command.startsWith("/search")));
+        assertTrue(commands.stream().noneMatch(command -> command.startsWith("/graph")));
         assertTrue(commands.contains("/compact"));
     }
 

@@ -1,5 +1,6 @@
 package com.mindcli.capability.lsp;
 
+import com.mindcli.platform.config.ConfigValueResolver;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParseResult;
 import com.github.javaparser.Problem;
@@ -139,11 +140,8 @@ public class LspManager {
     }
 
     private boolean enabled() {
-        String raw = System.getProperty("mindcli.lsp.enabled");
-        if (raw == null || raw.isBlank()) {
-            raw = System.getenv("MINDCLI_LSP_ENABLED");
-        }
-        return raw == null || raw.isBlank() || Boolean.parseBoolean(raw.trim());
+        return ConfigValueResolver.current().resolveBoolean(
+                "mindcli.lsp.enabled", "MINDCLI_LSP_ENABLED", true);
     }
 
     private String normalizeDisplayPath(String displayPath) {

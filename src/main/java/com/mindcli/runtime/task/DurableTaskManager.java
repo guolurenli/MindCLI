@@ -1,5 +1,7 @@
 package com.mindcli.runtime.task;
 
+import com.mindcli.platform.config.ConfigValueResolver;
+
 import java.io.Closeable;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -43,29 +45,15 @@ public class DurableTaskManager implements Closeable {
     }
 
     public static Path defaultDbPath() {
-        String configured = System.getProperty("mindcli.task.dir");
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv("MINDCLI_TASK_DIR");
-        }
-        if (configured == null || configured.isBlank()) {
-            configured = Path.of(System.getProperty("user.home"), ".mindcli", "tasks").toString();
-        }
+        String configured = ConfigValueResolver.current().resolve(
+                "mindcli.task.dir", "MINDCLI_TASK_DIR",
+                Path.of(System.getProperty("user.home"), ".mindcli", "tasks").toString());
         return Path.of(configured).resolve("tasks.db");
     }
 
     private static int workerCount() {
-        String configured = System.getProperty("mindcli.task.workers");
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv("MINDCLI_TASK_WORKERS");
-        }
-        if (configured == null || configured.isBlank()) {
-            return 2;
-        }
-        try {
-            return Math.max(1, Integer.parseInt(configured.trim()));
-        } catch (NumberFormatException e) {
-            return 2;
-        }
+        return Math.max(1, ConfigValueResolver.current().resolveInt(
+                "mindcli.task.workers", "MINDCLI_TASK_WORKERS", 2));
     }
 
     public synchronized void start() {

@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
@@ -24,7 +25,7 @@ import java.util.stream.Stream;
  * 注意：JGit 7.x 尚无 worktree add/remove API，因此这里走系统 git 命令；git 不可用或
  * 项目不是 git 仓库时，调用方应回退串行执行（见 {@link #isGitRepository(Path)}）。
  */
-public final class GitWorktreeManager {
+public class GitWorktreeManager {
     private static final Logger log = LoggerFactory.getLogger(GitWorktreeManager.class);
     private static final long GIT_TIMEOUT_SECONDS = 120;
 
@@ -94,24 +95,12 @@ public final class GitWorktreeManager {
         if (handle == null) {
             return WorktreeMergeResult.nothing();
         }
-        CmdResult add = runGit(handle.path(), "add", "-A");
-        if (add.exitCode() != 0) {
-            throw new IOException("worktree git add 失败: " + add.stderr());
-        }
-        CmdResult status = runGit(handle.path(), "status", "--porcelain");
-        if (status.exitCode() != 0) {
-            throw new IOException("worktree git status 失败: " + status.stderr());
-        }
-        if (status.stdout().isBlank()) {
+        String message = commitMessage == null || commitMessage.isBlank()
+                ? "mindcli: worktree " + handle.branchName()
+                : commitMessage;
+        if (!commitWorktree(handle, message)) {
             dispose(root, handle);
             return WorktreeMergeResult.nothing();
-        }
-        CmdResult commit = runGit(handle.path(), "commit", "-m",
-                commitMessage == null || commitMessage.isBlank()
-                        ? "mindcli: worktree " + handle.branchName()
-                        : commitMessage);
-        if (commit.exitCode() != 0) {
-            throw new IOException("worktree git commit 失败: " + commit.stderr());
         }
 
         CmdResult merge = runGit(root, "merge", handle.branchName());
@@ -124,6 +113,68 @@ public final class GitWorktreeManager {
         }
         dispose(root, handle);
         return WorktreeMergeResult.clean();
+    }
+
+    /**
+     * 在临时 integration worktree 中合并一批 step 分支，全部成功后再更新主工作区。
+     *
+     * <p>这样可以避免第一个 step 已经合并到主工作区、第二个 step 冲突时留下部分集成结果。</p>
+     */
+    public synchronized BatchMergeResult mergeBatchAndDispose(Path root, List<WorktreeHandle> handles,
+                                                               String commitMessagePrefix) throws IOException {
+        if (root == null || handles == null || handles.isEmpty()) {
+            return BatchMergeResult.nothing();
+        }
+
+        List<WorktreeHandle> validHandles = handles.stream()
+                .filter(handle -> handle != null)
+                .toList();
+        List<WorktreeHandle> changedHandles = new ArrayList<>();
+        WorktreeHandle integration = null;
+        try {
+            for (WorktreeHandle handle : validHandles) {
+                String message = commitMessagePrefix == null || commitMessagePrefix.isBlank()
+                        ? "mindcli: worktree " + handle.branchName()
+                        : commitMessagePrefix + " " + handle.branchName();
+                if (commitWorktree(handle, message)) {
+                    changedHandles.add(handle);
+                }
+            }
+            if (changedHandles.isEmpty()) {
+                return BatchMergeResult.nothing();
+            }
+
+            Path projectRoot = root.toAbsolutePath().normalize();
+            Path parent = projectRoot.getParent() == null ? projectRoot : projectRoot.getParent();
+            String token = UUID.randomUUID().toString().replace("-", "");
+            Path integrationPath = parent.resolve(".mindcli-worktrees")
+                    .resolve("integration")
+                    .resolve(token);
+            String integrationBranch = "mindcli-integration-" + token;
+            integration = create(projectRoot, integrationPath, integrationBranch);
+
+            for (WorktreeHandle handle : changedHandles) {
+                CmdResult merge = runGit(integration.path(), "merge", "--no-edit", handle.branchName());
+                if (merge.exitCode() != 0) {
+                    List<String> conflicts = conflictingFiles(integration.path());
+                    runGit(integration.path(), "merge", "--abort");
+                    return BatchMergeResult.conflicting(conflicts);
+                }
+            }
+
+            CmdResult promote = runGit(projectRoot, "merge", "--ff-only", integration.branchName());
+            if (promote.exitCode() != 0) {
+                throw new IOException("integration 合并回主工作区失败: " + promote.stderr());
+            }
+            return BatchMergeResult.clean();
+        } finally {
+            if (integration != null) {
+                dispose(root, integration);
+            }
+            for (WorktreeHandle handle : validHandles) {
+                dispose(root, handle);
+            }
+        }
     }
 
     /** 移除 worktree（强制）、删除其分支并清理残留目录。 */
@@ -149,6 +200,25 @@ public final class GitWorktreeManager {
                 .filter(line -> !line.isEmpty())
                 .sorted()
                 .toList();
+    }
+
+    private boolean commitWorktree(WorktreeHandle handle, String commitMessage) throws IOException {
+        CmdResult add = runGit(handle.path(), "add", "-A");
+        if (add.exitCode() != 0) {
+            throw new IOException("worktree git add 失败: " + add.stderr());
+        }
+        CmdResult status = runGit(handle.path(), "status", "--porcelain");
+        if (status.exitCode() != 0) {
+            throw new IOException("worktree git status 失败: " + status.stderr());
+        }
+        if (status.stdout().isBlank()) {
+            return false;
+        }
+        CmdResult commit = runGit(handle.path(), "commit", "-m", commitMessage);
+        if (commit.exitCode() != 0) {
+            throw new IOException("worktree git commit 失败: " + commit.stderr());
+        }
+        return true;
     }
 
     private static CmdResult runGit(Path cwd, String... args) {
@@ -254,6 +324,31 @@ public final class GitWorktreeManager {
                 throw new IllegalArgumentException("path");
             }
             branchName = branchName == null ? "" : branchName;
+        }
+    }
+
+    /** 批次集成结果。冲突时主工作区仍停留在批次开始前的基线。 */
+    public record BatchMergeResult(Status status, List<String> conflictingFiles) {
+        public enum Status {
+            CLEAN,
+            NOTHING,
+            CONFLICTING
+        }
+
+        public BatchMergeResult {
+            conflictingFiles = conflictingFiles == null ? List.of() : List.copyOf(conflictingFiles);
+        }
+
+        static BatchMergeResult clean() {
+            return new BatchMergeResult(Status.CLEAN, List.of());
+        }
+
+        static BatchMergeResult nothing() {
+            return new BatchMergeResult(Status.NOTHING, List.of());
+        }
+
+        static BatchMergeResult conflicting(List<String> files) {
+            return new BatchMergeResult(Status.CONFLICTING, files);
         }
     }
 
