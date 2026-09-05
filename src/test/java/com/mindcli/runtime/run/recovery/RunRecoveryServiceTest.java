@@ -50,6 +50,60 @@ class RunRecoveryServiceTest {
     }
 
     @Test
+    void teamExecutingChildWithNonCompletedToolOutcomeFailsClosed() {
+        TeamFixture fixture = teamFixture("RUNNING", "EXECUTING", "child-failed");
+        appendChildToolTurnWithOutcome(fixture.store(), fixture.child("child-failed"),
+                "call-1", "read_file", "{}", "FAILED");
+        fixture.cancelParent();
+
+        TeamResumeState state = new RunRecoveryService(fixture.store())
+                .reconstructTeamState(fixture.parent().runId());
+
+        assertTrue(!state.available());
+        assertTrue(state.reason().contains("非 COMPLETED") || state.reason().contains("不完整"), state.reason());
+    }
+
+    @Test
+    void teamExecutingChildWithoutToolRequestEvidenceFailsClosed() {
+        TeamFixture fixture = teamFixture("RUNNING", "EXECUTING", "child-missing-request");
+        AgentRunContext child = fixture.child("child-missing-request");
+        fixture.store().append(AgentRunEvent.of(child, AgentRunEventType.RUN_STARTED,
+                Map.of("phase", "execute")));
+        fixture.store().append(AgentRunEvent.of(child, AgentRunEventType.LLM_RESPONSE, Map.of(
+                "recordKind", "turn", "toolCallCount", "1",
+                "toolCallsJson", "[{\"id\":\"call-1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]")));
+        fixture.store().append(AgentRunEvent.of(child, AgentRunEventType.TOOL_OUTCOME, Map.of(
+                "toolId", "call-1", "toolName", "read_file", "argumentsJson", "{}", "status", "COMPLETED")));
+        fixture.store().append(AgentRunEvent.of(child, AgentRunEventType.RUN_FINISHED,
+                Map.of("phase", "execute", "status", "SUCCESS")));
+        fixture.cancelParent();
+
+        TeamResumeState state = new RunRecoveryService(fixture.store())
+                .reconstructTeamState(fixture.parent().runId());
+
+        assertTrue(!state.available());
+        assertTrue(state.reason().contains("TOOL_CALL_REQUESTED"), state.reason());
+    }
+
+    @Test
+    void teamRejectsDuplicatePlanDefinitions() {
+        TeamFixture fixture = teamFixture("RUNNING", "EXECUTING", "child-duplicate-plan");
+        TeamResumeState initial = new TeamResumeState(true, 1, 1, List.of(
+                new TeamStepResumeState("step_1", "step", "ANALYSIS", List.of(), List.of(),
+                        "", "low", "PENDING", "", 0, "", "", List.of())), "");
+        TeamCheckpointCodec codec = new TeamCheckpointCodec();
+        fixture.store().append(AgentRunEvent.of(fixture.parent(), AgentRunEventType.TEAM_PLAN_DEFINED, Map.of(
+                "schemaVersion", "1", "planVersion", "1", "planJson", codec.encodePlan(initial))));
+        fixture.cancelParent();
+
+        TeamResumeState state = new RunRecoveryService(fixture.store())
+                .reconstructTeamState(fixture.parent().runId());
+
+        assertTrue(!state.available());
+        assertTrue(state.reason().contains("重复") || state.reason().contains("多个"), state.reason());
+    }
+
+    @Test
     void teamReviewingAndAwaitingMergeAlwaysFailClosed() {
         assertTrue(!inspectTeamAtPhase("REVIEWING").resumeAvailable());
         assertTrue(!inspectTeamAtPhase("AWAITING_MERGE").resumeAvailable());
@@ -378,6 +432,11 @@ class RunRecoveryServiceTest {
 
     private static void appendCompleteChildToolTurn(InMemoryRunStore store, AgentRunContext child,
                                                      String id, String name, String arguments) {
+        appendChildToolTurnWithOutcome(store, child, id, name, arguments, "COMPLETED");
+    }
+
+    private static void appendChildToolTurnWithOutcome(InMemoryRunStore store, AgentRunContext child,
+                                                       String id, String name, String arguments, String status) {
         String calls = "[{\"id\":\"" + id + "\",\"function\":{\"name\":\""
                 + name + "\",\"arguments\":"
                 + com.mindcli.platform.serialization.JsonSupport.mapper().valueToTree(arguments)
@@ -392,7 +451,7 @@ class RunRecoveryServiceTest {
                 "toolNames", name)));
         store.append(AgentRunEvent.of(child, AgentRunEventType.TOOL_OUTCOME, Map.of(
                 "toolId", id, "toolName", name, "argumentsJson", arguments,
-                "status", "COMPLETED")));
+                "status", status)));
         store.append(AgentRunEvent.of(child, AgentRunEventType.RUN_FINISHED,
                 Map.of("phase", "execute", "status", "SUCCESS")));
     }

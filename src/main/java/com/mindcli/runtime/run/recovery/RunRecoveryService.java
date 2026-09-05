@@ -259,7 +259,11 @@ public final class RunRecoveryService {
 
     private TeamRecoveryProjection projectTeam(String runId) {
         List<AgentRunEvent> events = runStore.events(runId);
-        int definitionIndex = lastIndexOf(events, AgentRunEventType.TEAM_PLAN_DEFINED);
+        List<Integer> definitions = indexesOf(events, AgentRunEventType.TEAM_PLAN_DEFINED);
+        if (definitions.size() > 1) {
+            return TeamRecoveryProjection.unavailable("Team run 包含重复的 TEAM_PLAN_DEFINED");
+        }
+        int definitionIndex = definitions.isEmpty() ? -1 : definitions.get(0);
         if (definitionIndex < 0) {
             return TeamRecoveryProjection.unavailable("旧 Team run 缺少精确恢复 checkpoint");
         }
@@ -365,8 +369,33 @@ public final class RunRecoveryService {
                 return TeamResumeState.unavailable("Team step checkpoint 与步骤定义不匹配: " + id);
             }
         }
+        TeamStepResumeState first = steps.get(ids.get(0));
+        if (ids.stream().map(steps::get).anyMatch(step -> !sameFingerprint(first, step))) {
+            return TeamResumeState.unavailable("Team step checkpoint 包含不同执行指纹");
+        }
+        if (!validStatusPhase(status, phase)) {
+            return TeamResumeState.unavailable("Team step checkpoint 的 status/phase 组合非法");
+        }
         for (String id : ids) {
             TeamStepResumeState previous = steps.get(id);
+            if (attempt < previous.attempt()) {
+                return TeamResumeState.unavailable("Team step checkpoint attempt 倒退: " + id);
+            }
+            if (isTerminalTeamStep(previous.status())) {
+                boolean idempotent = previous.status().equals(status)
+                        && previous.phase().isEmpty()
+                        && phase.isEmpty()
+                        && previous.attempt() == attempt
+                        && Objects.equals(previous.result(), attributes.get("result"))
+                        && Objects.equals(previous.error(), attributes.get("error"));
+                if (!idempotent) {
+                    return TeamResumeState.unavailable("Team step checkpoint 在终态后继续推进: " + id);
+                }
+            }
+            if (attempt == previous.attempt() && "RUNNING".equals(status)
+                    && !validPhaseTransition(previous.phase(), phase)) {
+                return TeamResumeState.unavailable("Team step checkpoint phase 递进非法: " + id);
+            }
             List<String> childIds = new ArrayList<>(previous.childRunIds());
             if (!childRunId.isEmpty() && !childIds.contains(childRunId)) {
                 childIds.add(childRunId);
@@ -402,6 +431,7 @@ public final class RunRecoveryService {
         boolean started = false;
         boolean terminal = false;
         boolean sideEffect = false;
+        boolean requestSeenForPending = false;
         for (AgentRunEvent event : events) {
             if (event == null) continue;
             if (event.type() == AgentRunEventType.RUN_STARTED) {
@@ -432,7 +462,12 @@ public final class RunRecoveryService {
                     }
                     tools.add(call.function().name());
                 }
+                requestSeenForPending = calls.isEmpty();
             } else if (event.type() == AgentRunEventType.TOOL_CALL_REQUESTED) {
+                if (pending.isEmpty()) {
+                    return new ChildEvidence(false, List.copyOf(tools), sideEffect,
+                            "Team child 缺少对应的 LLM 工具调用");
+                }
                 Integer count = parseNonNegativeInt(event.attributes().get("toolCallCount"));
                 if (count != null && count != pending.size()) {
                     return new ChildEvidence(false, List.copyOf(tools), sideEffect,
@@ -449,7 +484,12 @@ public final class RunRecoveryService {
                     return new ChildEvidence(false, List.copyOf(tools), sideEffect,
                             "Team child 工具请求名称不匹配");
                 }
+                requestSeenForPending = true;
             } else if (event.type() == AgentRunEventType.TOOL_OUTCOME) {
+                if (!requestSeenForPending) {
+                    return new ChildEvidence(false, List.copyOf(tools), sideEffect,
+                            "Team child 缺少 TOOL_CALL_REQUESTED 证据");
+                }
                 String id = event.attributes().getOrDefault("toolId", "");
                 LlmClient.ToolCall call = pending.remove(id);
                 String name = event.attributes().getOrDefault("toolName", "");
@@ -465,7 +505,14 @@ public final class RunRecoveryService {
                     return new ChildEvidence(false, List.copyOf(tools), sideEffect,
                             "Team child 工具结果状态非法");
                 }
+                if (!"COMPLETED".equalsIgnoreCase(status)) {
+                    return new ChildEvidence(false, List.copyOf(tools), sideEffect,
+                            "Team child 工具结果非 COMPLETED，无法安全恢复");
+                }
                 sideEffect |= "COMPLETED".equalsIgnoreCase(status) && !PLAN_READ_ONLY_TOOLS.contains(name);
+                if (pending.isEmpty()) {
+                    requestSeenForPending = false;
+                }
             } else if (event.type() == AgentRunEventType.RUN_FINISHED
                     || event.type() == AgentRunEventType.RUN_FAILED
                     || event.type() == AgentRunEventType.RUN_CANCELLED
@@ -491,6 +538,35 @@ public final class RunRecoveryService {
                 && matchesOptional(attributes, "riskLevel", step.riskLevel())
                 && matchesOptional(attributes, "requiredTools", String.join(",", step.requiredTools().stream().sorted().toList()))
                 && matchesOptional(attributes, "dependencies", String.join(",", step.dependencies().stream().sorted().toList()));
+    }
+
+    private static boolean sameFingerprint(TeamStepResumeState left, TeamStepResumeState right) {
+        return left.type().equals(right.type())
+                && left.description().equals(right.description())
+                && left.requiredTools().stream().sorted().toList()
+                .equals(right.requiredTools().stream().sorted().toList())
+                && left.preferredAgent().equals(right.preferredAgent())
+                && left.riskLevel().equals(right.riskLevel())
+                && left.dependencies().stream().sorted().toList()
+                .equals(right.dependencies().stream().sorted().toList());
+    }
+
+    private static boolean validStatusPhase(String status, String phase) {
+        if ("RUNNING".equals(status)) {
+            return Set.of("EXECUTING", "REVIEWING", "AWAITING_MERGE").contains(phase);
+        }
+        return Set.of("PENDING", "COMPLETED", "FAILED", "SKIPPED").contains(status) && phase.isEmpty();
+    }
+
+    private static boolean validPhaseTransition(String previous, String next) {
+        if (previous == null || previous.isEmpty()) {
+            return "EXECUTING".equals(next);
+        }
+        if (previous.equals(next)) {
+            return true;
+        }
+        return ("EXECUTING".equals(previous) && "REVIEWING".equals(next))
+                || ("REVIEWING".equals(previous) && "AWAITING_MERGE".equals(next));
     }
 
     private static boolean matchesOptional(Map<String, String> attributes, String key, String expected) {
@@ -700,6 +776,16 @@ public final class RunRecoveryService {
             if (event != null && event.type() == type) return i;
         }
         return -1;
+    }
+
+    private static List<Integer> indexesOf(List<AgentRunEvent> events, AgentRunEventType type) {
+        List<Integer> indexes = new ArrayList<>();
+        for (int i = 0; i < events.size(); i++) {
+            if (events.get(i) != null && events.get(i).type() == type) {
+                indexes.add(i);
+            }
+        }
+        return indexes;
     }
 
     private static AgentMode firstMode(List<AgentRunEvent> events) {

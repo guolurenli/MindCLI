@@ -679,6 +679,7 @@ public class AgentOrchestrator {
                 ExecutionStep leader = stepById(steps, group.leader().id());
                 if (Boolean.TRUE.equals(completed.get(group.leader().id()))) {
                     updateStep(steps, group.leader().id(), group.leader().withFailed(reason));
+                    persistGroupOutcome(group, steps, retryCount);
                     propagateDuplicateResult(group, steps);
                 } else if (leader != null && leader.status() == StepStatus.FAILED) {
                     persistGroupOutcome(group, steps, retryCount);

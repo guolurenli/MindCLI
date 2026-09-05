@@ -41,5 +41,9 @@ class TeamCheckpointCodecTest {
                 codec.decodeStepIds(codec.encodeStepIds(List.of("step_1", "step_2"))));
         assertThrows(IllegalArgumentException.class,
                 () -> codec.decodeStepIds("[\"step_1\",\"step_1\"]"));
+        assertThrows(IllegalArgumentException.class,
+                () -> codec.encodeStepIds(List.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> codec.decodeStepIds("[]"));
     }
 }

@@ -140,7 +140,7 @@ public final class TeamCheckpointCodec {
 
     private static boolean safeRunId(String id) { return id != null && id.matches("[A-Za-z0-9][A-Za-z0-9._-]*") && !id.contains(".."); }
     private static boolean hasDuplicateOrBlank(List<String> xs) { Set<String> seen = new HashSet<>(); for (String x : xs) if (x == null || x.isBlank() || !seen.add(x)) return true; return false; }
-    private static void validateIds(List<String> ids) { if (ids == null) throw new IllegalArgumentException("step IDs 不能为空"); if (hasDuplicateOrBlank(ids)) throw new IllegalArgumentException("step IDs 不能包含空值或重复值"); }
+    private static void validateIds(List<String> ids) { if (ids == null || ids.isEmpty()) throw new IllegalArgumentException("step IDs 不能为空"); if (hasDuplicateOrBlank(ids)) throw new IllegalArgumentException("step IDs 不能包含空值或重复值"); }
     private static void strings(ArrayNode n, List<String> xs) { xs.forEach(n::add); }
     private static String text(JsonNode n, String f, boolean nonblank) { JsonNode v=n.get(f); if(v==null||!v.isTextual()||(nonblank&&v.textValue().isBlank())) throw new IllegalArgumentException(f+" 必须是"+(nonblank?"非空 ":"")+"string"); return v.textValue(); }
     private static int integer(JsonNode n,String f){JsonNode v=n.get(f);if(v==null||!v.isIntegralNumber()||!v.canConvertToInt()||v.intValue()<0)throw new IllegalArgumentException(f+" 必须是非负整数");return v.intValue();}
