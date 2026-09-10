@@ -18,9 +18,18 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.channels.FileChannel;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -191,6 +200,159 @@ class JsonlRunStoreTest {
     }
 
     @Test
+    void serializesAppendsAcrossStoreInstancesWithTheSameRunsRoot() throws Exception {
+        Path runsRoot = tempDir.resolve("runs");
+        JsonlRunStore firstStore = new JsonlRunStore(runsRoot);
+        JsonlRunStore secondStore = new JsonlRunStore(runsRoot);
+        AgentRunContext context = AgentRunContext.create(AgentMode.REACT, "hello", tempDir.toString());
+        int perStore = 20;
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> first = executor.submit(() -> appendMany(firstStore, context, perStore, ready, start));
+            Future<?> second = executor.submit(() -> appendMany(secondStore, context, perStore, ready, start));
+            assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            start.countDown();
+            first.get();
+            second.get();
+        } finally {
+            executor.shutdownNow();
+        }
+
+        List<AgentRunEvent> events = firstStore.events(context.runId());
+        assertEquals(perStore * 2, events.size());
+        assertEquals(java.util.stream.LongStream.rangeClosed(1, perStore * 2L).boxed().toList(),
+                events.stream().map(AgentRunEvent::seq).toList());
+    }
+
+    @Test
+    void waitsForAnExternalLedgerLockBeforeAppending() throws Exception {
+        Path runsRoot = tempDir.resolve("runs");
+        JsonlRunStore runStore = new JsonlRunStore(runsRoot);
+        AgentRunContext context = AgentRunContext.create(AgentMode.REACT, "hello", tempDir.toString());
+        runStore.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED));
+        Path lockFile = runsRoot.resolve(context.runId()).resolve("run.jsonl.lock");
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try (FileChannel channel = FileChannel.open(lockFile,
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
+            try (java.nio.channels.FileLock ignored = channel.lock()) {
+                Future<?> append = executor.submit(() -> runStore.append(
+                        AgentRunEvent.of(context, AgentRunEventType.RUN_FINISHED)));
+                assertThrows(TimeoutException.class,
+                        () -> append.get(1, TimeUnit.SECONDS));
+            }
+            appendAndAwait(executor);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void differentRunsDoNotBlockOnEachOtherInsideOneStoreInstance() throws Exception {
+        Path runsRoot = tempDir.resolve("per-run-lock-runs");
+        JsonlRunStore runStore = new JsonlRunStore(runsRoot);
+        AgentRunContext blockedContext = AgentRunContext.create(AgentMode.REACT, "blocked", tempDir.toString());
+        AgentRunContext independentContext = AgentRunContext.create(AgentMode.REACT, "independent", tempDir.toString());
+        runStore.append(AgentRunEvent.of(blockedContext, AgentRunEventType.RUN_STARTED));
+        runStore.append(AgentRunEvent.of(independentContext, AgentRunEventType.RUN_STARTED));
+
+        Path blockedLockFile = runsRoot.resolve(blockedContext.runId()).resolve("run.jsonl.lock");
+        CopyOnWriteArrayList<Thread> workers = new CopyOnWriteArrayList<>();
+        AtomicInteger workerNumber = new AtomicInteger();
+        ExecutorService executor = Executors.newFixedThreadPool(2, task -> {
+            Thread worker = new Thread(task, "jsonl-lock-test-" + workerNumber.incrementAndGet());
+            workers.add(worker);
+            return worker;
+        });
+        try (FileChannel channel = FileChannel.open(blockedLockFile,
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+             java.nio.channels.FileLock ignored = channel.lock()) {
+            Future<?> blocked = executor.submit(() -> runStore.append(
+                    AgentRunEvent.of(blockedContext, AgentRunEventType.RUN_FINISHED)));
+            assertTrue(awaitThreadState(workers, Thread.State.TIMED_WAITING, 2, TimeUnit.SECONDS));
+            Future<?> independent = executor.submit(() -> runStore.append(
+                    AgentRunEvent.of(independentContext, AgentRunEventType.RUN_FINISHED)));
+
+            independent.get(1, TimeUnit.SECONDS);
+            assertThrows(TimeoutException.class, () -> blocked.get(200, TimeUnit.MILLISECONDS));
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    private static boolean awaitThreadState(List<Thread> threads, Thread.State state,
+                                            long timeout, TimeUnit unit) throws InterruptedException {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (System.nanoTime() < deadline) {
+            if (threads.stream().anyMatch(thread -> thread.getState() == state)) {
+                return true;
+            }
+            Thread.sleep(10L);
+        }
+        return false;
+    }
+
+    @Test
+    void serializesAppendsAcrossIndependentJvmProcesses() throws Exception {
+        Path runsRoot = tempDir.resolve("cross-process-runs");
+        String runId = "run_cross_process";
+        int perProcess = 25;
+        String javaName = System.getProperty("os.name", "").toLowerCase().contains("win") ? "java.exe" : "java";
+        String javaBinary = Path.of(System.getProperty("java.home"), "bin", javaName).toString();
+        String classPath = System.getProperty("java.class.path");
+        Process first = new ProcessBuilder(javaBinary, "-cp", classPath,
+                JsonlRunStoreProcessWriter.class.getName(), runsRoot.toString(), runId,
+                Integer.toString(perProcess))
+                .redirectError(ProcessBuilder.Redirect.INHERIT)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .start();
+        Process second = new ProcessBuilder(javaBinary, "-cp", classPath,
+                JsonlRunStoreProcessWriter.class.getName(), runsRoot.toString(), runId,
+                Integer.toString(perProcess))
+                .redirectError(ProcessBuilder.Redirect.INHERIT)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .start();
+
+        assertTrue(first.waitFor(15, TimeUnit.SECONDS));
+        assertTrue(second.waitFor(15, TimeUnit.SECONDS));
+        assertEquals(0, first.exitValue());
+        assertEquals(0, second.exitValue());
+
+        List<AgentRunEvent> events = new JsonlRunStore(runsRoot).events(runId);
+        assertEquals(perProcess * 2, events.size());
+        assertEquals(java.util.stream.LongStream.rangeClosed(1, perProcess * 2L).boxed().toList(),
+                events.stream().map(AgentRunEvent::seq).toList());
+    }
+
+    private static void appendAndAwait(ExecutorService executor) throws Exception {
+        // The queued append must be able to finish after the external lock is released.
+        executor.shutdown();
+        assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+    }
+
+    private static void appendMany(JsonlRunStore store,
+                                   AgentRunContext context,
+                                   int count,
+                                   CountDownLatch ready,
+                                   CountDownLatch start) {
+        ready.countDown();
+        try {
+            start.await();
+            for (int i = 0; i < count; i++) {
+                store.append(AgentRunEvent.of(context, AgentRunEventType.LLM_RESPONSE,
+                        Map.of("worker", Thread.currentThread().getName(), "index", Integer.toString(i))));
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Test
     void listsOnlyTopLevelRunsWithLedgers() throws Exception {
         Path runsRoot = tempDir.resolve("runs");
         JsonlRunStore runStore = new JsonlRunStore(runsRoot);
@@ -223,5 +385,42 @@ class JsonlRunStoreTest {
                         AgentRunEventType.RUN_STARTED,
                         null,
                         Map.of())));
+    }
+
+    @Test
+    void rejectsUnsafeRunIdsBeforeReadPathsAreResolved() {
+        JsonlRunStore runStore = new JsonlRunStore(tempDir.resolve("runs"));
+
+        assertThrows(IllegalArgumentException.class, () -> runStore.events("../escape"));
+        assertThrows(IllegalArgumentException.class, () -> runStore.runDir("nested/escape"));
+    }
+
+    @Test
+    void rejectsUnsafeParentRunIdBeforeChildPathIsResolved() {
+        JsonlRunStore runStore = new JsonlRunStore(tempDir.resolve("runs"));
+        AgentRunContext child = AgentRunContext.create(AgentMode.TEAM, "child", tempDir.toString(), Map.of(
+                "parentRunId", "../escape",
+                "rootRunId", "root_run"));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> runStore.append(AgentRunEvent.of(child, AgentRunEventType.RUN_STARTED)));
+    }
+
+    @Test
+    void rejectsRunDirectorySymlinkEscapingRunsRoot() throws Exception {
+        Path runsRoot = tempDir.resolve("runs");
+        Path outside = tempDir.resolve("outside");
+        Files.createDirectories(outside);
+        Files.writeString(outside.resolve("run.jsonl"), "{}");
+        Files.createDirectories(runsRoot);
+        Path link = runsRoot.resolve("linked_run");
+        try {
+            Files.createSymbolicLink(link, outside);
+        } catch (UnsupportedOperationException | java.io.IOException e) {
+            return;
+        }
+
+        JsonlRunStore runStore = new JsonlRunStore(runsRoot);
+        assertThrows(IllegalArgumentException.class, () -> runStore.events("linked_run"));
     }
 }

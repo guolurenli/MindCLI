@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.UUID;
 
 public class RuntimeThreadStore implements AutoCloseable {
+    private static final int SQLITE_BUSY_TIMEOUT_MILLIS = 5_000;
     private final Connection connection;
 
     public RuntimeThreadStore(Path dbPath) throws SQLException {
@@ -20,6 +21,7 @@ public class RuntimeThreadStore implements AutoCloseable {
             throw new SQLException("无法创建 Runtime API 数据库目录: " + e.getMessage(), e);
         }
         this.connection = DriverManager.getConnection("jdbc:sqlite:" + dbPath);
+        configureConnection();
         initTables();
     }
 
@@ -32,16 +34,28 @@ public class RuntimeThreadStore implements AutoCloseable {
 
     public synchronized String createThread() {
         String id = "thread_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
-        try (PreparedStatement ps = connection.prepareStatement("""
-                INSERT INTO runtime_threads (id, created_at) VALUES (?, ?)
-                """)) {
-            ps.setString(1, id);
-            ps.setString(2, Instant.now().toString());
-            ps.executeUpdate();
-            appendEvent(id, "thread.created", "{\"thread_id\":\"" + id + "\"}");
+        boolean autoCommit = true;
+        try {
+            autoCommit = connection.getAutoCommit();
+            connection.setAutoCommit(false);
+            try (PreparedStatement ps = connection.prepareStatement("""
+                    INSERT INTO runtime_threads (id, created_at) VALUES (?, ?)
+                    """)) {
+                ps.setString(1, id);
+                ps.setString(2, Instant.now().toString());
+                ps.executeUpdate();
+            }
+            appendEventSql(id, "thread.created", "{\"thread_id\":\"" + id + "\"}");
+            connection.commit();
             return id;
         } catch (SQLException e) {
+            rollbackQuietly();
             throw new IllegalStateException("创建 runtime thread 失败: " + e.getMessage(), e);
+        } finally {
+            try {
+                connection.setAutoCommit(autoCommit);
+            } catch (SQLException ignored) {
+            }
         }
     }
 
@@ -57,6 +71,14 @@ public class RuntimeThreadStore implements AutoCloseable {
     }
 
     public synchronized long appendEvent(String threadId, String type, String data) {
+        try {
+            return appendEventSql(threadId, type, data);
+        } catch (SQLException e) {
+            throw new IllegalStateException("写入 runtime event 失败: " + e.getMessage(), e);
+        }
+    }
+
+    private long appendEventSql(String threadId, String type, String data) throws SQLException {
         try (PreparedStatement ps = connection.prepareStatement("""
                 INSERT INTO runtime_events (thread_id, type, data, created_at)
                 VALUES (?, ?, ?, ?)
@@ -69,9 +91,11 @@ public class RuntimeThreadStore implements AutoCloseable {
             try (ResultSet keys = ps.getGeneratedKeys()) {
                 return keys.next() ? keys.getLong(1) : 0;
             }
-        } catch (SQLException e) {
-            throw new IllegalStateException("写入 runtime event 失败: " + e.getMessage(), e);
         }
+    }
+
+    int busyTimeoutMillis() {
+        return SQLITE_BUSY_TIMEOUT_MILLIS;
     }
 
     public synchronized List<RuntimeEvent> events(String threadId, long afterId) {
@@ -118,6 +142,19 @@ public class RuntimeThreadStore implements AutoCloseable {
                     )
                     """);
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_runtime_events_thread ON runtime_events(thread_id, id)");
+        }
+    }
+
+    private void configureConnection() throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA busy_timeout = " + SQLITE_BUSY_TIMEOUT_MILLIS);
+        }
+    }
+
+    private void rollbackQuietly() {
+        try {
+            connection.rollback();
+        } catch (SQLException ignored) {
         }
     }
 

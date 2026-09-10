@@ -46,8 +46,11 @@ public class McpServerManager implements AutoCloseable {
         this.transportFactory = new McpTransportFactory(this.projectDir);
     }
 
-    public void loadConfiguredServers() throws IOException {
+    public synchronized void loadConfiguredServers() throws IOException {
         Map<String, McpServerConfig> configs = configLoader.load();
+        for (McpServer server : servers.values()) {
+            cleanupServer(server);
+        }
         servers.clear();
         configs.forEach((name, config) -> servers.put(name, new McpServer(name, config)));
     }
@@ -111,6 +114,7 @@ public class McpServerManager implements AutoCloseable {
         }
         unregisterTools(server);
         server.close();
+        resourceCache.removeServer(server.name());
         server.config().setDisabled(true);
         server.status(McpServerStatus.DISABLED);
         server.errorMessage(null);
@@ -302,6 +306,7 @@ public class McpServerManager implements AutoCloseable {
     private void start(McpServer server) {
         unregisterTools(server);
         server.close();
+        resourceCache.removeServer(server.name());
         if (server.config().isDisabled()) {
             server.status(McpServerStatus.DISABLED);
             return;
@@ -411,6 +416,12 @@ public class McpServerManager implements AutoCloseable {
         server.tools(List.of());
     }
 
+    private void cleanupServer(McpServer server) {
+        unregisterTools(server);
+        server.close();
+        resourceCache.removeServer(server.name());
+    }
+
     private static long elapsedMillis(long startedAtNanos) {
         return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos);
     }
@@ -450,8 +461,7 @@ public class McpServerManager implements AutoCloseable {
     @Override
     public void close() {
         for (McpServer server : servers.values()) {
-            unregisterTools(server);
-            server.close();
+            cleanupServer(server);
         }
     }
 }

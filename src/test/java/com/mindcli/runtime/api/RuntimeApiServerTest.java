@@ -9,6 +9,11 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -72,6 +77,59 @@ class RuntimeApiServerTest {
                 .method(method, publisher);
     }
 
+    @Test
+    void serializesTurnsForTheSameThread(@TempDir Path tempDir) throws Exception {
+        assumeTrue(loopbackHttpServerAvailable(), "当前测试环境无法建立 loopback HTTP server");
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        AtomicInteger active = new AtomicInteger();
+        AtomicInteger maxActive = new AtomicInteger();
+        List<String> prompts = Collections.synchronizedList(new ArrayList<>());
+        com.mindcli.runtime.task.TaskRunner runner = prompt -> {
+            int running = active.incrementAndGet();
+            maxActive.accumulateAndGet(running, Math::max);
+            prompts.add(prompt);
+            try {
+                if ("one".equals(prompt)) {
+                    firstStarted.countDown();
+                    if (!releaseFirst.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("first turn was not released");
+                    }
+                }
+                return "reply:" + prompt;
+            } finally {
+                active.decrementAndGet();
+            }
+        };
+
+        try (RuntimeThreadStore store = new RuntimeThreadStore(tempDir.resolve("runtime.db"));
+             RuntimeApiServer server = new RuntimeApiServer(store, runner, 0, "secret")) {
+            server.start();
+            HttpClient client = HttpClient.newHttpClient();
+            String base = "http://127.0.0.1:" + server.port();
+            HttpResponse<String> created = client.send(request(base + "/v1/threads", "POST", "")
+                            .build(), HttpResponse.BodyHandlers.ofString());
+            String threadId = extract(created.body(), "thread_");
+
+            HttpResponse<String> first = client.send(request(base + "/v1/threads/" + threadId + "/turns",
+                            "POST", "{\"input\":\"one\"}").build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(202, first.statusCode());
+            assertTrue(firstStarted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+
+            HttpResponse<String> second = client.send(request(base + "/v1/threads/" + threadId + "/turns",
+                            "POST", "{\"input\":\"two\"}").build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(202, second.statusCode());
+            releaseFirst.countDown();
+
+            String events = waitForCompletedEvents(client, base, threadId, 2);
+            assertEquals(1, maxActive.get(), "同一个 thread 的 turn 不应并行调用 runner");
+            assertEquals(List.of("one", "two"), prompts);
+            assertEquals(2, countOccurrences(events, "event: turn.completed"));
+        }
+    }
+
     private static boolean loopbackHttpServerAvailable() {
         try {
             com.sun.net.httpserver.HttpServer probe =
@@ -96,6 +154,31 @@ class RuntimeApiServerTest {
         }
         fail("events did not complete");
         return "";
+    }
+
+    private static String waitForCompletedEvents(HttpClient client, String base, String threadId, int expected)
+            throws Exception {
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (System.nanoTime() < deadline) {
+            HttpResponse<String> response = client.send(request(base + "/v1/threads/" + threadId + "/events", "GET", "")
+                            .build(), HttpResponse.BodyHandlers.ofString());
+            if (countOccurrences(response.body(), "event: turn.completed") >= expected) {
+                return response.body();
+            }
+            Thread.sleep(30);
+        }
+        fail("events did not complete");
+        return "";
+    }
+
+    private static int countOccurrences(String value, String needle) {
+        int count = 0;
+        int offset = 0;
+        while ((offset = value.indexOf(needle, offset)) >= 0) {
+            count++;
+            offset += needle.length();
+        }
+        return count;
     }
 
     private static String extract(String body, String prefix) {

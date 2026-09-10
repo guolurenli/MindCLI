@@ -1,5 +1,6 @@
 package com.mindcli.agent;
 
+import com.mindcli.platform.config.ConfigValueResolver;
 import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.platform.llm.context.ContextProfile;
 
@@ -20,10 +21,7 @@ import java.util.Locale;
  *
  * 这三个条件按"先到先触发"判定，任何一个命中都会让循环结束。
  *
- * 配置读取顺序（以 {@link #fromSystemProperties()} 为准）：
- * 1. 系统属性：{@code mindcli.react.token.budget} / {@code mindcli.react.stagnation.window} /
- *    {@code mindcli.react.hard.max.iterations}
- * 2. 默认值：token 预算 = Integer.MAX_VALUE（实质不限）/ 连续 3 次相同工具调用 / 50 轮
+ * 配置读取顺序：JVM system property > OS environment > 项目 .env > 用户 ~/.env > 默认值。
  *
  * 设计取舍：长上下文模型（GLM-5.1 200k / DeepSeek V4 1M）配合套餐用户的"无限 token"诉求，
  * 默认不再以 80% × window 为硬限——让 LLM 自然停在它该停的地方。需要严格成本控制的
@@ -73,13 +71,17 @@ public class AgentBudget {
     }
 
     public static AgentBudget fromLlmClient(LlmClient llmClient) {
+        return fromLlmClient(llmClient, ConfigValueResolver.current());
+    }
+
+    static AgentBudget fromLlmClient(LlmClient llmClient, ConfigValueResolver config) {
         // ContextProfile 仍按 80% × window 计算 agentTokenBudget，用于 /context 与 token stats 的"软提示"显示；
         // 但 AgentBudget 的硬限默认走 Integer.MAX_VALUE，避免长上下文 + 套餐用户被预算墙卡住。
         // 显式 -Dmindcli.react.token.budget=N 仍可启用硬预算，覆盖默认。
         return new AgentBudget(
-                readIntProperty("mindcli.react.token.budget", Integer.MAX_VALUE),
-                readIntProperty("mindcli.react.stagnation.window", DEFAULT_STAGNATION_WINDOW),
-                readIntProperty("mindcli.react.hard.max.iterations", DEFAULT_HARD_MAX_ITERATIONS)
+                readInt(config, "mindcli.react.token.budget", "MINDCLI_REACT_TOKEN_BUDGET", Integer.MAX_VALUE),
+                readInt(config, "mindcli.react.stagnation.window", "MINDCLI_REACT_STAGNATION_WINDOW", DEFAULT_STAGNATION_WINDOW),
+                readInt(config, "mindcli.react.hard.max.iterations", "MINDCLI_REACT_HARD_MAX_ITERATIONS", DEFAULT_HARD_MAX_ITERATIONS)
         );
     }
 
@@ -183,16 +185,10 @@ public class AgentBudget {
         return sb.toString();
     }
 
-    private static int readIntProperty(String key, int defaultValue) {
-        String raw = System.getProperty(key);
-        if (raw == null || raw.isBlank()) {
-            return defaultValue;
-        }
-        try {
-            int parsed = Integer.parseInt(raw.trim());
-            return parsed > 0 ? parsed : defaultValue;
-        } catch (NumberFormatException e) {
-            return defaultValue;
-        }
+    private static int readInt(ConfigValueResolver config,
+                               String propertyKey,
+                               String environmentKey,
+                               int defaultValue) {
+        return config.resolveInt(propertyKey, environmentKey, defaultValue);
     }
 }

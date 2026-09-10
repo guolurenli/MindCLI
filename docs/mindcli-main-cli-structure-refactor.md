@@ -37,7 +37,9 @@ cli/
 │   ├── BrowserCommandHandler.java     # /browser 子命令
 │   └── SlashCommandCatalog.java       # slash command 提示、help、choices
 └── interaction/
-    └── CliInputSupport.java           # 输入归一化、ESC 分类、历史文件、脱敏
+    ├── CliInputSupport.java           # 输入归一化、ESC 分类、历史文件、脱敏
+    ├── CliInteractiveWidgets.java     # JLine widget 注册与快捷键绑定
+    └── CliTerminalInput.java          # raw terminal 字节读取与任务取消监听
 ```
 
 第一批完成后，`Main` 仍保留以下 package-private 兼容方法，内部委托新类:
@@ -104,7 +106,9 @@ cli/
 兼容策略:
 
 - `Main.EscapeSequenceType` 暂时保留，`Main.classifyEscapeSequence(...)` 把新类枚举映射回旧枚举。
-- `Main` 中仍保留主交互读取逻辑，第一批不移动 `readPromptInput` / `readEscapeInput`。
+- `Main` 中仍保留主交互读取状态机，第一批不移动 `readPromptInput` / `readEscapeInput`；底层 `readInputBurst` 与 `readEscCancel` 已由 `CliTerminalInput` 承担。
+- JLine autosuggestion/autopair、折叠、剪贴板图片和 ESC 清空输入 widget 由 `CliInteractiveWidgets` 负责；`Main` 仅保留兼容委托。
+- raw terminal 的非阻塞字节读取与 ESC 取消监听由 `CliTerminalInput` 负责；`Main` 仅保留 `readEscCancel` / `readInputBurst` 兼容委托。
 
 ## 6. 行为保持要求
 
