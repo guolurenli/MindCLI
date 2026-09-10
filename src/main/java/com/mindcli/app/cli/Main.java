@@ -17,6 +17,8 @@ import com.mindcli.app.cli.command.ExportCommandHandler;
 import com.mindcli.app.cli.command.SlashCommandCatalog;
 import com.mindcli.app.cli.command.WechatCliCommandHandler;
 import com.mindcli.app.cli.interaction.CliInputSupport;
+import com.mindcli.app.cli.interaction.CliInteractiveWidgets;
+import com.mindcli.app.cli.interaction.CliTerminalInput;
 import com.mindcli.app.cli.interaction.MindCliCompleter;
 import com.mindcli.app.cli.interaction.MindCliHighlighter;
 import com.mindcli.app.cli.interaction.MindCliHistory;
@@ -38,7 +40,6 @@ import com.mindcli.platform.render.RendererFactory;
 import com.mindcli.platform.render.StatusInfo;
 import com.mindcli.platform.render.inline.InlineRenderer;
 import com.mindcli.platform.render.inline.TerminalMascotRenderer;
-import com.mindcli.capability.image.ClipboardImage;
 import com.mindcli.capability.mcp.McpServerManager;
 import com.mindcli.capability.mcp.mention.AtMentionExpander;
 import com.mindcli.agent.plan.ExecutionPlan;
@@ -71,12 +72,7 @@ import org.jline.reader.LineReaderBuilder;
 import org.jline.reader.MaskingCallback;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.UserInterruptException;
-import org.jline.reader.Reference;
-import org.jline.utils.NonBlockingReader;
-import org.jline.widget.AutosuggestionWidgets;
-import org.jline.widget.AutopairWidgets;
 import org.jline.console.CmdDesc;
-import org.jline.keymap.KeyMap;
 
 import java.io.File;
 import java.io.IOException;
@@ -689,30 +685,7 @@ public class Main {
      * - CONTROL_SEQUENCE / BRACKETED_PASTE / OTHER → 丢弃，不取消
      */
     static boolean readEscCancel(Terminal terminal) {
-        if (terminal == null) {
-            return false;
-        }
-        try {
-            NonBlockingReader reader = terminal.reader();
-            int next = reader.read(50);
-            if (next == NonBlockingReader.READ_EXPIRED || next < 0) {
-                return false;
-            }
-            String escTail = next == 27 ? readInputBurst(terminal, 80, 20, 120) : null;
-            if (next != 27) {
-                // 非 ESC 输入，drain 这一轮残余字节避免堆积，但不触发取消。
-                while (true) {
-                    int more = reader.read(1);
-                    if (more == NonBlockingReader.READ_EXPIRED || more < 0) {
-                        break;
-                    }
-                }
-            }
-            return decideEscCancel(next, escTail);
-        } catch (Exception ignored) {
-            // 监听是 best-effort；失败不能影响任务执行。
-            return false;
-        }
+        return CliTerminalInput.readEscCancel(terminal);
     }
 
     /**
@@ -1006,21 +979,7 @@ public class Main {
 
     private static String readInputBurst(Terminal terminal, long firstWaitMs, long idleWaitMs, long maxWaitMs)
             throws IOException, InterruptedException {
-        NonBlockingReader reader = terminal.reader();
-        StringBuilder buffer = new StringBuilder();
-        long start = System.currentTimeMillis();
-        long waitMs = firstWaitMs;
-
-        while (System.currentTimeMillis() - start < maxWaitMs) {
-            int next = reader.read(waitMs);
-            if (next == NonBlockingReader.READ_EXPIRED || next < 0) {
-                break;
-            }
-            buffer.append((char) next);
-            waitMs = idleWaitMs;
-        }
-
-        return buffer.toString();
+        return CliTerminalInput.readInputBurst(terminal, firstWaitMs, idleWaitMs, maxWaitMs);
     }
 
     static String prepareSeedBuffer(String rawInput) {
@@ -1053,39 +1012,15 @@ public class Main {
     }
 
     static void configureSlashCommandHint(LineReader lineReader) {
-        if (lineReader == null) {
-            return;
-        }
-        lineReader.getWidgets().put("mindcli-slash-command-hint", () -> {
-            lineReader.getBuffer().write("/");
-            return true;
-        });
-        Reference slashHint = new Reference("mindcli-slash-command-hint");
-        bindSlashWidget(lineReader, LineReader.MAIN, slashHint);
-        bindSlashWidget(lineReader, LineReader.EMACS, slashHint);
-        bindSlashWidget(lineReader, LineReader.VIINS, slashHint);
+        CliInteractiveWidgets.configureSlashCommandHint(lineReader);
     }
 
     static void configureJLineInteractiveWidgets(LineReader lineReader) {
-        if (lineReader == null) {
-            return;
-        }
-        new AutosuggestionWidgets(lineReader).enable();
-        new AutopairWidgets(lineReader).enable();
-        // JLine TailTipWidgets 会通过 Status 预留多行底部区域；如果在首屏前 enable，
-        // banner 前会出现大段空白，输入行下方也会长期空出一块。命令说明后续用
-        // 不预留布局的方式展示，避免破坏 Claude Code / Qoder 风格的 inline 体验。
+        CliInteractiveWidgets.configureJLineInteractiveWidgets(lineReader);
     }
 
     static LinkedHashMap<String, CmdDesc> slashCommandTailTips() {
         return SlashCommandCatalog.slashCommandTailTips();
-    }
-
-    private static void bindSlashWidget(LineReader lineReader, String keyMapName, Reference slashHint) {
-        KeyMap<org.jline.reader.Binding> keyMap = lineReader.getKeyMaps().get(keyMapName);
-        if (keyMap != null) {
-            keyMap.bind(slashHint, "/");
-        }
     }
 
     static String formatSlashCommandChoices(int terminalWidth) {
@@ -1101,22 +1036,7 @@ public class Main {
     }
 
     static void bindCtrlOToFoldableBlocks(LineReader lineReader, InlineRenderer inline) {
-        if (lineReader == null || inline == null) {
-            return;
-        }
-        lineReader.getWidgets().put("mindcli-toggle-foldable", () -> {
-            inline.toggleLastBlock();
-            lineReader.callWidget(LineReader.REDISPLAY);
-            return true;
-        });
-        Reference ref = new Reference("mindcli-toggle-foldable");
-        String ctrlO = String.valueOf((char) 15);  // Ctrl+O
-        for (String mapName : new String[]{LineReader.MAIN, LineReader.EMACS, LineReader.VIINS}) {
-            KeyMap<org.jline.reader.Binding> map = lineReader.getKeyMaps().get(mapName);
-            if (map != null) {
-                map.bind(ref, ctrlO);
-            }
-        }
+        CliInteractiveWidgets.bindCtrlOToFoldableBlocks(lineReader, inline);
     }
 
     // Ctrl+V 抓系统剪贴板里的图片到 ~/.mindcli/cache/ 并把 @image:<path> 注入当前输入行。
@@ -1127,55 +1047,15 @@ public class Main {
     // 输入层不按模型名拦截图片：与 Claude Code 类似，先把图片读成附件收进
     // prompt；模型是否接受 image block 由 provider API 自己处理。
     static void bindCtrlVToClipboardImage(LineReader lineReader) {
-        if (lineReader == null) {
-            return;
-        }
-        lineReader.getWidgets().put("mindcli-paste-clipboard-image", () -> {
-            ClipboardImage.GrabResult grab = ClipboardImage.grab();
-            if (!grab.ok()) {
-                lineReader.printAbove("⚠️ Ctrl+V 抓图失败: " + grab.error());
-                lineReader.callWidget(LineReader.REDISPLAY);
-                return true;
-            }
-            String token = "@image:<" + grab.path().toAbsolutePath() + "> ";
-            lineReader.getBuffer().write(token);
-            lineReader.callWidget(LineReader.REDISPLAY);
-            return true;
-        });
-        Reference ref = new Reference("mindcli-paste-clipboard-image");
-        String ctrlV = String.valueOf((char) 22);  // Ctrl+V (SYN)
-        for (String mapName : new String[]{LineReader.MAIN, LineReader.EMACS, LineReader.VIINS}) {
-            KeyMap<org.jline.reader.Binding> map = lineReader.getKeyMaps().get(mapName);
-            if (map != null) {
-                map.bind(ref, ctrlV);
-            }
-        }
+        CliInteractiveWidgets.bindCtrlVToClipboardImage(lineReader);
     }
 
     static void bindEscToClearInput(LineReader lineReader) {
-        if (lineReader == null) {
-            return;
-        }
-        lineReader.getWidgets().put("mindcli-clear-input", () -> {
-            clearInputBuffer(lineReader);
-            lineReader.callWidget(LineReader.REDISPLAY);
-            return true;
-        });
-        Reference clearInput = new Reference("mindcli-clear-input");
-        String esc = KeyMap.esc();
-        for (String mapName : new String[]{LineReader.MAIN, LineReader.EMACS, LineReader.VIINS}) {
-            KeyMap<org.jline.reader.Binding> map = lineReader.getKeyMaps().get(mapName);
-            if (map != null) {
-                map.bind(clearInput, esc);
-            }
-        }
+        CliInteractiveWidgets.bindEscToClearInput(lineReader);
     }
 
     static void clearInputBuffer(LineReader lineReader) {
-        if (lineReader == null || lineReader.getBuffer() == null) {
-            return;
-        }
-        lineReader.getBuffer().clear();
+        CliInteractiveWidgets.clearInputBuffer(lineReader);
     }
 
     static boolean hasExportableMessages(List<LlmClient.Message> history) {

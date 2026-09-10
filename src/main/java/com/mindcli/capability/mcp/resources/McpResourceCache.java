@@ -46,6 +46,15 @@ public class McpResourceCache {
         }
     }
 
+    public void removeServer(String serverName) {
+        if (serverName == null || serverName.isBlank()) {
+            return;
+        }
+        byServer.remove(serverName);
+        staleServers.remove(serverName);
+        staleUrisByServer.remove(serverName);
+    }
+
     public void invalidateResource(String serverName, String uri) {
         if (serverName == null || serverName.isBlank() || uri == null || uri.isBlank()) {
             return;

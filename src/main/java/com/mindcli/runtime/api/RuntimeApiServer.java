@@ -26,6 +26,7 @@ public class RuntimeApiServer implements AutoCloseable {
         thread.setDaemon(true);
         return thread;
     });
+    private final RuntimeApiTurnScheduler turnScheduler = new RuntimeApiTurnScheduler(executor);
 
     public RuntimeApiServer(RuntimeThreadStore store, TaskRunner runner, int port, String apiKey) throws IOException {
         if (apiKey == null || apiKey.isBlank()) {
@@ -93,7 +94,7 @@ public class RuntimeApiServer implements AutoCloseable {
         String turnId = "turn_" + Long.toHexString(System.nanoTime());
         store.appendEvent(threadId, "turn.started",
                 "{\"turn_id\":\"" + turnId + "\",\"input\":\"" + escape(input) + "\"}");
-        executor.submit(() -> runTurn(threadId, turnId, input));
+        turnScheduler.submit(threadId, () -> runTurn(threadId, turnId, input));
         writeJson(exchange, 202, "{\"id\":\"" + turnId + "\",\"object\":\"turn\",\"status\":\"running\"}");
     }
 

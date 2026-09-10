@@ -94,16 +94,16 @@ src/main/java/com/mindcli/
 | 能力 | 当前实现 |
 |---|---|
 | 执行模式 | 默认 ReAct；`/plan` 进入计划审阅与执行；`/team` 由 orchestrator 内建规划 + explorer/worker 协作，worker/explorer 自审修复，多个无依赖写入步骤按一 Step 一 worktree 隔离并行，在临时 integration worktree 中合并，冲突不静默覆盖 |
-| Runtime 账本 | `JsonlRunStore` 按 run 写 JSONL 事件，单次加载完成 seq 分配、坏尾修复与状态投影，生成 `run.meta.json` / `run.state.json` 并支持 child run 摘要 |
+| Runtime 账本 | `JsonlRunStore` 按 run 写 JSONL 事件，使用 `run.jsonl.lock` 保护跨实例 seq 分配、坏尾修复与状态投影；JVM 内锁按 ledger 路径隔离，不同 run 可并行写入；生成 `run.meta.json` / `run.state.json` 并支持 child run 摘要；`runId` / `parentRunId` 在读写路径解析前统一校验 |
 | 工具调度 | `ToolDispatcher` 统一负责并行、批超时、Hook、资源分类、资源锁、结果顺序与结构化 `ToolOutcome`；`ToolRegistry` 只执行单个工具并返回 `ToolExecution`，文件读写/目录枚举由 `FileToolExecutor`、代码搜索由 `CodeSearchToolExecutor`、项目骨架生成由 `ProjectToolExecutor`、Skill 正文加载由 `SkillToolExecutor`、Web 访问由 `WebToolExecutor`、Memory 访问由 `MemoryToolExecutor`、Shell 进程执行由 `ShellCommandExecutor` 承担，锁跟随实际工具线程生命周期，审批策略显式传播到工具线程，需要 HITL 的调用串行提示 |
 | 代码理解 | `glob_files` / `grep_code` / `read_file` 实时探索，按需逐步缩小范围 |
 | 记忆治理 | `/save` 手动长期记忆；自动提取只生成候选；`/memory approve/reject/export --audit` 管理审计链路 |
-| MCP | 仅使用官方 Model Context Protocol Java SDK 2.0.1，合并用户级 `~/.mindcli/mcp.json` 和项目级 `.mindcli/mcp.json`，支持 stdio 与 Streamable HTTP |
+| MCP | 仅使用官方 Model Context Protocol Java SDK 2.0.1，合并用户级 `~/.mindcli/mcp.json` 和项目级 `.mindcli/mcp.json`，支持 stdio 与 Streamable HTTP；server 禁用、重启、重载和关闭会清理旧工具与资源缓存 |
 | 浏览器 | 默认 `chrome-devtools` MCP isolated 模式，`/browser connect` 通过官方 `--autoConnect` 复用本机 Chrome 登录态 |
 | Web | `web_search` 支持 zhipu / serpapi / searxng，`web_fetch` 通过 HTTP + Jsoup 提取 Markdown |
 | 安全 | HITL、PathGuard、CommandGuard、BrowserGuard、危险工具 JSONL 审计 |
 | 交互体验 | JLine 4 cyber-lite inline/plain renderer、本机 chafa 10x10 随机猫耳助手启动图、猫耳暖色分层启动 Banner、MCP 启动摘要收敛到首屏 note、`MINDCLI //` 底部状态栏、slash 补全、输入高亮、`@path` 与 MCP resource 展开 |
-| 其他入口 | 微信 iLink 通道、后台任务 `/task`、本地 Runtime HTTP API |
+| 其他入口 | 微信 iLink 通道、后台任务 `/task`、本地 Runtime HTTP API；Runtime API SQLite 连接启用 5 秒 busy timeout，同一 thread 的 turn 按提交顺序串行执行 |
 
 ## 内置工具
 
@@ -244,7 +244,7 @@ CLI 启动时会只读扫描当前持久化账本根目录，最多在 Banner �
 
 模型配置可写入 `.env`、系统环境变量或 `~/.mindcli/config.json`。`/config provider ...` 会写 `~/.mindcli/config.json`；`.env` 适合本地开发快速启动。
 
-应用运行配置统一按 `JVM system property > OS environment > 项目 .env > 用户 ~/.env > 默认值` 解析；系统属性适合单次启动覆盖，项目 `.env` 优先于用户级通用配置。操作系统、JVM 编码和终端能力探测仍直接读取运行环境，不进入这条配置链。
+应用运行配置统一按 `JVM system property > OS environment > 项目 .env > 用户 ~/.env > 默认值` 解析；系统属性适合单次启动覆盖，项目 `.env` 优先于用户级通用配置。LLM HTTP 超时使用 `mindcli.llm.{connect,read,write,call}.timeout.seconds` 与对应的 `MINDCLI_LLM_*_TIMEOUT_SECONDS`，默认值分别为 `60/300/60/600` 秒；ReAct 预算使用 `mindcli.react.token.budget`、`mindcli.react.stagnation.window`、`mindcli.react.hard.max.iterations` 及对应 `MINDCLI_REACT_*` 环境变量。操作系统、JVM 编码和终端能力探测仍直接读取运行环境，不进入这条配置链。
 
 ```bash
 # 模型 API Key
@@ -291,7 +291,7 @@ MINDCLI_RUNTIME_API_KEY=your_local_api_key
 
 ## Runtime HTTP API
 
-Runtime API 只监听 `127.0.0.1`，必须设置 `MINDCLI_RUNTIME_API_KEY` 或 `-Dmindcli.runtime.api.key`。
+Runtime API 只监听 `127.0.0.1`，必须设置 `MINDCLI_RUNTIME_API_KEY` 或 `-Dmindcli.runtime.api.key`。SQLite 连接启用 5 秒 `busy_timeout`；创建 thread 与首个 `thread.created` 事件在同一事务中提交；同一 thread 的 turn 按提交顺序串行执行，不同 thread 仍可并行。
 
 ```bash
 MINDCLI_RUNTIME_API_KEY=local-dev-key \

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.mindcli.platform.config.ConfigValueResolver;
 import okhttp3.*;
 import okio.BufferedSource;
 
@@ -19,16 +20,24 @@ public abstract class AbstractOpenAiCompatibleClient implements LlmClient {
     // SSE 流式接口下，OkHttp 的 readTimeout 是"两次 read 之间的最大间隔"，不是请求总时长。
     // GLM-5.1 在生成大段 reasoning_content 时服务端可能长时间静默，所以默认值放宽到 300s；
     // callTimeout 作为整体兜底，覆盖极端情况下的连接半死状态。
-    // 三项均可通过系统属性覆盖，便于不同模型 / 网络环境调优。
+    // 四项均遵循统一配置优先级，便于不同模型 / 网络环境调优。
+    private static final ConfigValueResolver CONFIG_VALUES = ConfigValueResolver.current();
     protected static final OkHttpClient SHARED_HTTP_CLIENT = new OkHttpClient.Builder()
-            .connectTimeout(readTimeoutSeconds("mindcli.llm.connect.timeout.seconds", 60), TimeUnit.SECONDS)
-            .readTimeout(readTimeoutSeconds("mindcli.llm.read.timeout.seconds", 300), TimeUnit.SECONDS)
-            .writeTimeout(readTimeoutSeconds("mindcli.llm.write.timeout.seconds", 60), TimeUnit.SECONDS)
-            .callTimeout(readTimeoutSeconds("mindcli.llm.call.timeout.seconds", 600), TimeUnit.SECONDS)
+            .connectTimeout(readTimeoutSeconds(CONFIG_VALUES,
+                    "mindcli.llm.connect.timeout.seconds", "MINDCLI_LLM_CONNECT_TIMEOUT_SECONDS", 60), TimeUnit.SECONDS)
+            .readTimeout(readTimeoutSeconds(CONFIG_VALUES,
+                    "mindcli.llm.read.timeout.seconds", "MINDCLI_LLM_READ_TIMEOUT_SECONDS", 300), TimeUnit.SECONDS)
+            .writeTimeout(readTimeoutSeconds(CONFIG_VALUES,
+                    "mindcli.llm.write.timeout.seconds", "MINDCLI_LLM_WRITE_TIMEOUT_SECONDS", 60), TimeUnit.SECONDS)
+            .callTimeout(readTimeoutSeconds(CONFIG_VALUES,
+                    "mindcli.llm.call.timeout.seconds", "MINDCLI_LLM_CALL_TIMEOUT_SECONDS", 600), TimeUnit.SECONDS)
             .build();
 
-    private static long readTimeoutSeconds(String key, long defaultValue) {
-        String raw = System.getProperty(key);
+    static long readTimeoutSeconds(ConfigValueResolver config,
+                                   String propertyKey,
+                                   String environmentKey,
+                                   long defaultValue) {
+        String raw = config.resolve(propertyKey, environmentKey, null);
         if (raw == null || raw.isBlank()) {
             return defaultValue;
         }

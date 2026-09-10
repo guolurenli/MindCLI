@@ -12,6 +12,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -22,10 +25,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Stream;
 
 public final class JsonlRunStore implements RunStore {
     private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
+    private static final ConcurrentHashMap<Path, ReentrantLock> JVM_LEDGER_LOCKS = new ConcurrentHashMap<>();
     private final Path runsRoot;
     private final RunStateProjector projector = new RunStateProjector();
 
@@ -34,19 +40,22 @@ public final class JsonlRunStore implements RunStore {
     }
 
     @Override
-    public synchronized void append(AgentRunEvent event) {
+    public void append(AgentRunEvent event) {
         Objects.requireNonNull(event, "event");
         Path ledgerFile = ledgerFile(event);
         try {
             Files.createDirectories(ledgerFile.getParent());
-            LoadedLedger loaded = loadLedger(ledgerFile);
-            AgentRunEvent persistedEvent = event.seq() > 0 ? event : event.withSeq(loaded.nextSeq());
-            repairCorruptedTail(ledgerFile, loaded);
-            Files.writeString(ledgerFile, MAPPER.writeValueAsString(toRecord(persistedEvent)) + System.lineSeparator(),
-                    StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
-            List<AgentRunEvent> updatedEvents = new ArrayList<>(loaded.events());
-            updatedEvents.add(persistedEvent);
-            refreshDerivedFiles(persistedEvent.runId(), ledgerFile.getParent(), updatedEvents);
+            AgentRunEvent persistedEvent = withLedgerLock(ledgerFile, () -> {
+                LoadedLedger loaded = loadLedger(ledgerFile);
+                AgentRunEvent nextEvent = event.seq() > 0 ? event : event.withSeq(loaded.nextSeq());
+                repairCorruptedTail(ledgerFile, loaded);
+                Files.writeString(ledgerFile, MAPPER.writeValueAsString(toRecord(nextEvent)) + System.lineSeparator(),
+                        StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
+                List<AgentRunEvent> updatedEvents = new ArrayList<>(loaded.events());
+                updatedEvents.add(nextEvent);
+                refreshDerivedFiles(nextEvent.runId(), ledgerFile.getParent(), updatedEvents);
+                return nextEvent;
+            });
             String parentRunId = persistedEvent.attributes().get("parentRunId");
             if (parentRunId != null && !parentRunId.isBlank()) {
                 refreshDerivedFiles(parentRunId);
@@ -57,16 +66,17 @@ public final class JsonlRunStore implements RunStore {
     }
 
     @Override
-    public synchronized List<AgentRunEvent> events(String runId) {
+    public List<AgentRunEvent> events(String runId) {
         if (runId == null || runId.isBlank()) {
             return List.of();
         }
+        requireSafeRunId(runId, "runId");
         Path ledgerFile = ledgerFile(runId);
         if (!Files.exists(ledgerFile)) {
             return List.of();
         }
         try {
-            return loadLedger(ledgerFile).events();
+            return withLedgerLock(ledgerFile, () -> loadLedger(ledgerFile).events());
         } catch (IOException e) {
             throw new IllegalStateException("Failed to read run events: " + e.getMessage(), e);
         }
@@ -128,9 +138,10 @@ public final class JsonlRunStore implements RunStore {
     private Path runDir(AgentRunEvent event) {
         String parentRunId = event.attributes().get("parentRunId");
         if (parentRunId != null && !parentRunId.isBlank() && !parentRunId.equals(event.runId())) {
-            return childrenDir(parentRunId).resolve(event.runId());
+            requireSafeRunId(parentRunId, "parentRunId");
+            return ensureWithinRunsRoot(childrenDir(parentRunId).resolve(event.runId()));
         }
-        return runsRoot.resolve(event.runId());
+        return ensureWithinRunsRoot(runsRoot.resolve(event.runId()));
     }
 
     private static Map<String, Object> toRecord(AgentRunEvent event) {
@@ -163,7 +174,46 @@ public final class JsonlRunStore implements RunStore {
 
     private void refreshDerivedFiles(String runId) throws IOException {
         Path runDir = runDir(runId);
-        refreshDerivedFiles(runId, runDir, loadLedger(runDir.resolve("run.jsonl")).events());
+        Path ledgerFile = runDir.resolve("run.jsonl");
+        withLedgerLock(ledgerFile, () -> {
+            refreshDerivedFiles(runId, runDir, loadLedger(ledgerFile).events());
+            return null;
+        });
+    }
+
+    private <T> T withLedgerLock(Path ledgerFile, LedgerOperation<T> operation) throws IOException {
+        Path lockPath = realPathForPotentiallyMissing(ledgerFile.toAbsolutePath().normalize()
+                .resolveSibling(ledgerFile.getFileName() + ".lock"));
+        ReentrantLock jvmLock = JVM_LEDGER_LOCKS.computeIfAbsent(lockPath, ignored -> new ReentrantLock());
+        jvmLock.lock();
+        try {
+            Files.createDirectories(lockPath.getParent());
+            try (FileChannel channel = FileChannel.open(lockPath,
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+                 FileLock ignored = acquireFileLock(channel)) {
+                return operation.run();
+            }
+        } finally {
+            jvmLock.unlock();
+        }
+    }
+
+    private static FileLock acquireFileLock(FileChannel channel) throws IOException {
+        while (true) {
+            try {
+                return channel.lock();
+            } catch (OverlappingFileLockException e) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new IOException("Interrupted while waiting for ledger lock", e);
+                }
+                try {
+                    Thread.sleep(10L);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("Interrupted while waiting for ledger lock", interrupted);
+                }
+            }
+        }
     }
 
     private void refreshDerivedFiles(String runId, Path runDir, List<AgentRunEvent> events) throws IOException {
@@ -203,22 +253,78 @@ public final class JsonlRunStore implements RunStore {
     }
 
     private Path findRunDir(String runId) {
+        requireSafeRunId(runId, "runId");
         Path rootCandidate = runsRoot.resolve(runId);
         if (Files.exists(rootCandidate)) {
-            return rootCandidate;
+            return ensureWithinRunsRoot(rootCandidate);
         }
         if (!Files.exists(runsRoot)) {
-            return rootCandidate;
+            return ensureWithinRunsRoot(rootCandidate);
         }
         try (Stream<Path> paths = Files.walk(runsRoot, 3)) {
             return paths
                     .filter(Files::isDirectory)
                     .filter(path -> runId.equals(path.getFileName().toString()))
                     .findFirst()
-                    .orElse(rootCandidate);
+                    .map(this::ensureWithinRunsRoot)
+                    .orElseGet(() -> ensureWithinRunsRoot(rootCandidate));
         } catch (IOException e) {
-            return rootCandidate;
+            return ensureWithinRunsRoot(rootCandidate);
         }
+    }
+
+    private static void requireSafeRunId(String runId, String field) {
+        if (runId == null || runId.isBlank()
+                || !runId.matches("[A-Za-z0-9][A-Za-z0-9._-]*")
+                || runId.contains("..")
+                || runId.contains("/")
+                || runId.contains("\\")) {
+            throw new IllegalArgumentException(field + " contains unsafe path characters: " + runId);
+        }
+    }
+
+    /**
+     * Resolves existing symlink components before checking containment. A safe-looking
+     * run id must not be able to escape the configured runs root through a symlink.
+     */
+    private Path ensureWithinRunsRoot(Path candidate) {
+        Path normalized = candidate.toAbsolutePath().normalize();
+        Path root = runsRoot.toAbsolutePath().normalize();
+        Path realRoot = realPathForPotentiallyMissing(root);
+        Path existing = normalized;
+        while (existing != null && !Files.exists(existing)) {
+            existing = existing.getParent();
+        }
+        Path resolved = normalized;
+        if (existing != null) {
+            Path realExisting = realPathIfExists(existing);
+            resolved = realExisting.resolve(existing.relativize(normalized)).normalize();
+        }
+        if (!resolved.startsWith(realRoot)) {
+            throw new IllegalArgumentException("path escapes runs root: " + candidate);
+        }
+        return normalized;
+    }
+
+    private static Path realPathIfExists(Path path) {
+        try {
+            return Files.exists(path) ? path.toRealPath() : path;
+        } catch (IOException e) {
+            return path;
+        }
+    }
+
+    private static Path realPathForPotentiallyMissing(Path path) {
+        Path normalized = path.toAbsolutePath().normalize();
+        Path existing = normalized;
+        while (existing != null && !Files.exists(existing)) {
+            existing = existing.getParent();
+        }
+        if (existing == null) {
+            return normalized;
+        }
+        Path realExisting = realPathIfExists(existing);
+        return realExisting.resolve(existing.relativize(normalized)).normalize();
     }
 
     static LoadedLedger loadLedger(Path ledgerFile) throws IOException {
@@ -269,7 +375,8 @@ public final class JsonlRunStore implements RunStore {
                 if (!Files.exists(ledgerFile)) {
                     continue;
                 }
-                List<AgentRunEvent> childEvents = loadLedger(ledgerFile).events();
+                List<AgentRunEvent> childEvents = withLedgerLock(ledgerFile,
+                        () -> loadLedger(ledgerFile).events());
                 RunStateProjection projection = projector.project(childEvents);
                 Map<String, String> attributes = childEvents.isEmpty()
                         ? Map.of()
@@ -311,5 +418,10 @@ public final class JsonlRunStore implements RunStore {
                     .max()
                     .orElse(0L) + 1L;
         }
+    }
+
+    @FunctionalInterface
+    private interface LedgerOperation<T> {
+        T run() throws IOException;
     }
 }

@@ -2,8 +2,12 @@ package com.mindcli.agent;
 
 import com.mindcli.platform.llm.LlmClient;
 import com.mindcli.platform.llm.GLMClient;
+import com.mindcli.platform.config.ConfigValueResolver;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -11,6 +15,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AgentBudgetTest {
+
+    @TempDir
+    Path tempDir;
 
     @Test
     void initiallyWithinBudget() {
@@ -113,6 +120,19 @@ class AgentBudgetTest {
                 System.setProperty("mindcli.react.token.budget", old);
             }
         }
+    }
+
+    @Test
+    void projectDotEnvCanConfigureDynamicTokenBudget() throws Exception {
+        Path project = Files.createDirectory(tempDir.resolve("project"));
+        Path home = Files.createDirectory(tempDir.resolve("home"));
+        Files.writeString(project.resolve(".env"), "MINDCLI_REACT_TOKEN_BUDGET=12345\n");
+
+        AgentBudget budget = AgentBudget.fromLlmClient(
+                new GLMClient("test-key"),
+                new ConfigValueResolver(project, home));
+
+        assertEquals(12345, budget.tokenBudget());
     }
 
     private LlmClient.ToolCall toolCall(String name, String args) {
