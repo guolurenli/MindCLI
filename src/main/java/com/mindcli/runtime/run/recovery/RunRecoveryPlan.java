@@ -30,6 +30,10 @@ public record RunRecoveryPlan(
         String postRunSnapshotCommitId,
         String restoreHint
 ) {
+    public AgentRunContext context() {
+        return RunDeadline.restoreContext(runId, mode, originalInput, workspace, events);
+    }
+
     public RunRecoveryPlan {
         lastCompletedAttributes = lastCompletedAttributes == null ? Map.of() : Map.copyOf(lastCompletedAttributes);
         events = events == null ? List.of() : List.copyOf(events);

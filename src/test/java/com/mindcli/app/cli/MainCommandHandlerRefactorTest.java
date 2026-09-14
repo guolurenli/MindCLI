@@ -32,6 +32,52 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class MainCommandHandlerRefactorTest {
 
     @Test
+    void inspectShowsDeadlineTimeAndRemainingBudget() {
+        InMemoryRunStore store = new InMemoryRunStore();
+        long deadline = System.currentTimeMillis() + 60_000;
+        AgentRunContext context = AgentRunContext.create(AgentMode.REACT, "goal", "workspace",
+                Map.of("runDeadlineEpochMillis", Long.toString(deadline)));
+        store.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED, Map.of("input", "goal")));
+        store.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        RunCommandHandler.printRunInspect(printStream(sink), store, "inspect " + context.runId());
+        String output = sink.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("Deadline: " + Instant.ofEpochMilli(deadline)), output);
+        assertTrue(output.contains("Remaining:"), output);
+        assertTrue(output.contains("Resume available: true"), output);
+    }
+
+    @Test
+    void inspectDistinguishesExpiredInvalidAndDisabledDeadline() {
+        for (var entry : Map.of("1", "expired", "invalid", "invalid", "0", "disabled").entrySet()) {
+            InMemoryRunStore store = new InMemoryRunStore();
+            AgentRunContext context = AgentRunContext.create(AgentMode.REACT, "goal", "workspace",
+                    Map.of("runDeadlineEpochMillis", entry.getKey()));
+            store.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED, Map.of("input", "goal")));
+            store.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+            ByteArrayOutputStream sink = new ByteArrayOutputStream();
+            RunCommandHandler.printRunInspect(printStream(sink), store, "inspect " + context.runId());
+            String output = sink.toString(StandardCharsets.UTF_8);
+            assertTrue(output.contains(entry.getValue()), output);
+            if (!"0".equals(entry.getKey())) assertTrue(output.contains("Resume available: false"), output);
+        }
+    }
+
+    @Test
+    void expiredResumeIsRejectedBeforeConfirmationOrRunner() {
+        InMemoryRunStore store = new InMemoryRunStore();
+        AgentRunContext context = AgentRunContext.create(AgentMode.REACT, "goal", "workspace",
+                Map.of("runDeadlineEpochMillis", "1"));
+        store.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED, Map.of("input", "goal")));
+        store.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        RunCommandHandler.printRunResume(printStream(sink), store, context.runId(), id -> {
+            throw new AssertionError("expired run must not enter resume runner");
+        });
+        assertTrue(sink.toString(StandardCharsets.UTF_8).contains("RUN_TIMEOUT"));
+    }
+
+    @Test
     void exportHandlerMatchesMainFacade() {
         List<LlmClient.Message> history = List.of(
                 LlmClient.Message.system("system prompt"),

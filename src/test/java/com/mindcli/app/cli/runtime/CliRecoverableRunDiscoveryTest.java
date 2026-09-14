@@ -29,6 +29,22 @@ class CliRecoverableRunDiscoveryTest {
     Path tempDir;
 
     @Test
+    void startupNoticeExcludesExpiredAndInvalidRuns() {
+        JsonlRunStore store = new JsonlRunStore(tempDir.resolve("runs"));
+        appendResumable(store, "active", AgentMode.REACT, Instant.now());
+        for (String deadline : List.of("1", "invalid")) {
+            String id = "expired-" + deadline;
+            store.append(event(id, AgentRunEventType.RUN_STARTED, Instant.now(), Map.of(
+                    "mode", "REACT", "workspace", tempDir.toString(), "input", "goal",
+                    "runDeadlineEpochMillis", deadline)));
+            store.append(event(id, AgentRunEventType.RUN_CANCELLED, Instant.now(), Map.of()));
+        }
+        List<RunRecoveryPlan> plans = CliRecoverableRunDiscovery.discover(store, 3);
+        assertEquals(List.of("active"), plans.stream().map(RunRecoveryPlan::runId).toList());
+        assertTrue(!CliRecoverableRunDiscovery.startupNotice(store).contains("expired-"));
+    }
+
+    @Test
     void discoversNewestRecoverableParentRunsWithinLimit() {
         JsonlRunStore store = new JsonlRunStore(tempDir.resolve("runs"));
         appendResumable(store, "run_old", AgentMode.REACT, Instant.parse("2026-01-01T00:00:00Z"));
@@ -76,6 +92,7 @@ class CliRecoverableRunDiscoveryTest {
         store.append(event(runId, AgentRunEventType.RUN_STARTED, timestamp, Map.of(
                 "mode", mode.name(),
                 "workspace", tempDir.toString(),
+                "runDeadlineEpochMillis", "0",
                 "input", "secret task input")));
         if (mode == AgentMode.PLAN) {
             PlanResumeState state = new PlanResumeState(

@@ -44,6 +44,34 @@ class SubAgentTest {
     Path tempDir;
 
     @Test
+    void standaloneExecutionUsesSameRunContextForEveryToolBatch() throws Exception {
+        var contexts = new java.util.ArrayList<AgentRunContext>();
+        var hooks = new com.mindcli.runtime.run.hook.HookManager(List.of(event -> {
+            if (event.type() == com.mindcli.runtime.run.hook.HookType.PRE_TOOL_USE) contexts.add(event.context());
+            return com.mindcli.runtime.run.hook.HookDecision.allow();
+        }));
+        MultiCallStreamClient llm = new MultiCallStreamClient(List.of(
+                new CallScript(listener -> {}, new LlmClient.ChatResponse("assistant", "", null,
+                        List.of(new LlmClient.ToolCall("read_1", new LlmClient.ToolCall.Function("read_file", "{}"))), 1, 1)),
+                new CallScript(listener -> {}, new LlmClient.ChatResponse("assistant", "", null,
+                        List.of(new LlmClient.ToolCall("read_2", new LlmClient.ToolCall.Function("read_file", "{}"))), 1, 1)),
+                new CallScript(listener -> {}, new LlmClient.ChatResponse("assistant", "done", null, null, 1, 1))));
+        SubAgent worker = new SubAgent(AgentProfile.builtinWorker("worker#1"), llm, new ToolRegistry());
+        ToolDispatcher dispatcher = new ToolDispatcher(invocation -> ToolExecution.completed(
+                ToolOutput.text("content"), invocation.argumentsJson()),
+                new com.mindcli.runtime.run.dispatch.ToolResourceClassifier(),
+                new com.mindcli.runtime.run.dispatch.ResourceLockManager(), hooks);
+        var field = SubAgent.class.getDeclaredField("toolDispatcher");
+        field.setAccessible(true);
+        field.set(worker, dispatcher);
+        worker.execute(AgentMessage.task("orchestrator", "read twice"), new PrintStream(new ByteArrayOutputStream()));
+        assertEquals(2, contexts.size());
+        assertEquals(contexts.get(0).runId(), contexts.get(1).runId());
+        assertEquals(contexts.get(0).metadata().get("runDeadlineEpochMillis"),
+                contexts.get(1).metadata().get("runDeadlineEpochMillis"));
+    }
+
+    @Test
     void shouldEnableToolsForBuiltinExplorerAndWorker() throws Exception {
         assertTrue(invokeShouldUseTools(new SubAgent(AgentProfile.builtinExplorer("explorer#1"),
                 new GLMClient("test-key"), new ToolRegistry())));

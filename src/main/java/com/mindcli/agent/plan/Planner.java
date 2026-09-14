@@ -2,6 +2,8 @@ package com.mindcli.agent.plan;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.platform.llm.LlmClient;
+import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.runtime.run.RunDeadline;
 import com.mindcli.platform.llm.LlmRetryPolicy;
 import com.mindcli.platform.llm.LlmTraceLogger;
 import com.mindcli.platform.prompt.PromptAssembler;
@@ -37,6 +39,7 @@ public class Planner {
     private Supplier<String> projectMemorySupplier = () ->
             ProjectMemoryLoader.createDefault(Path.of(".").toAbsolutePath().normalize()).loadForPrompt();
     private Supplier<String> sessionContextSupplier = () -> "";
+    private Supplier<AgentRunContext> runContextSupplier = () -> null;
 
     public Planner(LlmClient llmClient) {
         this(llmClient, System.out);
@@ -55,7 +58,12 @@ public class Planner {
         this.sessionContextSupplier = sessionContextSupplier == null ? () -> "" : sessionContextSupplier;
     }
 
+    public void setRunContextSupplier(Supplier<AgentRunContext> supplier) {
+        this.runContextSupplier = supplier == null ? () -> null : supplier;
+    }
+
     public ExecutionPlan createPlan(String goal) throws IOException {
+        RunDeadline.requireActive(runContextSupplier.get());
         out.println("📋 正在规划任务: " + goal + "\n");
 
         if (isSimpleGoal(goal)) {
@@ -73,7 +81,10 @@ public class Planner {
         PlanningStreamRenderer streamRenderer = new PlanningStreamRenderer(out);
         LlmClient.ChatResponse response;
         try {
-            response = LlmRetryPolicy.withRetry(() -> llmClient.chat(messages, null, streamRenderer), "planner");
+            response = LlmRetryPolicy.withRetry(() -> {
+                RunDeadline.requireActive(runContextSupplier.get());
+                return llmClient.chat(messages, null, streamRenderer);
+            }, "planner");
         } catch (Exception e) {
             if (e instanceof IOException io) {
                 throw io;
@@ -82,6 +93,7 @@ public class Planner {
         }
         LlmTraceLogger.logReasoning(log, "planner", llmClient, response.reasoningContent());
         streamRenderer.finish();
+        RunDeadline.requireActive(runContextSupplier.get());
 
         return buildPlanFromRaw(goal, response.content());
     }
@@ -161,8 +173,10 @@ public class Planner {
     }
 
     private PlanSchema repairAndParse(String goal, String rawPlan, List<PlanIssue> issues) throws IOException {
+        RunDeadline.requireActive(runContextSupplier.get());
         PlanRepairer repairer = new PlanRepairer(llmClient, mapper);
         String repaired = repairer.repair(goal, rawPlan, issues);
+        RunDeadline.requireActive(runContextSupplier.get());
         PlanSchema repairedSchema = schemaParser.parse(repaired);
         PlanValidationResult validation = schemaValidator.validate(repairedSchema);
         if (!validation.isValid()) {
@@ -271,6 +285,7 @@ public class Planner {
     }
 
     public ExecutionPlan replanSubtree(ExecutionPlan plan, Task failedTask, String failureReason) throws IOException {
+        RunDeadline.requireActive(runContextSupplier.get());
         out.println("🔄 局部重规划子树，失败任务: " + failedTask.getId() + "\n");
 
         List<Task> affected = new java.util.ArrayList<>();
@@ -291,6 +306,7 @@ public class Planner {
                             + "\n已完成任务: " + summarizeCompletedTasks(plan)
                             + "\n\n请分析失败根因，并给出绕过该问题的具体策略（不超过3句话）。")
             );
+            RunDeadline.requireActive(runContextSupplier.get());
             String analysis = llmClient.chat(analysisReq, null).content();
             if (analysis != null && !analysis.isBlank()) {
                 context.append("\n失败根因分析: ").append(analysis.trim()).append("\n");

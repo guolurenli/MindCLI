@@ -35,6 +35,81 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AgentRuntimeTest {
 
+    @Test
+    void legacyResumeKeepsDeadlinePersistedByAnEarlierResume() {
+        InMemoryRunStore store = new InMemoryRunStore();
+        store.append(new AgentRunEvent("legacy-migrated", AgentRunEventType.RUN_STARTED,
+                java.time.Instant.now(), java.util.Map.of("mode", "REACT", "input", "goal",
+                "workspace", "workspace")));
+        store.append(new AgentRunEvent("legacy-migrated", AgentRunEventType.RUN_RESUMED,
+                java.time.Instant.now(), java.util.Map.of("runDeadlineEpochMillis", "1")));
+        store.append(new AgentRunEvent("legacy-migrated", AgentRunEventType.RUN_CANCELLED,
+                java.time.Instant.now(), java.util.Map.of("mode", "REACT")));
+        AgentRunResult result = new AgentRuntime(store).resume("legacy-migrated", new ModeAdapter() {
+            public AgentMode mode() { return AgentMode.REACT; }
+            public AgentRunResult execute(AgentRunContext context) {
+                throw new AssertionError("must keep the migrated deadline rather than re-derive it");
+            }
+        });
+        assertEquals(AgentRunStatus.BLOCKED, result.status());
+    }
+
+    @Test
+    void legacyResumeUsesOriginalStartRatherThanResumeTime() {
+        InMemoryRunStore store = new InMemoryRunStore();
+        store.append(new AgentRunEvent("legacy-expired", AgentRunEventType.RUN_STARTED,
+                java.time.Instant.EPOCH, java.util.Map.of("mode", "REACT", "input", "goal",
+                "workspace", "workspace")));
+        store.append(new AgentRunEvent("legacy-expired", AgentRunEventType.RUN_CANCELLED,
+                java.time.Instant.EPOCH.plusSeconds(1), java.util.Map.of("mode", "REACT")));
+        AgentRunResult result = new AgentRuntime(store).resume("legacy-expired", new ModeAdapter() {
+            public AgentMode mode() { return AgentMode.REACT; }
+            public AgentRunResult execute(AgentRunContext context) {
+                throw new AssertionError("legacy expired run must not restart its clock");
+            }
+        });
+        assertEquals(AgentRunStatus.BLOCKED, result.status());
+    }
+
+    @Test
+    void resumeKeepsOriginalDeadlineAndStartTime() {
+        InMemoryRunStore store = new InMemoryRunStore();
+        java.time.Instant start = java.time.Instant.now().minusSeconds(30);
+        String deadline = Long.toString(System.currentTimeMillis() + 30_000);
+        AgentRunContext original = new AgentRunContext("run-resume-deadline", AgentMode.REACT,
+                "goal", "workspace", start, java.util.Map.of("runDeadlineEpochMillis", deadline));
+        store.append(new AgentRunEvent(original.runId(), AgentRunEventType.RUN_STARTED, start,
+                java.util.Map.of("mode", "REACT", "input", "goal", "workspace", "workspace",
+                        "runDeadlineEpochMillis", deadline)));
+        store.append(AgentRunEvent.of(original, AgentRunEventType.RUN_CANCELLED));
+        AgentRunResult result = new AgentRuntime(store).resume(original.runId(), new ModeAdapter() {
+            public AgentMode mode() { return AgentMode.REACT; }
+            public AgentRunResult execute(AgentRunContext context) {
+                assertEquals(deadline, context.metadata().get("runDeadlineEpochMillis"));
+                assertEquals(start, context.startedAt());
+                return AgentRunResult.success(context, "done");
+            }
+        });
+        assertEquals(AgentRunStatus.SUCCESS, result.status());
+    }
+
+    @Test
+    void expiredResumeDoesNotInvokeAdapter() {
+        InMemoryRunStore store = new InMemoryRunStore();
+        AgentRunContext original = AgentRunContext.create(AgentMode.REACT, "goal", "workspace",
+                java.util.Map.of("runDeadlineEpochMillis", "1"));
+        store.append(AgentRunEvent.of(original, AgentRunEventType.RUN_STARTED,
+                java.util.Map.of("input", "goal")));
+        store.append(AgentRunEvent.of(original, AgentRunEventType.RUN_CANCELLED));
+        AgentRunResult result = new AgentRuntime(store).resume(original.runId(), new ModeAdapter() {
+            public AgentMode mode() { return AgentMode.REACT; }
+            public AgentRunResult execute(AgentRunContext context) {
+                throw new AssertionError("expired resume must not invoke adapter");
+            }
+        });
+        assertEquals(AgentRunStatus.BLOCKED, result.status());
+    }
+
     @TempDir
     Path tempDir;
 

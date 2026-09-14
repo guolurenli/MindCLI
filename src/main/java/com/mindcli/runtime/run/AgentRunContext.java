@@ -19,7 +19,7 @@ public record AgentRunContext(
         input = input == null ? "" : input;
         workspace = normalizeWorkspace(workspace);
         startedAt = startedAt == null ? Instant.now() : startedAt;
-        metadata = metadata == null ? Map.of() : Map.copyOf(metadata);
+        metadata = RunDeadline.initialize(startedAt, metadata);
     }
 
     public static AgentRunContext create(AgentMode mode, String input, String workspace) {

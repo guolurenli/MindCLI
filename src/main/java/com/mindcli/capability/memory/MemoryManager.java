@@ -290,11 +290,11 @@ public class MemoryManager {
     /**
      * 记录 token 使用
      */
-    public void recordTokenUsage(int inputTokens, int outputTokens) {
+    public void recordTokenUsage(long inputTokens, long outputTokens) {
         tokenBudget.recordUsage(inputTokens, outputTokens);
     }
 
-    public void recordTokenUsage(int inputTokens, int outputTokens, int cachedInputTokens) {
+    public void recordTokenUsage(long inputTokens, long outputTokens, long cachedInputTokens) {
         tokenBudget.recordUsage(inputTokens, outputTokens, cachedInputTokens);
     }
 

@@ -27,6 +27,85 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class AgentLoopExecutorTest {
 
     @Test
+    void retryAfterDeadlineDoesNotStartAnotherModelRequest() {
+        long deadline = System.currentTimeMillis() + 1_000;
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        LlmClient llm = new LlmClient() {
+            public ChatResponse chat(List<Message> messages, List<Tool> tools) throws IOException {
+                return chat(messages, tools, StreamListener.NO_OP);
+            }
+            public ChatResponse chat(List<Message> messages, List<Tool> tools, StreamListener listener) throws IOException {
+                calls.incrementAndGet();
+                while (System.currentTimeMillis() <= deadline) {
+                    java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                }
+                throw new IOException("429 overloaded");
+            }
+            public String getModelName() { return "fake"; }
+            public String getProviderName() { return "fake"; }
+        };
+        AgentRunContext context = AgentRunContext.create(AgentMode.REACT, "goal", "workspace",
+                java.util.Map.of("runDeadlineEpochMillis", Long.toString(deadline)));
+        AgentLoopResult result = new AgentLoopExecutor(llm, new ToolDispatcher(invocation -> {
+            throw new AssertionError("must not dispatch");
+        }), new InMemoryRunStore()).execute(loopContext(context, new ArrayList<>()));
+        assertEquals(AgentLoopStatus.BUDGET_EXHAUSTED, result.status());
+        assertEquals(1, calls.get());
+    }
+
+    @Test
+    void expiredRunDeadlineStopsBeforeModelCallDespiteFreshLocalBudget() {
+        FakeLlmClient llm = new FakeLlmClient(List.of(
+                new LlmClient.ChatResponse("assistant", "must not run", null, 10, 3)));
+        InMemoryRunStore store = new InMemoryRunStore();
+        AgentRunContext context = AgentRunContext.create(AgentMode.REACT, "goal", "workspace",
+                java.util.Map.of("runDeadlineEpochMillis", "1"));
+        AgentLoopResult result = new AgentLoopExecutor(llm, new ToolDispatcher(invocation -> {
+            throw new AssertionError("must not dispatch");
+        }), store).execute(loopContext(context, new ArrayList<>()));
+        assertEquals(AgentLoopStatus.BUDGET_EXHAUSTED, result.status());
+        assertEquals(0, llm.calls());
+        assertEquals("RUN_TIMEOUT", store.events(context.runId()).get(0).attributes().get("reason"));
+    }
+
+    @Test
+    void invalidDeadlineFailsClosed() {
+        FakeLlmClient llm = new FakeLlmClient(List.of(
+                new LlmClient.ChatResponse("assistant", "must not run", null, 10, 3)));
+        AgentRunContext context = AgentRunContext.create(AgentMode.REACT, "goal", "workspace",
+                java.util.Map.of("runDeadlineEpochMillis", "not-a-number"));
+        AgentLoopResult result = new AgentLoopExecutor(llm, new ToolDispatcher(invocation -> {
+            throw new AssertionError("must not dispatch");
+        }), new InMemoryRunStore()).execute(loopContext(context, new ArrayList<>()));
+        assertEquals(AgentLoopStatus.BUDGET_EXHAUSTED, result.status());
+        assertEquals(0, llm.calls());
+    }
+
+    @Test
+    void deadlineReachedAfterModelResponsePreventsToolDispatch() {
+        long deadline = System.currentTimeMillis() + 1_000;
+        FakeLlmClient llm = new FakeLlmClient(List.of(new LlmClient.ChatResponse("assistant", "",
+                List.of(toolCall("write", "write_file", "{}")), 10, 3)));
+        AgentRunContext context = AgentRunContext.create(AgentMode.REACT, "goal", "workspace",
+                java.util.Map.of("runDeadlineEpochMillis", Long.toString(deadline)));
+        AgentLoopObserver observer = new AgentLoopObserver() {
+            @Override
+            public void afterLlmResponse(int iteration, LlmClient.ChatResponse response) {
+                while (System.currentTimeMillis() <= deadline) {
+                    java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                }
+            }
+        };
+        AgentLoopResult result = new AgentLoopExecutor(llm, new ToolDispatcher(invocation -> {
+            throw new AssertionError("must not dispatch expired tool request");
+        }), new InMemoryRunStore()).execute(new AgentLoopContext(context, new ArrayList<>(), List.of(),
+                new AgentLoopPolicy("deadline", true), new AgentBudget(1000, 3, 50),
+                LlmClient.StreamListener.NO_OP, observer));
+        assertEquals(AgentLoopStatus.BUDGET_EXHAUSTED, result.status());
+        assertEquals(1, llm.calls());
+    }
+
+    @Test
     void returnsCompletedWhenModelHasNoToolCalls() {
         FakeLlmClient llm = new FakeLlmClient(List.of(
                 new LlmClient.ChatResponse("assistant", "final", null, 10, 3)
@@ -133,6 +212,35 @@ class AgentLoopExecutorTest {
     }
 
     @Test
+    void warnsModelOnceButLetsItFinishAfterAnUnchangedToolLoop() {
+        List<LlmClient.ToolCall> repeated = List.of(toolCall("ignored", "read_file",
+                "{\"path\":\"a.txt\"}"));
+        FakeLlmClient llm = new FakeLlmClient(List.of(
+                toolResponse("call_1", repeated),
+                toolResponse("call_2", repeated),
+                toolResponse("call_3", repeated),
+                toolResponse("call_4", repeated),
+                new LlmClient.ChatResponse("assistant", "finished", null, 10, 2)));
+        InMemoryRunStore runStore = new InMemoryRunStore();
+        AgentRunContext runContext = AgentRunContext.create(AgentMode.REACT, "hello", "workspace");
+        List<LlmClient.Message> messages = new ArrayList<>(List.of(LlmClient.Message.user("hello")));
+        AgentLoopContext context = new AgentLoopContext(runContext, messages, List.of(),
+                new AgentLoopPolicy("react", true), new AgentBudget(1_000_000, 3, 50),
+                LlmClient.StreamListener.NO_OP, AgentLoopObserver.NO_OP);
+
+        AgentLoopResult result = new AgentLoopExecutor(llm,
+                new ToolDispatcher(invocation -> ToolExecution.completed(
+                        com.mindcli.capability.tool.ToolOutput.text("unchanged"), invocation.argumentsJson())),
+                runStore).execute(context);
+
+        assertEquals(AgentLoopStatus.COMPLETED, result.status());
+        assertEquals("finished", result.content());
+        assertEquals(5, llm.calls());
+        assertEquals(1, messages.stream().filter(message -> message.content() != null
+                && message.content().contains("工具调用模式正在重复")).count());
+    }
+
+    @Test
     void returnsFailedWhenLlmCallFails() {
         FakeLlmClient llm = new FakeLlmClient(new IOException("llm down"));
         InMemoryRunStore runStore = new InMemoryRunStore();
@@ -161,6 +269,12 @@ class AgentLoopExecutorTest {
         return new LlmClient.ToolCall(id, new LlmClient.ToolCall.Function(name, args));
     }
 
+    private static LlmClient.ChatResponse toolResponse(String id, List<LlmClient.ToolCall> template) {
+        LlmClient.ToolCall call = template.get(0);
+        return new LlmClient.ChatResponse("assistant", "", List.of(toolCall(id,
+                call.function().name(), call.function().arguments())), 10, 2);
+    }
+
     private static void assertEventTypes(List<AgentRunEvent> events, AgentRunEventType... expected) {
         assertEquals(expected.length, events.size());
         for (int i = 0; i < expected.length; i++) {
@@ -171,6 +285,7 @@ class AgentLoopExecutorTest {
     private static final class FakeLlmClient implements LlmClient {
         private final Queue<ChatResponse> responses = new ArrayDeque<>();
         private final IOException failure;
+        private int calls;
 
         private FakeLlmClient(List<ChatResponse> responses) {
             this.responses.addAll(responses);
@@ -188,6 +303,7 @@ class AgentLoopExecutorTest {
 
         @Override
         public ChatResponse chat(List<Message> messages, List<Tool> tools, StreamListener listener) throws IOException {
+            calls++;
             if (failure != null) {
                 throw failure;
             }
@@ -195,6 +311,10 @@ class AgentLoopExecutorTest {
                 throw new IOException("no response");
             }
             return responses.remove();
+        }
+
+        private int calls() {
+            return calls;
         }
 
         @Override

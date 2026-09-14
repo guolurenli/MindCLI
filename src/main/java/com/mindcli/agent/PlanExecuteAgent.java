@@ -17,6 +17,7 @@ import com.mindcli.runtime.run.loop.AgentLoopObserver;
 import com.mindcli.runtime.run.loop.AgentLoopPolicy;
 import com.mindcli.runtime.run.AgentMode;
 import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.runtime.run.RunDeadline;
 import com.mindcli.runtime.run.AgentRunEventType;
 import com.mindcli.runtime.run.AgentRunStatus;
 import com.mindcli.runtime.run.recovery.PlanCheckpointCodec;
@@ -73,13 +74,19 @@ public class PlanExecuteAgent {
         }
     }
 
-    private record TaskRunResult(String result, boolean streamedOutput, boolean cancelled) {
+    private record TaskRunResult(String result, boolean streamedOutput, boolean cancelled, Exception error) {
         static TaskRunResult of(String result, boolean streamedOutput) {
-            return new TaskRunResult(result, streamedOutput, false);
+            return new TaskRunResult(result, streamedOutput, false, null);
         }
 
         static TaskRunResult cancelled(String result, boolean streamedOutput) {
-            return new TaskRunResult(result, streamedOutput, true);
+            return new TaskRunResult(result, streamedOutput, true, null);
+        }
+
+        static TaskRunResult budgetExhausted(String result, boolean streamedOutput,
+                                             AgentBudget.ExitReason reason, String description) {
+            return new TaskRunResult(result, streamedOutput, false,
+                    new IllegalStateException(reason.name() + ": " + description));
         }
     }
 
@@ -91,7 +98,7 @@ public class PlanExecuteAgent {
                     taskRunResult.result(),
                     taskRunResult.streamedOutput(),
                     taskRunResult.cancelled(),
-                    null);
+                    taskRunResult.error());
         }
 
         static TaskExecutionResult failure(Task task, Exception error) {
@@ -194,6 +201,7 @@ public class PlanExecuteAgent {
         this.toolRegistry = toolRegistry != null ? toolRegistry : new ToolRegistry();
         this.out = out == null ? deferredSystemOut() : out;
         this.planner = planner != null ? planner : new Planner(llmClient, this.out);
+        this.planner.setRunContextSupplier(() -> activeRunContext);
         this.reviewHandler = reviewHandler == null ? (goal, plan) -> PlanReviewDecision.execute() : reviewHandler;
         this.memoryManager = memoryManager != null ? memoryManager : new MemoryManager(llmClient);
         this.runStore = runStore == null ? RunStoreFactory.create() : runStore;
@@ -353,6 +361,7 @@ public class PlanExecuteAgent {
                     appendTerminalEvent(runContext, result);
                     return result;
                 }
+                RunDeadline.requireActive(runContext);
                 PlanRunOutcome outcome = recoveredState == null
                         ? runWithPlan(userInput, streamState)
                         : PlanRunOutcome.executed(executePlan(
@@ -363,6 +372,12 @@ public class PlanExecuteAgent {
                 }
                 return outcome.result();
             } catch (Exception e) {
+                if (RunDeadline.isExpired(runContext)) {
+                    String result = "⚠️ " + RunDeadline.DESCRIPTION;
+                    appendRunEvent(runContext, AgentRunEventType.BUDGET_EXHAUSTED,
+                            Map.of("reason", "RUN_TIMEOUT", "description", RunDeadline.DESCRIPTION));
+                    return result;
+                }
                 log.error("Plan run failed", e);
                 String result = "❌ 执行失败: " + e.getMessage();
                 appendRunEvent(runContext, AgentRunEventType.RUN_FAILED, Map.of(
@@ -381,12 +396,14 @@ public class PlanExecuteAgent {
      * 使用Plan-and-Execute模式执行
      */
     private PlanRunOutcome runWithPlan(String goal, StreamState streamState) throws IOException {
+        RunDeadline.requireActive(activeRunContext);
         ExecutionPlan plan = planner.createPlan(goal);
         return reviewAndExecutePlan(plan, streamState);
     }
 
     private PlanRunOutcome reviewAndExecutePlan(ExecutionPlan plan, StreamState streamState) throws IOException {
         while (true) {
+            RunDeadline.requireActive(activeRunContext);
             PlanReviewDecision decision = reviewHandler.review(plan.getGoal(), plan);
             if (decision == null || decision.action() == PlanReviewAction.EXECUTE) {
                 appendPlanDefinition(plan, 1, "INITIAL");
@@ -404,6 +421,7 @@ public class PlanExecuteAgent {
             }
 
             out.println("📝 已收到补充要求，正在重新规划...\n");
+            RunDeadline.requireActive(activeRunContext);
             plan = planner.createPlan(plan.getGoal() + "\n补充要求：" + feedback);
         }
     }
@@ -422,6 +440,7 @@ public class PlanExecuteAgent {
             if (CancellationContext.isCancelled()) {
                 return "⏹️ 已取消当前计划执行。";
             }
+            RunDeadline.requireActive(activeRunContext);
             //获取当前满足全部依赖，可执行的有序任务列表
             List<Task> executableTasks = getExecutableTasksInOrder(plan);
             if (executableTasks.isEmpty()) {
@@ -453,7 +472,15 @@ public class PlanExecuteAgent {
                 }
 
                 Exception error = batchResult.error();
+                if (batchResult.result() != null && !batchResult.result().isBlank()) {
+                    task.setResult(batchResult.result());
+                }
                 out.println("❌ 失败 [" + task.getId() + "]: " + error.getMessage() + "\n");
+                if (RunDeadline.isExpired(activeRunContext)) {
+                    task.markFailed(error.getMessage());
+                    appendTaskCheckpoint(task, planVersion);
+                    continue;
+                }
 
                 // --- 三级递进恢复 ---
                 // 第一级：瞬态错误 → 指数退避重试
@@ -502,6 +529,7 @@ public class PlanExecuteAgent {
                 task.markFailed(error.getMessage());
                 appendTaskCheckpoint(task, planVersion);
                 try {
+                    RunDeadline.requireActive(activeRunContext);
                     ExecutionPlan partialPlan = planner.replanSubtree(plan, task, error.getMessage());
                     plan.mergeSubtree(partialPlan);
                     planVersion++;
@@ -763,8 +791,7 @@ public class PlanExecuteAgent {
                 || type == AgentRunEventType.MODE_SELECTED
                 || type == AgentRunEventType.RUN_FINISHED
                 || type == AgentRunEventType.RUN_FAILED
-                || type == AgentRunEventType.RUN_CANCELLED
-                || type == AgentRunEventType.BUDGET_EXHAUSTED);
+                || type == AgentRunEventType.RUN_CANCELLED);
     }
 
     /**
@@ -793,8 +820,8 @@ public class PlanExecuteAgent {
 
         StringBuilder allResults = new StringBuilder();
         TaskStreamRenderer streamRenderer = new TaskStreamRenderer(task.getId(), streamState, out);
-        AgentBudget taskBudget = AgentBudget.fromLlmClient(llmClient);
         AgentRunContext taskContext = toolDispatchContext(task.getId());
+        AgentBudget taskBudget = AgentBudget.forRun(llmClient, taskContext);
         AgentLoopObserver observer = new AgentLoopObserver() {
             @Override
             public void beforeIteration(int iteration, List<LlmClient.Message> currentMessages,
@@ -850,11 +877,13 @@ public class PlanExecuteAgent {
                 streamRenderer.finish();
                 String toolOnlyResult = allResults.toString().trim();
                 if (!toolOnlyResult.isEmpty()) {
-                    return TaskRunResult.of("⚠️ 子任务因 " + turn.exitDescription()
-                            + " 提前终止，已有工具输出：\n" + toolOnlyResult, streamRenderer.hasStreamedOutput());
+                    return TaskRunResult.budgetExhausted("⚠️ 子任务因 " + turn.exitDescription()
+                                    + " 提前终止，已有工具输出：\n" + toolOnlyResult,
+                            streamRenderer.hasStreamedOutput(), turn.exitReason(), turn.exitDescription());
                 }
-                return TaskRunResult.of("⚠️ 子任务因 " + turn.exitDescription() + " 提前终止",
-                        streamRenderer.hasStreamedOutput());
+                return TaskRunResult.budgetExhausted(
+                        "⚠️ 子任务因 " + turn.exitDescription() + " 提前终止",
+                        streamRenderer.hasStreamedOutput(), turn.exitReason(), turn.exitDescription());
             }
             if (turn.status() == AgentTurnStatus.FAILED) {
                 log.error("Task {} LLM call failed after retries: {}", task.getId(), turn.errorMessage());

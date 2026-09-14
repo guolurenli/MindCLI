@@ -20,6 +20,41 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RunRecoveryServiceTest {
 
     @Test
+    void expiredOrInvalidDeadlineBlocksInspectionForEveryModeWithoutChangingLedger() {
+        for (AgentMode mode : AgentMode.values()) {
+            for (String deadline : List.of("1", "-1", "invalid", "")) {
+                InMemoryRunStore store = new InMemoryRunStore();
+                AgentRunContext context = AgentRunContext.create(mode, "goal", "workspace",
+                        Map.of("runDeadlineEpochMillis", deadline));
+                store.append(AgentRunEvent.of(context, AgentRunEventType.RUN_STARTED, Map.of("input", "goal")));
+                store.append(AgentRunEvent.of(context, AgentRunEventType.RUN_CANCELLED));
+                List<AgentRunEvent> before = store.events(context.runId());
+                RunRecoveryPlan plan = new RunRecoveryService(store).inspect(context.runId());
+                assertTrue(!plan.resumeAvailable(), mode + ": " + deadline);
+                assertTrue(plan.resumePlan().reason().contains("RUN_TIMEOUT"), plan.resumePlan().reason());
+                assertTrue(!plan.resumePlan().requiresConfirmation());
+                assertTrue(!plan.restoreHint().contains("Run 可检查恢复"), plan.restoreHint());
+                assertEquals(before, store.events(context.runId()));
+            }
+        }
+    }
+
+    @Test
+    void inspectionKeepsDisabledDeadlineAndDeadlineMigratedByEarlierResume() {
+        for (String deadline : List.of("0", "1")) {
+            InMemoryRunStore store = new InMemoryRunStore();
+            String id = "migrated-" + deadline;
+            store.append(new AgentRunEvent(id, AgentRunEventType.RUN_STARTED, java.time.Instant.EPOCH,
+                    Map.of("mode", "REACT", "input", "goal", "workspace", "workspace")));
+            store.append(new AgentRunEvent(id, AgentRunEventType.RUN_RESUMED, java.time.Instant.now(),
+                    Map.of("runDeadlineEpochMillis", deadline)));
+            store.append(new AgentRunEvent(id, AgentRunEventType.RUN_CANCELLED, java.time.Instant.now(), Map.of()));
+            RunRecoveryPlan plan = new RunRecoveryService(store).inspect(id);
+            assertEquals("0".equals(deadline), plan.resumeAvailable());
+        }
+    }
+
+    @Test
     void teamExecutingReadOnlyChildReturnsToPending() {
         TeamFixture fixture = teamFixture("RUNNING", "EXECUTING", "child-read");
         appendCompleteChildToolTurn(fixture.store(), fixture.child("child-read"),

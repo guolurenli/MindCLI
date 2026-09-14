@@ -26,6 +26,7 @@ import com.mindcli.agent.plan.PlanValidationResult;
 import com.mindcli.runtime.CancellationContext;
 import com.mindcli.runtime.run.AgentMode;
 import com.mindcli.runtime.run.AgentRunContext;
+import com.mindcli.runtime.run.RunDeadline;
 import com.mindcli.runtime.run.AgentRunEvent;
 import com.mindcli.runtime.run.AgentRunEventType;
 import com.mindcli.runtime.run.AgentRunStatus;
@@ -206,7 +207,11 @@ public class AgentOrchestrator {
                 LlmClient.Message.user("请为以下任务制定执行计划：\n" + userInput));
         PlanningStreamRenderer renderer = new PlanningStreamRenderer(out);
         LlmClient.ChatResponse response = LlmRetryPolicy.withRetry(
-                () -> llmClient.chat(messages, null, renderer), "team-planner");
+                () -> {
+                    RunDeadline.requireActive(activeRunContext);
+                    return llmClient.chat(messages, null, renderer);
+                }, "team-planner");
+        RunDeadline.requireActive(activeRunContext);
         LlmTraceLogger.logReasoning(log, "team-planner", llmClient, response.reasoningContent());
         renderer.finish();
         return response.content();
@@ -389,6 +394,7 @@ public class AgentOrchestrator {
     }
 
     private String runTeam(AgentRunContext runContext, String userInput, TeamResumeState recoveredState) {
+        if (RunDeadline.isExpired(runContext)) return deadlineExhausted(runContext);
         memoryManager.resetSurfaced();
         if (CancellationContext.isCancelled()) {
             String cancelled = "⏹️ 已取消当前多 Agent 任务。";
@@ -415,6 +421,7 @@ public class AgentOrchestrator {
             try {
                 planContent = planWithOrchestrator(userInput);
             } catch (Exception e) {
+                if (RunDeadline.isExpired(runContext)) return deadlineExhausted(runContext);
                 String failed = "❌ 规划阶段失败，LLM 调用出错：" + e.getMessage();
                 appendRunEvent(runContext, AgentRunEventType.RUN_FAILED, Map.of(
                         "status", AgentRunStatus.FAILED.name(), "phase", "plan"));
@@ -464,6 +471,7 @@ public class AgentOrchestrator {
                 appendTerminalEvent(runContext, cancelled);
                 return cancelled;
             }
+            if (RunDeadline.isExpired(runContext)) return deadlineExhausted(runContext);
             ScheduleWave wave = teamScheduler.nextWave(steps);
             if (!wave.hasWork()) {
                 break;
@@ -473,6 +481,7 @@ public class AgentOrchestrator {
                 runReadOnlyGroupBatch(runContext, wave.readOnly(), steps, retryCount, batchIndex);
             }
             if (!wave.mutating().isEmpty()) {
+                if (RunDeadline.isExpired(runContext)) return deadlineExhausted(runContext);
                 batchIndex++;
                 runMutatingGroups(runContext, wave.mutating(), steps, retryCount, batchIndex);
             }
@@ -498,6 +507,12 @@ public class AgentOrchestrator {
         String finalResult = TeamStepFormatter.finalResult(steps);
         appendTerminalEvent(runContext, finalResult);
         return finalResult;
+    }
+
+    private String deadlineExhausted(AgentRunContext context) {
+        appendRunEvent(context, AgentRunEventType.BUDGET_EXHAUSTED,
+                Map.of("reason", "RUN_TIMEOUT", "description", RunDeadline.DESCRIPTION));
+        return "⚠️ " + RunDeadline.DESCRIPTION;
     }
 
     private void runReadOnlyGroupBatch(AgentRunContext runContext, List<StepExecutionGroup> groups,
@@ -1134,14 +1149,14 @@ public class AgentOrchestrator {
                 || type == AgentRunEventType.MODE_SELECTED
                 || type == AgentRunEventType.RUN_FINISHED
                 || type == AgentRunEventType.RUN_FAILED
-                || type == AgentRunEventType.RUN_CANCELLED
-                || type == AgentRunEventType.BUDGET_EXHAUSTED);
+                || type == AgentRunEventType.RUN_CANCELLED);
     }
 
     private AgentRunContext childRunContext(AgentRunContext parent, String role, String stepId, int attempt,
                                             AgentProfile profile, AgentTaskRequirements requirements,
                                             String selectedReason) {
         Map<String, String> metadata = new LinkedHashMap<>();
+        metadata.put(RunDeadline.METADATA_KEY, parent.metadata().get(RunDeadline.METADATA_KEY));
         metadata.put("parentRunId", parent.runId());
         metadata.put("rootRunId", parent.metadata().getOrDefault("rootRunId", parent.runId()));
         metadata.put("role", role);
@@ -1361,6 +1376,10 @@ public class AgentOrchestrator {
     private void runStepOnRegistry(AgentRunContext runContext, ExecutionStep step, List<ExecutionStep> steps,
                                    Map<String, Integer> retryCount, String context, PrintStream out,
                                    ToolRegistry registry) {
+        if (RunDeadline.isExpired(runContext)) {
+            updateStep(steps, step.id(), step.withFailed(RunDeadline.DESCRIPTION));
+            return;
+        }
         AgentTaskRequirements workerRequirements = requirementsFor(step);
         try (AgentPool.AgentLease workerLease = acquireForStep(step, workerRequirements)) {
             SubAgent worker = createSubAgent(workerLease.profile(), registry);
@@ -1391,6 +1410,10 @@ public class AgentOrchestrator {
                                    AgentTaskRequirements workerRequirements,
                                    String workerSelectionReason, boolean deferForMerge) {
         out.println("🛠️ " + worker.getName() + " 执行步骤 [" + step.id() + "]: " + step.description());
+        if (RunDeadline.isExpired(runContext)) {
+            updateStep(steps, step.id(), step.withFailed(RunDeadline.DESCRIPTION));
+            return;
+        }
         if (CancellationContext.isCancelled()) {
             updateStep(steps, step.id(), step.withFailed("用户取消"));
             out.println("⏹️ 步骤 [" + step.id() + "] 已取消\n");
@@ -1419,6 +1442,10 @@ public class AgentOrchestrator {
         }
 
         out.println("🔍 " + worker.getName() + " 正在自审步骤 [" + step.id() + "] 的结果...");
+        if (RunDeadline.isExpired(runContext)) {
+            updateStep(steps, step.id(), step.withFailed(RunDeadline.DESCRIPTION));
+            return;
+        }
         ReviewChildResult reviewChild = executeSelfReviewChild(runContext, step, worker, result.content(), out, 0,
                 workerRequirements, workerSelectionReason);
         AgentMessage reviewResult = reviewChild.message();
@@ -1452,6 +1479,10 @@ public class AgentOrchestrator {
         log.info("Step {} rejected (retry {}/{}): {}", step.id(), retries, MAX_RETRIES_PER_STEP, issues);
 
         while (!approved && retries < MAX_RETRIES_PER_STEP) {
+            if (RunDeadline.isExpired(runContext)) {
+                issues = RunDeadline.DESCRIPTION;
+                break;
+            }
             retries++;
             retryCount.put(step.id(), retries);
             out.println("⚠️ 步骤 [" + step.id() + "] 审查未通过，正在重新执行...");
@@ -1475,6 +1506,11 @@ public class AgentOrchestrator {
             }
 
             acceptedResult = retryResult.content();
+            if (RunDeadline.isExpired(runContext)) {
+                issues = RunDeadline.DESCRIPTION;
+                approved = false;
+                break;
+            }
             ReviewChildResult retryReviewChild = executeSelfReviewChild(runContext, step, worker, acceptedResult, out, retries,
                     workerRequirements, workerSelectionReason);
             AgentMessage retryReview = retryReviewChild.message();

@@ -52,6 +52,39 @@ class AgentOrchestratorTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     @Test
+    void expiredRecoveredTeamDoesNotStartChildren(@TempDir Path root) {
+        StubGLMClient client = new StubGLMClient(List.of());
+        RecordingRunStore store = new RecordingRunStore();
+        AgentOrchestrator orchestrator = new AgentOrchestrator(client, new ToolRegistry(),
+                new NoOpMemoryManager(root.toFile()), new PrintStream(new ByteArrayOutputStream()), store);
+        AgentRunContext context = AgentRunContext.create(AgentMode.TEAM, "goal", root.toString(),
+                java.util.Map.of("runDeadlineEpochMillis", "1"));
+        TeamResumeState state = new TeamResumeState(true, 1, 0, List.of(
+                new TeamStepResumeState("step_1", "pending", "ANALYSIS", List.of(), List.of(),
+                        "", "low", "PENDING", "", 0, "", "", List.of())), "");
+        String result = orchestrator.runRecovered(context, store, state);
+        assertTrue(result.startsWith("⚠"), result);
+        assertTrue(store.allEvents().stream().noneMatch(event ->
+                event.attributes().containsKey("parentRunId")));
+        assertEquals("RUN_TIMEOUT", store.events(context.runId()).get(0).attributes().get("reason"));
+    }
+
+    @Test
+    void childRunInheritsOnlyDeadlineFromParentBudgetMetadata() throws Exception {
+        AgentRunContext parent = AgentRunContext.create(AgentMode.TEAM, "goal", "workspace",
+                java.util.Map.of("runDeadlineEpochMillis", "12345", "resumed", "true"));
+        AgentOrchestrator orchestrator = new AgentOrchestrator(new GLMClient("test-key"));
+        var method = AgentOrchestrator.class.getDeclaredMethod("childRunContext", AgentRunContext.class,
+                String.class, String.class, int.class, com.mindcli.agent.profile.AgentProfile.class,
+                com.mindcli.agent.profile.AgentTaskRequirements.class, String.class);
+        method.setAccessible(true);
+        AgentRunContext child = (AgentRunContext) method.invoke(orchestrator, parent, "worker", "step_1",
+                0, null, null, "test");
+        assertEquals("12345", child.metadata().get("runDeadlineEpochMillis"));
+        assertFalse(child.metadata().containsKey("resumed"));
+    }
+
+    @Test
     void shouldParseSimplePlan() {
         AgentOrchestrator orchestrator = new AgentOrchestrator(new GLMClient("test-key"));
         String planJson = """

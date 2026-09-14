@@ -228,6 +228,8 @@ CLI 启动默认最多等待 MCP server 初始化 8 秒；超时后会先进入�
 
 CLI 启动时会只读扫描当前持久化账本根目录，最多在 Banner 中提示最近 3 个可恢复的父 run；Multi-Agent child run 不会被当成独立任务。该提示不会自动恢复或执行任务，仍需先用 `/run inspect <runId>` 检查，再显式调用 `/run resume <runId>`，原有风险确认、HITL 与策略校验保持不变。
 
+`/run inspect` 显示持久化 deadline 与剩余秒数，并区分 expired（过期）、invalid（非法）、disabled（禁用）状态。过期或非法 deadline 的 run 不推荐恢复，`resumeAvailable=false`，拒绝原因包含 `RUN_TIMEOUT`，无需风险确认；实际恢复执行前仍会再次检查时限，避免检查后才过期。检查与启动提示只读账本，不刷新 deadline 或修改历史状态。
+
 ### 微信通道
 
 | 命令 | 说明 |
@@ -244,7 +246,7 @@ CLI 启动时会只读扫描当前持久化账本根目录，最多在 Banner �
 
 模型配置可写入 `.env`、系统环境变量或 `~/.mindcli/config.json`。`/config provider ...` 会写 `~/.mindcli/config.json`；`.env` 适合本地开发快速启动。
 
-应用运行配置统一按 `JVM system property > OS environment > 项目 .env > 用户 ~/.env > 默认值` 解析；系统属性适合单次启动覆盖，项目 `.env` 优先于用户级通用配置。LLM HTTP 超时使用 `mindcli.llm.{connect,read,write,call}.timeout.seconds` 与对应的 `MINDCLI_LLM_*_TIMEOUT_SECONDS`，默认值分别为 `60/300/60/600` 秒；ReAct 预算使用 `mindcli.react.token.budget`、`mindcli.react.stagnation.window`、`mindcli.react.hard.max.iterations` 及对应 `MINDCLI_REACT_*` 环境变量。操作系统、JVM 编码和终端能力探测仍直接读取运行环境，不进入这条配置链。
+应用运行配置统一按 `JVM system property > OS environment > 项目 .env > 用户 ~/.env > 默认值` 解析；系统属性适合单次启动覆盖，项目 `.env` 优先于用户级通用配置。LLM HTTP 超时使用 `mindcli.llm.{connect,read,write,call}.timeout.seconds` 与对应的 `MINDCLI_LLM_*_TIMEOUT_SECONDS`，默认值分别为 `60/300/60/600` 秒；Agent 预算使用 `mindcli.react.token.budget`、`mindcli.react.stagnation.window`、`mindcli.react.hard.max.iterations`、`mindcli.react.max.duration.seconds` 及对应 `MINDCLI_REACT_*` 环境变量。运行时只根据规范化工具请求识别连续重复或长度 1-4 的短周期，达到窗口时向模型提示一次，不比较工具结果正文，也不据此终止；确定性终止条件仍是 Token 上限、默认 50 轮硬上限、默认 3600 秒顶层 run 时限、调用超时和取消。ReAct/Plan/Team 在 `AgentRunContext` 创建一次绝对 deadline 并随账本持久化，Plan task、重试、局部重规划和 Team execute/review child 继承该 deadline，token/轮数/循环提示预算仍各自独立。恢复不重新获得完整时限；旧账本缺少 deadline 时从原始启动事件时间推导。设置 `MINDCLI_REACT_MAX_DURATION_SECONDS=0` 可禁用总时限。过期或非法 deadline 不启动新 LLM/tool 调用，等待工具资源锁后也会再检查；进行中的单次调用由既有 LLM/tool 超时负责。Plan task 预算耗尽按未完成失败处理，保留已有工具输出，但不会满足下游依赖；顶层时限已到时不再重试或重规划。操作系统、JVM 编码和终端能力探测仍直接读取运行环境，不进入这条配置链。
 
 ```bash
 # 模型 API Key

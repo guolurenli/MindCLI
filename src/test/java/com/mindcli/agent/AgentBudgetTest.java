@@ -16,6 +16,37 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AgentBudgetTest {
 
+    @Test
+    void taskBudgetsShareDeadlineButKeepTokenAndIterationStateIndependent() {
+        var context = com.mindcli.runtime.run.AgentRunContext.create(
+                com.mindcli.runtime.run.AgentMode.PLAN, "goal", "workspace",
+                java.util.Map.of("runDeadlineEpochMillis", "1"));
+        AgentBudget first = AgentBudget.forRun(null, context);
+        AgentBudget second = AgentBudget.forRun(null, context);
+        first.beginIteration();
+        first.recordTokens(10, 5);
+        assertEquals(0, second.iteration());
+        assertEquals(0, second.totalInputTokens());
+        assertEquals(AgentBudget.ExitReason.RUN_TIMEOUT, first.check());
+        assertEquals(AgentBudget.ExitReason.RUN_TIMEOUT, second.check());
+    }
+
+    @Test
+    void runWithDisabledDeadlineDoesNotAcquireANewTaskTimeout() {
+        String key = "mindcli.react.max.duration.seconds";
+        String previous = System.getProperty(key);
+        try {
+            System.setProperty(key, "1");
+            var context = new com.mindcli.runtime.run.AgentRunContext("run-disabled",
+                    com.mindcli.runtime.run.AgentMode.PLAN, "goal", "workspace",
+                    java.time.Instant.EPOCH, java.util.Map.of("runDeadlineEpochMillis", "0"));
+            assertEquals(AgentBudget.ExitReason.WITHIN_BUDGET, AgentBudget.forRun(null, context).check());
+        } finally {
+            if (previous == null) System.clearProperty(key);
+            else System.setProperty(key, previous);
+        }
+    }
+
     @TempDir
     Path tempDir;
 
@@ -36,7 +67,7 @@ class AgentBudgetTest {
     }
 
     @Test
-    void stagnationDetectedAfterRepeatedToolCalls() {
+    void repeatedToolRequestsWarnButDoNotTerminateTheRun() {
         AgentBudget budget = new AgentBudget(1_000_000, 3, 50);
         List<LlmClient.ToolCall> sameCall = List.of(
                 new LlmClient.ToolCall("call_1",
@@ -48,15 +79,51 @@ class AgentBudgetTest {
         assertEquals(AgentBudget.ExitReason.WITHIN_BUDGET, budget.check());
 
         budget.recordToolCalls(sameCall);
-        assertEquals(AgentBudget.ExitReason.STAGNATION_DETECTED, budget.check());
+        assertTrue(budget.consumeStagnationWarning());
+        assertEquals(AgentBudget.ExitReason.WITHIN_BUDGET, budget.check());
+
+        budget.recordToolCalls(sameCall);
+        assertTrue(!budget.consumeStagnationWarning());
+        assertEquals(AgentBudget.ExitReason.WITHIN_BUDGET, budget.check());
     }
 
     @Test
-    void stagnationResetsWhenToolCallsDiffer() {
+    void requestLoopDetectionDoesNotDependOnToolResults() {
         AgentBudget budget = new AgentBudget(1_000_000, 3, 50);
-        budget.recordToolCalls(List.of(toolCall("read_file", "{\"path\":\"a.txt\"}")));
-        budget.recordToolCalls(List.of(toolCall("read_file", "{\"path\":\"a.txt\"}")));
-        budget.recordToolCalls(List.of(toolCall("read_file", "{\"path\":\"b.txt\"}")));
+        List<LlmClient.ToolCall> calls = List.of(toolCall("read_file", "{\"path\":\"a.txt\"}"));
+        budget.recordToolCalls(calls);
+        budget.recordToolCalls(calls);
+        budget.recordToolCalls(calls);
+        assertEquals(AgentBudget.ExitReason.WITHIN_BUDGET, budget.check());
+        assertTrue(budget.consumeStagnationWarning());
+    }
+
+    @Test
+    void canonicalJsonArgumentsCountAsTheSameRequest() {
+        AgentBudget budget = new AgentBudget(1_000_000, 2, 50);
+        budget.recordToolCalls(List.of(toolCall("read_file", "{\"path\":\"a.txt\",\"offset\":1}")));
+        budget.recordToolCalls(List.of(toolCall("read_file", "{ \"offset\" : 1, \"path\" : \"a.txt\" }")));
+
+        assertTrue(budget.consumeStagnationWarning());
+        assertEquals(AgentBudget.ExitReason.WITHIN_BUDGET, budget.check());
+    }
+
+    @Test
+    void alternatingToolRequestCycleWarnsOnceWithoutTerminating() {
+        AgentBudget budget = new AgentBudget(1_000_000, 3, 50);
+        List<LlmClient.ToolCall> first = List.of(toolCall("grep_code", "{\"query\":\"Target\"}"));
+        List<LlmClient.ToolCall> second = List.of(toolCall("read_file", "{\"path\":\"Target.java\"}"));
+
+        for (int i = 0; i < 3; i++) {
+            budget.recordToolCalls(first);
+            budget.recordToolCalls(second);
+        }
+
+        assertTrue(budget.consumeStagnationWarning());
+        assertEquals(AgentBudget.ExitReason.WITHIN_BUDGET, budget.check());
+        budget.recordToolCalls(first);
+        budget.recordToolCalls(second);
+        assertTrue(!budget.consumeStagnationWarning());
         assertEquals(AgentBudget.ExitReason.WITHIN_BUDGET, budget.check());
     }
 
@@ -72,12 +139,39 @@ class AgentBudgetTest {
     }
 
     @Test
-    void stagnationTakesPrecedenceOverTokenBudget() {
+    void tokenBudgetStillTerminatesARepeatedToolLoop() {
         AgentBudget budget = new AgentBudget(100, 2, 50);
         budget.recordTokens(200, 0);
         budget.recordToolCalls(List.of(toolCall("x", "{}")));
         budget.recordToolCalls(List.of(toolCall("x", "{}")));
-        assertEquals(AgentBudget.ExitReason.STAGNATION_DETECTED, budget.check());
+        assertTrue(budget.consumeStagnationWarning());
+        assertEquals(AgentBudget.ExitReason.TOKEN_BUDGET_EXCEEDED, budget.check());
+    }
+
+    @Test
+    void configuredRunTimeoutTerminatesTheRun() throws Exception {
+        String key = "mindcli.react.max.duration.seconds";
+        String old = System.getProperty(key);
+        try {
+            System.setProperty(key, "1");
+            AgentBudget budget = AgentBudget.fromLlmClient(new GLMClient("test-key"));
+
+            Thread.sleep(1_100);
+
+            assertEquals("RUN_TIMEOUT", budget.check().name());
+        } finally {
+            if (old == null) System.clearProperty(key);
+            else System.setProperty(key, old);
+        }
+    }
+
+    @Test
+    void cumulativeTokenCountersDoNotOverflowIntRange() {
+        AgentBudget budget = new AgentBudget(Integer.MAX_VALUE, 3, 50);
+        budget.recordTokens(Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE);
+
+        assertEquals(4_294_967_294L, budget.totalInputTokens() + budget.totalOutputTokens());
+        assertEquals(2_147_483_647L, budget.totalCachedInputTokens());
     }
 
     @Test
@@ -85,6 +179,7 @@ class AgentBudgetTest {
         assertThrows(IllegalArgumentException.class, () -> new AgentBudget(0, 3, 50));
         assertThrows(IllegalArgumentException.class, () -> new AgentBudget(100, 1, 50));
         assertThrows(IllegalArgumentException.class, () -> new AgentBudget(100, 3, 0));
+        assertThrows(IllegalArgumentException.class, () -> new AgentBudget(100, 3, 50, -1));
     }
 
     @Test
@@ -99,7 +194,7 @@ class AgentBudgetTest {
     @Test
     void defaultTokenBudgetIsUnlimited() {
         // 默认不再用 80% × window 当硬限——长上下文 + 套餐用户场景下太容易撞墙。
-        // 死循环防护交给 stagnation + hardMaxIterations 两道兜底。
+        // 失控运行由总时限和 hardMaxIterations 兜底；循环检测只提示模型。
         AgentBudget budget = AgentBudget.fromLlmClient(new GLMClient("test-key"));
 
         assertEquals(Integer.MAX_VALUE, budget.tokenBudget());
@@ -139,4 +234,5 @@ class AgentBudgetTest {
         return new LlmClient.ToolCall("call_" + name + "_" + args.hashCode(),
                 new LlmClient.ToolCall.Function(name, args));
     }
+
 }

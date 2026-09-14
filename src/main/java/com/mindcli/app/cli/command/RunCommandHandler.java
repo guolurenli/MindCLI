@@ -3,10 +3,12 @@ package com.mindcli.app.cli.command;
 import com.mindcli.runtime.run.recovery.RunRecoveryPlan;
 import com.mindcli.runtime.run.recovery.RunRecoveryService;
 import com.mindcli.runtime.run.store.RunStore;
+import com.mindcli.runtime.run.RunDeadline;
 import com.mindcli.platform.serialization.JsonSupport;
 import com.fasterxml.jackson.databind.JsonNode;
 
 import java.io.PrintStream;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Function;
@@ -35,6 +37,7 @@ public final class RunCommandHandler {
         out.println("   Mode: " + (plan.mode() == null ? "unknown" : plan.mode().name()));
         out.println("   Resume available: " + plan.resumeAvailable());
         out.println("   Status: " + plan.stateStatus());
+        printDeadline(out, plan);
         out.println("   Last event: " + (plan.lastEventType() == null ? "" : plan.lastEventType().name()));
         out.println("   Last completed: " + (plan.lastCompletedEventType() == null ? "" : plan.lastCompletedEventType().name()));
         out.println("   Pre-run snapshot: " + blankToNone(plan.preRunSnapshotCommitId()));
@@ -44,6 +47,21 @@ public final class RunCommandHandler {
         printToolDiagnostics(out, plan);
         out.println("   Hint: " + plan.restoreHint());
         out.println();
+    }
+
+    private static void printDeadline(PrintStream out, RunRecoveryPlan plan) {
+        if (plan.events().isEmpty()) {
+            out.println("   Deadline: unknown");
+            return;
+        }
+        long deadline = RunDeadline.epochMillis(plan.context());
+        if (deadline <= 0) {
+            out.println("   Deadline: " + (deadline == 0 ? "disabled" : "invalid"));
+            return;
+        }
+        long remaining = Math.max(0, deadline - System.currentTimeMillis());
+        out.println("   Deadline: " + Instant.ofEpochMilli(deadline) + (remaining == 0 ? " (expired)" : ""));
+        out.println("   Remaining: " + remaining / 1_000 + " seconds");
     }
 
     private static void printToolDiagnostics(PrintStream out, RunRecoveryPlan plan) {

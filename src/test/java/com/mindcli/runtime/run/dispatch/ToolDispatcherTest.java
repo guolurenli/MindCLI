@@ -35,6 +35,60 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ToolDispatcherTest {
 
     @Test
+    void deadlineExpiringWhileWaitingForResourceLockPreventsExecution() throws Exception {
+        ResourceLockManager locks = new ResourceLockManager();
+        ToolResourceClassifier classifier = new ToolResourceClassifier();
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch prepared = new CountDownLatch(1);
+        HookManager hooks = new HookManager(List.of(event -> {
+            if (event.type() == HookType.PRE_TOOL_USE) prepared.countDown();
+            return HookDecision.allow();
+        }));
+        ToolDispatcher dispatcher = new ToolDispatcher(invocation -> {
+            calls.incrementAndGet();
+            return completed(invocation, "must not run");
+        }, classifier, locks, hooks);
+        long deadline = System.currentTimeMillis() + 1_000;
+        AgentRunContext context = AgentRunContext.create(AgentMode.REACT, "goal", "workspace",
+                Map.of("runDeadlineEpochMillis", Long.toString(deadline)));
+        var call = toolCall("write", "write_file", "{\"path\":\"deadline.txt\"}");
+        var invocation = new ToolRegistry.ToolInvocation(call.id(), call.function().name(), call.function().arguments());
+        ExecutorService callers = Executors.newSingleThreadExecutor();
+        Future<List<ToolOutcome>> future;
+        try {
+            try (var held = locks.acquireAll(classifier.classify(invocation, context))) {
+                future = callers.submit(() -> dispatcher.dispatch(List.of(call), context));
+                assertTrue(prepared.await(1, TimeUnit.SECONDS));
+                while (System.currentTimeMillis() <= deadline) {
+                    java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                }
+                assertEquals(0, calls.get());
+            }
+            assertEquals(ToolOutcomeStatus.TIMED_OUT, future.get(2, TimeUnit.SECONDS).get(0).status());
+            assertEquals(0, calls.get());
+        } finally {
+            callers.shutdownNow();
+        }
+    }
+
+    @Test
+    void expiredDeadlinePreventsToolExecution() {
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        ToolDispatcher dispatcher = new ToolDispatcher(invocation -> {
+            calls.incrementAndGet();
+            return com.mindcli.capability.tool.ToolExecution.completed(
+                    com.mindcli.capability.tool.ToolOutput.text("done"), invocation.argumentsJson());
+        });
+        AgentRunContext context = AgentRunContext.create(AgentMode.REACT, "goal", "workspace",
+                java.util.Map.of("runDeadlineEpochMillis", "1"));
+        var outcomes = dispatcher.dispatch(List.of(new LlmClient.ToolCall("write",
+                new LlmClient.ToolCall.Function("write_file", "{}"))), context);
+        assertEquals(0, calls.get());
+        assertEquals(ToolOutcomeStatus.TIMED_OUT, outcomes.get(0).status());
+        assertEquals("RUN_TIMEOUT", outcomes.get(0).errorCategory());
+    }
+
+    @Test
     void reusesCompletedOutcomeForSameRunAndToolCallId() {
         InMemoryRunStore store = new InMemoryRunStore();
         AgentRunContext context = AgentRunContext.create(

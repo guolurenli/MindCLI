@@ -199,7 +199,7 @@ public final class ToolDispatcher {
         try {
             List<Callable<ToolExecution>> tasks = batch.stream()
                     .<Callable<ToolExecution>>map(prepared ->
-                            () -> executeOne(prepared, approvalPolicy))
+                            () -> executeOne(prepared, approvalPolicy, context))
                     .toList();
             List<Future<ToolExecution>> futures =
                     workers.invokeAll(tasks, batchTimeoutSeconds, TimeUnit.SECONDS);
@@ -227,10 +227,12 @@ public final class ToolDispatcher {
     }
 
     private ToolExecution executeOne(PreparedInvocation prepared,
-                                     String approvalPolicy) throws Exception {
+                                     String approvalPolicy, AgentRunContext context) throws Exception {
+        if (RunDeadline.isExpired(context)) return deadlineTimedOut(prepared);
         ApprovalPolicy.applyApprovalPolicy(approvalPolicy);
         try (ResourceLockManager.LockLease ignored =
                      lockManager.acquireAllInterruptibly(prepared.resourceKeys())) {
+            if (RunDeadline.isExpired(context)) return deadlineTimedOut(prepared);
             ToolExecution execution = executor.execute(prepared.invocation());
             if (execution == null) {
                 throw new IllegalStateException("Tool executor returned null result");
@@ -314,6 +316,12 @@ public final class ToolDispatcher {
             case DENIED_BY_POLICY, DENIED_BY_USER, TIMED_OUT, CANCELLED, FAILED -> HookType.TOOL_ERROR;
         };
         hookManager.fire(HookEvent.withOutcome(type, invocation, context, outcome));
+    }
+
+    private static ToolExecution deadlineTimedOut(PreparedInvocation prepared) {
+        return new ToolExecution(com.mindcli.capability.tool.ToolOutput.text(RunDeadline.DESCRIPTION),
+                com.mindcli.capability.tool.ToolExecutionStatus.TIMED_OUT,
+                prepared.invocation().argumentsJson(), RunDeadline.DESCRIPTION, "RUN_TIMEOUT");
     }
 
     private ToolOutcome replayedOutcome(AgentRunContext context,

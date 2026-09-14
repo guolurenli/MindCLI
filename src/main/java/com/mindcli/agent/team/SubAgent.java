@@ -86,7 +86,7 @@ public class SubAgent {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
         this.toolDispatcher = new ToolDispatcher(toolRegistry);
-        this.turnKernel = new AgentTurnKernel(llmClient, (toolCalls, context) -> executeToolCalls(toolCalls));
+        this.turnKernel = new AgentTurnKernel(llmClient, this::executeToolCalls);
         this.toolRegistry.setCurrentModel(llmClient.getProviderName(), llmClient.getModelName());
         this.conversationHistory = new ArrayList<>();
         this.conversationHistory.add(LlmClient.Message.system(getSystemPrompt()));
@@ -287,9 +287,12 @@ public class SubAgent {
 
         SubAgentStreamRenderer streamRenderer = new SubAgentStreamRenderer(name, role, out);
 
-        AgentBudget budget = AgentBudget.fromLlmClient(llmClient);
+        AgentRunContext taskRunContext = activeRunContext.get() == null
+                ? AgentRunContext.create(AgentMode.TEAM, taskContent, toolRegistry.getProjectPath())
+                : activeRunContext.get();
+        AgentBudget budget = AgentBudget.forRun(llmClient, taskRunContext);
 
-        // 与 Agent.java 对称：主退出条件 = LLM 自决，budget 仅在 token / 停滞 / 硬轮数兜底。
+        // 与 Agent.java 对称：主退出条件 = LLM 自决，budget 只用确定性的 token / 时间 / 硬轮数兜底。
         AgentLoopObserver observer = new AgentLoopObserver() {
             @Override
             public void beforeIteration(int iteration, List<LlmClient.Message> messages, List<LlmClient.Tool> tools) {
@@ -316,9 +319,7 @@ public class SubAgent {
         while (true) {
             try {
                 AgentTurnResult turn = turnKernel.run(new AgentTurnContext(
-                        activeRunContext.get() == null
-                                ? AgentRunContext.create(AgentMode.TEAM, taskContent, toolRegistry.getProjectPath())
-                                : activeRunContext.get(),
+                        taskRunContext,
                         conversationHistory,
                         toolDefinitionsForProfile(),
                         new AgentLoopPolicy("sub-agent-" + name + "-" + role, true),
@@ -562,7 +563,7 @@ public class SubAgent {
         log.info("[{}] injected LSP diagnostics into sub-agent conversation", name);
     }
 
-    private List<ToolOutcome> executeToolCalls(List<LlmClient.ToolCall> toolCalls) {
+    private List<ToolOutcome> executeToolCalls(List<LlmClient.ToolCall> toolCalls, AgentRunContext runContext) {
         List<ToolInvocation> invocations = new ArrayList<>();
         List<ToolOutcome> ordered = new ArrayList<>(Collections.nCopies(toolCalls.size(), null));
         List<Integer> dispatchIndices = new ArrayList<>();
@@ -585,7 +586,7 @@ public class SubAgent {
             dispatchIndices.add(i);
         }
 
-        AgentRunContext dispatchContext = toolDispatchContext();
+        AgentRunContext dispatchContext = toolDispatchContext(runContext);
         if (!invocations.isEmpty()) {
             if (invocations.size() > 1) {
                 log.info("[{}] executing {} tool calls in parallel", name, invocations.size());
@@ -601,8 +602,8 @@ public class SubAgent {
         return ordered;
     }
 
-    private AgentRunContext toolDispatchContext() {
-        AgentRunContext base = activeRunContext.get();
+    private AgentRunContext toolDispatchContext(AgentRunContext runContext) {
+        AgentRunContext base = runContext == null ? activeRunContext.get() : runContext;
         if (base == null) {
             base = AgentRunContext.create(AgentMode.TEAM, "", toolRegistry.getProjectPath());
         }

@@ -43,20 +43,27 @@ public final class AgentTurnKernel {
             return new AgentTurnResult(AgentTurnStatus.CANCELLED, budget.iteration(), null, List.of(), "", "",
                     AgentBudget.ExitReason.WITHIN_BUDGET);
         }
-        AgentBudget.ExitReason exitReason = budget.check();
+        AgentBudget.ExitReason exitReason = RunDeadline.isExpired(context.runContext())
+                ? AgentBudget.ExitReason.RUN_TIMEOUT : budget.check();
         if (exitReason != AgentBudget.ExitReason.WITHIN_BUDGET) {
             return new AgentTurnResult(AgentTurnStatus.BUDGET_EXHAUSTED, budget.iteration(), null, List.of(), "",
-                    budget.describeExit(exitReason), exitReason);
+                    exitReason == AgentBudget.ExitReason.RUN_TIMEOUT ? RunDeadline.DESCRIPTION
+                            : budget.describeExit(exitReason), exitReason);
         }
 
         int iteration = budget.beginIteration();
         context.observer().beforeIteration(iteration, context.messages(), context.effectiveTools());
         LlmClient.ChatResponse response;
         try {
-            response = LlmRetryPolicy.withRetry(() -> llmClient.chat(
-                    context.messages(), context.effectiveTools(), context.streamListener()),
+            response = LlmRetryPolicy.withRetry(() -> {
+                RunDeadline.requireActive(context.runContext());
+                return llmClient.chat(context.messages(), context.effectiveTools(), context.streamListener());
+            },
                     context.policy().traceName());
         } catch (Exception e) {
+            if (RunDeadline.isExpired(context.runContext())) {
+                return deadlineExhausted(budget, null);
+            }
             return new AgentTurnResult(AgentTurnStatus.FAILED, iteration, null, List.of(), errorMessage(e), "",
                     AgentBudget.ExitReason.WITHIN_BUDGET);
         }
@@ -66,24 +73,39 @@ public final class AgentTurnKernel {
                     AgentBudget.ExitReason.WITHIN_BUDGET);
         }
         budget.recordTokens(response.inputTokens(), response.outputTokens(), response.cachedInputTokens());
+        if (RunDeadline.isExpired(context.runContext())) {
+            return deadlineExhausted(budget, response);
+        }
         if (!response.hasToolCalls()) {
             context.messages().add(LlmClient.Message.assistant(response.content()));
             return new AgentTurnResult(AgentTurnStatus.COMPLETED, iteration, response, List.of(), "", "",
                     AgentBudget.ExitReason.WITHIN_BUDGET);
         }
 
-        budget.recordToolCalls(response.toolCalls());
         context.messages().add(LlmClient.Message.assistant(
                 response.reasoningContent(), response.content(), response.toolCalls()));
         context.observer().beforeToolDispatch(iteration, response.toolCalls());
+        if (RunDeadline.isExpired(context.runContext())) {
+            return deadlineExhausted(budget, response);
+        }
         List<ToolOutcome> outcomes = toolBatchExecutor.dispatch(response.toolCalls(), context.runContext());
         for (ToolOutcome outcome : outcomes) {
             context.messages().add(outcome.toToolMessage());
         }
         appendImageToolMessages(context.messages(), outcomes);
+        budget.recordToolCalls(response.toolCalls());
+        if (budget.consumeStagnationWarning()) {
+            context.messages().add(LlmClient.Message.user(
+                    "[运行时提示] 检测到工具调用模式正在重复。请检查是否取得实际进展；必要时调整参数、采用其他方法，或明确说明受阻原因。"));
+        }
         context.observer().afterToolDispatch(iteration, outcomes);
         return new AgentTurnResult(AgentTurnStatus.TOOL_CALLS, iteration, response, outcomes, "", "",
                 AgentBudget.ExitReason.WITHIN_BUDGET);
+    }
+
+    private static AgentTurnResult deadlineExhausted(AgentBudget budget, LlmClient.ChatResponse response) {
+        return new AgentTurnResult(AgentTurnStatus.BUDGET_EXHAUSTED, budget.iteration(), response, List.of(), "",
+                RunDeadline.DESCRIPTION, AgentBudget.ExitReason.RUN_TIMEOUT);
     }
 
     private static void appendImageToolMessages(List<LlmClient.Message> messages, List<ToolOutcome> outcomes) {

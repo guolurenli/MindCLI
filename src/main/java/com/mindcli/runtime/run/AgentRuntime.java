@@ -44,6 +44,11 @@ public final class AgentRuntime {
                 "adapterMode", adapter.mode().name()));
 
         try {
+            if (RunDeadline.isExpired(context)) {
+                append(context, AgentRunEventType.BUDGET_EXHAUSTED, Map.of(
+                        "reason", "RUN_TIMEOUT", "description", RunDeadline.DESCRIPTION));
+                return AgentRunResult.blocked(context, RunDeadline.DESCRIPTION);
+            }
             AgentRunResult result = adapter.execute(context, runStore);
             if (result == null) {
                 result = AgentRunResult.failed(context, "Mode adapter returned null result");
@@ -78,12 +83,10 @@ public final class AgentRuntime {
 
     private AgentRunResult resumeLocked(String runId, ModeAdapter adapter) {
         RunRecoveryPlan plan = new RunRecoveryService(runStore).inspect(runId);
-        AgentRunContext context = AgentRunContext.create(
-                plan.mode() == null ? AgentMode.REACT : plan.mode(),
-                plan.originalInput(),
-                plan.workspace());
-        context = new AgentRunContext(runId, context.mode(), context.input(), context.workspace(),
-                context.startedAt(), Map.of("resumed", "true"));
+        AgentRunContext context = plan.context();
+        if (plan.resumable() && !plan.events().isEmpty() && RunDeadline.isExpired(context)) {
+            return AgentRunResult.blocked(context, RunDeadline.DESCRIPTION);
+        }
         if (!plan.resumeAvailable()) {
             String recoveryReason = plan.resumePlan() == null ? "" : plan.resumePlan().reason();
             return AgentRunResult.failed(context,
@@ -95,6 +98,9 @@ public final class AgentRuntime {
         }
         if (adapter == null || adapter.mode() != plan.mode()) {
             return AgentRunResult.failed(context, "没有匹配的 mode adapter: " + plan.mode());
+        }
+        if (RunDeadline.isExpired(context)) {
+            return AgentRunResult.blocked(context, RunDeadline.DESCRIPTION);
         }
         ReActResumeState recoveredState = null;
         PlanResumeState recoveredPlanState = null;

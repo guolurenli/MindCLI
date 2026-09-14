@@ -228,7 +228,7 @@ public class Agent {
         StreamRenderer streamRenderer = new StreamRenderer(renderer());
 
         long startNanos = System.nanoTime();
-        AgentBudget budget = AgentBudget.fromLlmClient(llmClient);
+        AgentBudget budget = AgentBudget.forRun(llmClient, runContext);
         pushStatus(budget, startNanos, "running");
 
         List<LlmClient.Tool> toolDefinitions = llmClient.supportsTools()
@@ -819,7 +819,7 @@ public class Agent {
         try {
             String model = llmClient == null ? "—" : llmClient.getModelName();
             long totalTokens = budget == null ? 0L
-                    : (long) (budget.totalInputTokens() + budget.totalOutputTokens());
+                    : budget.totalInputTokens() + budget.totalOutputTokens();
             long contextWindow = llmClient == null ? 0L : llmClient.maxContextWindow();
             boolean hitl = Boolean.TRUE.equals(hitlEnabledSupplier.get());
             long elapsed = (System.nanoTime() - startNanos) / 1_000_000L;

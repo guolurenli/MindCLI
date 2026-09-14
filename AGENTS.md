@@ -43,6 +43,8 @@ mvn test -DskipTests=false                  # 全量回归
 /run resume <runId>      # 恢复 ReAct 消息边界、Plan task 或 Team step 的安全 checkpoint
 ```
 
+`/run inspect` 同时展示持久化 deadline、剩余时间及 expired / invalid / disabled 状态；过期或非法 deadline 的 run 必须返回 `resumeAvailable=false` 和 `RUN_TIMEOUT` 原因，无需风险确认，启动 Banner 不推荐这些 run。检查只读账本，实际恢复执行前仍须再次检查 deadline，不刷新原时限。
+
 ## 架构概览
 
 三条主执行路径，共享 ToolRegistry / MemoryManager / SnapshotService：
@@ -158,6 +160,7 @@ src/main/java/com/mindcli/
 - `ResourceLockManager` 对规范化真实路径按排序后的资源 key 获取 shared / exclusive 锁，避免死锁；锁由实际工具工作线程持有，超时取消后也必须等工具代码真正退出才能释放；等待锁可被线程中断，dispatcher 将其映射为 `CANCELLED`；结果必须保持原始 tool_call 顺序
 - `ToolDispatcher` 会把 run 的 `approvalPolicy` 显式绑定到实际工具工作线程并在 `finally` 清理；需要 HITL 的调用必须拆成单调用批次串行执行，避免并发审批提示，其他无资源冲突调用仍可并行
 - `HookManager` 目前只支持内部 Java Hook，生命周期点为 `PRE_TOOL_USE` / `POST_TOOL_USE` / `TOOL_ERROR` / `RUN_STOP`；不要在本阶段新增外部脚本 Hook 生态
+- Agent budget 只根据规范化工具请求识别连续重复或长度 1-4 的短周期；连续达到配置窗口时向模型注入一次纠偏提示，不比较结果正文，也不据此终止。确定性终止条件为 Token 上限、硬轮数、总运行时限、调用超时和取消。ReAct/Plan/Team 顶层 run 创建持久化的 `runDeadlineEpochMillis`（默认 3600 秒，`MINDCLI_REACT_MAX_DURATION_SECONDS=0` 禁用）；Plan task、重试、重规划及 Team execute/review child 只继承 deadline，token/轮数/循环提示状态保持独立。恢复保留原 deadline；旧账本缺少字段时从原始启动事件时间推导，不重新获得完整时限。过期或非法 deadline 不得启动新 LLM/tool 调用，工具等待资源锁后须再次检查，进行中的单次调用仍由自身 timeout 控制。Plan task 的预算耗尽按未完成失败处理，已有输出可保留，但不得写成 `COMPLETED` 或满足下游依赖；顶层时限已到时不再重试或重规划。
 
 ### Web + Browser
 

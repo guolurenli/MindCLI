@@ -19,9 +19,9 @@ public class TokenBudget {
     private final int reservedForResponse; // 回复预留
 
     // 累计 token 消耗统计
-    private int totalInputTokens;
-    private int totalOutputTokens;
-    private int totalCachedInputTokens;
+    private long totalInputTokens;
+    private long totalOutputTokens;
+    private long totalCachedInputTokens;
     private int llmCallCount;
 
     public TokenBudget(int contextWindow) {
@@ -63,13 +63,13 @@ public class TokenBudget {
     /**
      * 记录一次 LLM 调用的 token 消耗
      */
-    public void recordUsage(int inputTokens, int outputTokens) {
+    public void recordUsage(long inputTokens, long outputTokens) {
         recordUsage(inputTokens, outputTokens, 0);
     }
 
-    public void recordUsage(int inputTokens, int outputTokens, int cachedInputTokens) {
-        totalInputTokens += inputTokens;
-        totalOutputTokens += outputTokens;
+    public void recordUsage(long inputTokens, long outputTokens, long cachedInputTokens) {
+        totalInputTokens += Math.max(0L, inputTokens);
+        totalOutputTokens += Math.max(0L, outputTokens);
         totalCachedInputTokens += Math.max(0, cachedInputTokens);
         llmCallCount++;
     }
@@ -87,9 +87,9 @@ public class TokenBudget {
     }
 
     public int getContextWindow() { return contextWindow; }
-    public int getTotalInputTokens() { return totalInputTokens; }
-    public int getTotalOutputTokens() { return totalOutputTokens; }
-    public int getTotalCachedInputTokens() { return totalCachedInputTokens; }
+    public long getTotalInputTokens() { return totalInputTokens; }
+    public long getTotalOutputTokens() { return totalOutputTokens; }
+    public long getTotalCachedInputTokens() { return totalCachedInputTokens; }
     public int getLlmCallCount() { return llmCallCount; }
 
     /**

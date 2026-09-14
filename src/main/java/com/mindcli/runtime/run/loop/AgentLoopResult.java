@@ -18,9 +18,9 @@ public record AgentLoopResult(
         String reasoningContent,
         String errorMessage,
         String exitDescription,
-        int inputTokens,
-        int outputTokens,
-        int cachedInputTokens,
+        long inputTokens,
+        long outputTokens,
+        long cachedInputTokens,
         List<ToolOutcome> toolOutcomes
 ) {
     public AgentLoopResult {

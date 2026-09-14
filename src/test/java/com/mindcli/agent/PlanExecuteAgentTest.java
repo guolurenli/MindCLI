@@ -50,6 +50,116 @@ class PlanExecuteAgentTest {
     Path tempDir;
 
     @Test
+    void dependentTasksUseSameDeadlineAndExpiredResponseIsNotCompleted() {
+        long deadline = System.currentTimeMillis() + 1_000;
+        AtomicInteger replanCalls = new AtomicInteger();
+        StubGLMClient llm = StubGLMClient.streaming(List.of(
+                StubResponse.plain(new LlmClient.ChatResponse("assistant", "first done", null, 10, 3)),
+                StubResponse.scripted(listener -> {
+                    while (System.currentTimeMillis() <= deadline) {
+                        java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                    }
+                }, new LlmClient.ChatResponse("assistant", "expired second", null, 10, 3))));
+        Task first = new Task("t1", "first", Task.TaskType.ANALYSIS);
+        Task second = new Task("t2", "second", Task.TaskType.ANALYSIS, List.of("t1"));
+        ExecutionPlan plan = new ExecutionPlan("shared-deadline", "goal");
+        plan.addTask(first);
+        plan.addTask(second);
+        plan.computeExecutionOrder();
+        InMemoryRunStore store = new InMemoryRunStore();
+        PlanExecuteAgent agent = new PlanExecuteAgent(llm, new ToolRegistry(), new Planner(llm) {
+            @Override
+            public ExecutionPlan createPlan(String goal) { return plan; }
+            @Override
+            public ExecutionPlan replanSubtree(ExecutionPlan previous, Task failed, String reason) {
+                replanCalls.incrementAndGet();
+                throw new AssertionError("expired run must not replan");
+            }
+        }, null, (goal, proposed) -> PlanExecuteAgent.PlanReviewDecision.execute(),
+                new PrintStream(new ByteArrayOutputStream()), store);
+        AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "goal", tempDir.toString(),
+                java.util.Map.of("runDeadlineEpochMillis", Long.toString(deadline)));
+        String result = agent.run(context, store);
+        assertTrue(result.startsWith("⚠"), result);
+        assertEquals(Task.TaskStatus.COMPLETED, first.getStatus());
+        assertEquals(Task.TaskStatus.FAILED, second.getStatus());
+        assertTrue(second.getError().contains("RUN_TIMEOUT"));
+        assertEquals(0, replanCalls.get());
+        assertTrue(store.events(context.runId()).stream().allMatch(event ->
+                Long.toString(deadline).equals(event.attributes().get("runDeadlineEpochMillis"))));
+    }
+
+    @Test
+    void expiredRecoveredPlanDoesNotCompleteTasksOrReplan() {
+        AtomicInteger calls = new AtomicInteger();
+        StubGLMClient llm = new StubGLMClient(List.of(new LlmClient.ChatResponse(
+                "assistant", "must not complete", null, 10, 3)));
+        InMemoryRunStore store = new InMemoryRunStore();
+        Planner planner = new Planner(llm) {
+            @Override
+            public ExecutionPlan replanSubtree(ExecutionPlan plan, Task task, String reason) {
+                calls.incrementAndGet();
+                throw new AssertionError("expired run must not replan");
+            }
+        };
+        PlanExecuteAgent agent = new PlanExecuteAgent(llm, new ToolRegistry(), planner, null,
+                (goal, plan) -> PlanExecuteAgent.PlanReviewDecision.execute(),
+                new PrintStream(new ByteArrayOutputStream()), store);
+        AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, "goal", tempDir.toString(),
+                java.util.Map.of("runDeadlineEpochMillis", "1"));
+        PlanResumeState state = new PlanResumeState(true, 1, "plan-expired", "goal", "summary",
+                List.of(resumeTask("task_1", List.of(), "PENDING", "")), "");
+
+        String result = agent.runRecovered(context, store, state);
+
+        assertTrue(result.startsWith("⚠"), result);
+        assertEquals(0, calls.get());
+        assertTrue(store.events(context.runId()).stream().noneMatch(event ->
+                event.type() == AgentRunEventType.PLAN_TASK_CHECKPOINT
+                        && "COMPLETED".equals(event.attributes().get("taskStatus"))));
+    }
+
+    @Test
+    void exhaustedTaskFailsAndDoesNotSatisfyDependencies() {
+        String key = "mindcli.react.hard.max.iterations";
+        String previous = System.getProperty(key);
+        System.setProperty(key, "1");
+        try {
+            Task first = new Task("t1", "inspect", Task.TaskType.FILE_READ);
+            first.setDegradation("BLOCK");
+            Task dependent = new Task("t2", "continue", Task.TaskType.ANALYSIS, List.of("t1"));
+            dependent.setDegradation("BLOCK");
+            ExecutionPlan plan = new ExecutionPlan("budget-plan", "inspect and continue");
+            plan.addTask(first);
+            plan.addTask(dependent);
+            plan.computeExecutionOrder();
+            StubGLMClient llm = new StubGLMClient(List.of(new LlmClient.ChatResponse(
+                    "assistant", "", List.of(new LlmClient.ToolCall("call-1",
+                    new LlmClient.ToolCall.Function("list_dir", "{}"))), 10, 5)));
+            InMemoryRunStore store = new InMemoryRunStore();
+            PlanExecuteAgent agent = new PlanExecuteAgent(llm, new ToolRegistry(), new Planner(llm) {
+                @Override
+                public ExecutionPlan createPlan(String goal) { return plan; }
+            }, null, (goal, proposed) -> PlanExecuteAgent.PlanReviewDecision.execute(),
+                    new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8), store);
+            AgentRunContext context = AgentRunContext.create(AgentMode.PLAN, plan.getGoal(), tempDir.toString());
+
+            agent.run(context, store);
+
+            assertEquals(Task.TaskStatus.FAILED, first.getStatus());
+            assertEquals(Task.TaskStatus.PENDING, dependent.getStatus());
+            assertTrue(first.getError().contains("HARD_ITERATION_LIMIT"));
+            assertTrue(first.getResult() != null && !first.getResult().isBlank());
+            assertFalse(store.events(context.runId()).stream().anyMatch(event ->
+                    event.type() == AgentRunEventType.PLAN_TASK_CHECKPOINT
+                            && "COMPLETED".equals(event.attributes().get("status"))));
+        } finally {
+            if (previous == null) System.clearProperty(key);
+            else System.setProperty(key, previous);
+        }
+    }
+
+    @Test
     void planAgentUsesSharedSingleTurnKernelSeam() throws Exception {
         Field field = PlanExecuteAgent.class.getDeclaredField("turnKernel");
         assertEquals(AgentTurnKernel.class, field.getType());

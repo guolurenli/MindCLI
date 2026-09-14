@@ -47,6 +47,16 @@ public final class RunRecoveryService {
         boolean resumeAvailable = projection.status() == RunStateStatus.RESUMABLE && !originalInput.isBlank()
                 && mode != null && !workspace.isBlank();
         RunResumePlan resumePlan = classify(events, resumeAvailable);
+        AgentRunContext context = RunDeadline.restoreContext(runId, mode, originalInput, workspace, events);
+        boolean deadlineBlocked = projection.status() == RunStateStatus.RESUMABLE
+                && !events.isEmpty() && RunDeadline.isExpired(context);
+        if (deadlineBlocked) {
+            resumeAvailable = false;
+            String reason = RunDeadline.epochMillis(context) < 0
+                    ? "RUN_TIMEOUT: deadline 非法，无法恢复"
+                    : "RUN_TIMEOUT: run 运行时限已到，无法恢复";
+            resumePlan = new RunResumePlan(false, false, resumePlan.risk(), reason, resumePlan.toolNames());
+        }
         if (resumeAvailable && mode == AgentMode.PLAN) {
             PlanResumeState planState = reconstructPlanState(runId);
             if (!planState.available()) {
@@ -95,7 +105,8 @@ public final class RunRecoveryService {
                 projection.events(),
                 preRunSnapshot,
                 postRunSnapshot,
-                restoreHint(projection.status(), preRunSnapshot, postRunSnapshot));
+                deadlineBlocked ? resumePlan.reason()
+                        : restoreHint(projection.status(), preRunSnapshot, postRunSnapshot));
     }
 
     public ReActResumeState reconstructReActState(String runId) {
