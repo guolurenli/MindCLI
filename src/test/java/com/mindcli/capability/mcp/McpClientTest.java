@@ -3,6 +3,7 @@ package com.mindcli.capability.mcp;
 import com.mindcli.capability.image.ImageReferenceParser;
 import com.mindcli.capability.mcp.resources.McpResourceContent;
 import com.mindcli.capability.mcp.resources.McpResourceDescriptor;
+import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
 import com.mindcli.capability.tool.ToolOutput;
 import com.mindcli.capability.tool.ToolExecution;
 import com.mindcli.capability.tool.ToolExecutionStatus;
@@ -18,6 +19,7 @@ import static org.mockito.Mockito.when;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -34,6 +36,35 @@ class McpClientTest {
                 .anyMatch(field -> field.getType().equals(McpSyncClient.class)));
         assertTrue(Arrays.stream(McpClient.class.getDeclaredFields())
                 .anyMatch(field -> field.getType().equals(McpClientTransport.class)));
+    }
+
+    @Test
+    void toolDescriptorCarriesOfficialSdkAnnotations() {
+        assertTrue(Arrays.stream(McpToolDescriptor.class.getRecordComponents())
+                .anyMatch(component -> component.getName().equals("annotations")
+                        && component.getType().equals(McpSchema.ToolAnnotations.class)));
+    }
+
+    @Test
+    void listToolsPreservesOfficialAnnotations() throws Exception {
+        McpSchema.ToolAnnotations annotations = McpSchema.ToolAnnotations.builder()
+                .readOnlyHint(true)
+                .destructiveHint(false)
+                .idempotentHint(true)
+                .build();
+        McpSchema.Tool tool = McpSchema.Tool.builder("lookup")
+                .description("lookup data")
+                .inputSchema(Map.of("type", "object"))
+                .annotations(annotations)
+                .build();
+        McpSyncClient sdkClient = mock(McpSyncClient.class);
+        when(sdkClient.listTools()).thenReturn(new McpSchema.ListToolsResult(List.of(tool), null));
+
+        McpToolDescriptor descriptor = new McpClient("demo", sdkClient, null, null)
+                .listTools().get(0);
+
+        assertEquals(annotations, descriptor.annotations());
+        assertTrue(descriptor.isReadOnlyForScheduling());
     }
 
     @Test

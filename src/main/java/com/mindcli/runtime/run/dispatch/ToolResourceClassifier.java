@@ -11,6 +11,7 @@ import com.mindcli.runtime.run.store.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindcli.platform.hitl.ApprovalPolicy;
+import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
 import com.mindcli.capability.tool.ToolRegistry;
 
 import java.nio.file.Path;
@@ -22,9 +23,50 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.function.Function;
 
 public final class ToolResourceClassifier {
     private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
+    private static final Set<String> EXPLICIT_READ_ONLY_TOOLS = Set.of(
+            "read_file", "list_dir", "glob_files", "grep_code",
+            "search_memory", "read_memory", "web_search", "web_fetch", "load_skill");
+    private final Function<String, McpToolDescriptor> mcpDescriptorLookup;
+
+    public ToolResourceClassifier() {
+        this(ignored -> null);
+    }
+
+    public ToolResourceClassifier(Function<String, McpToolDescriptor> mcpDescriptorLookup) {
+        this.mcpDescriptorLookup = Objects.requireNonNull(mcpDescriptorLookup, "mcpDescriptorLookup");
+    }
+
+    public ToolEffect effectOf(ToolRegistry.ToolInvocation invocation) {
+        if (invocation == null || invocation.name() == null) {
+            return ToolEffect.UNKNOWN;
+        }
+        String name = invocation.name();
+        if (ApprovalPolicy.isMcpTool(name)) {
+            return isReadOnlyMcpTool(name) ? ToolEffect.READ_ONLY : ToolEffect.UNKNOWN;
+        }
+        if (isExplicitReadOnlyToolName(name)) {
+            return ToolEffect.READ_ONLY;
+        }
+        return switch (name) {
+            case "write_file", "save_memory", "create_project", "revert_turn" -> ToolEffect.MUTATING;
+            case "execute_command" -> isKnownReadOnlyCommand(
+                    parseArguments(invocation.argumentsJson()).get("command"))
+                    ? ToolEffect.READ_ONLY
+                    : ToolEffect.MUTATING;
+            default -> ToolEffect.UNKNOWN;
+        };
+    }
+
+    public static boolean isExplicitReadOnlyToolName(String toolName) {
+        return toolName != null
+                && EXPLICIT_READ_ONLY_TOOLS.contains(toolName.toLowerCase(Locale.ROOT));
+    }
 
     public List<ResourceKey> classify(ToolRegistry.ToolInvocation invocation, AgentRunContext context) {
         if (invocation == null) {
@@ -52,6 +94,8 @@ public final class ToolResourceClassifier {
                     List.of(new ResourceKey(ResourceScope.MEMORY, "long-term", ResourceAccess.EXCLUSIVE));
             case "web_search", "web_fetch" ->
                     List.of(new ResourceKey(ResourceScope.NETWORK, "web", ResourceAccess.SHARED));
+            case "load_skill" ->
+                    List.of(new ResourceKey(ResourceScope.UNKNOWN, "skill", ResourceAccess.SHARED));
             case "create_project" -> createProjectAccess(effectiveContext, args);
             case "execute_command" -> executeCommandAccess(effectiveContext, args.get("command"));
             case "revert_turn" -> List.of(workspace(effectiveContext, ResourceAccess.EXCLUSIVE));
@@ -59,13 +103,21 @@ public final class ToolResourceClassifier {
         };
     }
 
-    private static List<ResourceKey> classifyMcp(String toolName) {
+    private List<ResourceKey> classifyMcp(String toolName) {
         String server = ApprovalPolicy.mcpServerName(toolName);
         String normalizedServer = server == null || server.isBlank() ? "unknown" : server;
+        ResourceAccess access = isReadOnlyMcpTool(toolName)
+                ? ResourceAccess.SHARED
+                : ResourceAccess.EXCLUSIVE;
         if (isBrowserMcpTool(normalizedServer, toolName)) {
-            return List.of(new ResourceKey(ResourceScope.BROWSER_SESSION, normalizedServer, ResourceAccess.EXCLUSIVE));
+            return List.of(new ResourceKey(ResourceScope.BROWSER_SESSION, normalizedServer, access));
         }
-        return List.of(new ResourceKey(ResourceScope.MCP_SERVER, normalizedServer, ResourceAccess.EXCLUSIVE));
+        return List.of(new ResourceKey(ResourceScope.MCP_SERVER, normalizedServer, access));
+    }
+
+    private boolean isReadOnlyMcpTool(String toolName) {
+        McpToolDescriptor descriptor = mcpDescriptorLookup.apply(toolName);
+        return descriptor != null && descriptor.isReadOnlyForScheduling();
     }
 
     private static boolean isBrowserMcpTool(String server, String toolName) {

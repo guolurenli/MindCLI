@@ -10,6 +10,8 @@ import com.mindcli.runtime.run.session.*;
 import com.mindcli.runtime.run.store.*;
 
 import com.mindcli.capability.tool.ToolRegistry;
+import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
+import io.modelcontextprotocol.spec.McpSchema;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -160,6 +162,36 @@ class ToolResourceClassifierTest {
     }
 
     @Test
+    void annotatedReadOnlyMcpToolUsesSharedServerLock() {
+        McpToolDescriptor descriptor = mcpDescriptor(McpSchema.ToolAnnotations.builder()
+                .readOnlyHint(true)
+                .destructiveHint(false)
+                .build());
+        ToolResourceClassifier annotated = new ToolResourceClassifier(name -> descriptor);
+
+        ToolRegistry.ToolInvocation invocation = invocation("mcp__filesystem__read_file", "{}");
+
+        assertEquals(ToolEffect.READ_ONLY, annotated.effectOf(invocation));
+        assertEquals(List.of(new ResourceKey(ResourceScope.MCP_SERVER, "filesystem", ResourceAccess.SHARED)),
+                annotated.classify(invocation, context()));
+    }
+
+    @Test
+    void contradictoryMcpAnnotationsRemainUnknownAndExclusive() {
+        McpToolDescriptor descriptor = mcpDescriptor(McpSchema.ToolAnnotations.builder()
+                .readOnlyHint(true)
+                .destructiveHint(true)
+                .build());
+        ToolResourceClassifier annotated = new ToolResourceClassifier(name -> descriptor);
+
+        ToolRegistry.ToolInvocation invocation = invocation("mcp__filesystem__read_file", "{}");
+
+        assertEquals(ToolEffect.UNKNOWN, annotated.effectOf(invocation));
+        assertEquals(List.of(new ResourceKey(ResourceScope.MCP_SERVER, "filesystem", ResourceAccess.EXCLUSIVE)),
+                annotated.classify(invocation, context()));
+    }
+
+    @Test
     void unknownToolsFallBackToExclusiveWorkspaceAndUnknownLocks() {
         AgentRunContext context = context();
 
@@ -189,5 +221,11 @@ class ToolResourceClassifierTest {
 
     private static ToolRegistry.ToolInvocation invocation(String name, String args) {
         return new ToolRegistry.ToolInvocation("call_1", name, args);
+    }
+
+    private McpToolDescriptor mcpDescriptor(McpSchema.ToolAnnotations annotations) {
+        return new McpToolDescriptor(
+                "filesystem", "read_file", "mcp__filesystem__read_file", "read",
+                com.mindcli.platform.serialization.JsonSupport.mapper().createObjectNode(), annotations);
     }
 }

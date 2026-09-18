@@ -41,7 +41,7 @@ public final class ToolDispatcher {
     public ToolDispatcher(ToolRegistry toolRegistry) {
         this((ToolInvocationExecutor) invocation -> Objects.requireNonNull(toolRegistry, "toolRegistry")
                         .executeToolExecution(invocation.name(), invocation.argumentsJson()),
-                new ToolResourceClassifier(),
+                classifierFor(toolRegistry),
                 SHARED_LOCK_MANAGER,
                 HookManager.noop(),
                 toolRegistry.getToolBatchTimeoutSeconds(),
@@ -51,7 +51,7 @@ public final class ToolDispatcher {
     public ToolDispatcher(ToolRegistry toolRegistry, RunStore runStore) {
         this((ToolInvocationExecutor) invocation -> Objects.requireNonNull(toolRegistry, "toolRegistry")
                         .executeToolExecution(invocation.name(), invocation.argumentsJson()),
-                new ToolResourceClassifier(),
+                classifierFor(toolRegistry),
                 SHARED_LOCK_MANAGER,
                 HookManager.noop(),
                 toolRegistry.getToolBatchTimeoutSeconds(),
@@ -168,13 +168,14 @@ public final class ToolDispatcher {
             }
             List<ResourceKey> resourceKeys = resourceClassifier.classify(effectiveInvocation, effectiveContext);
             metadata.put("lockKeys", formatResourceKeys(resourceKeys));
-            prepared.add(new PreparedInvocation(i, effectiveInvocation, resourceKeys, metadata));
+            ToolEffect effect = resourceClassifier.effectOf(effectiveInvocation);
+            metadata.put("toolEffect", effect.name());
+            prepared.add(new PreparedInvocation(i, effectiveInvocation, resourceKeys, effect, metadata));
         }
 
         String approvalPolicy = effectiveContext.metadata().getOrDefault("approvalPolicy", "on-request");
-        for (List<PreparedInvocation> batch : batches(prepared, approvalPolicy)) {
-            executeBatch(batch, effectiveContext, approvalPolicy, outcomes);
-        }
+        prepared = rejectDuplicateWrites(prepared, effectiveContext, outcomes);
+        executeScheduled(prepared, effectiveContext, approvalPolicy, outcomes);
 
         return outcomes.stream()
                 .map(outcome -> outcome == null
@@ -182,6 +183,63 @@ public final class ToolDispatcher {
                         "", 0, "Tool dispatcher did not produce an outcome", List.of())
                         : outcome)
                 .toList();
+    }
+
+    private void executeScheduled(List<PreparedInvocation> prepared,
+                                  AgentRunContext context,
+                                  String approvalPolicy,
+                                  List<ToolOutcome> outcomes) {
+        List<PreparedInvocation> parallelReads = prepared.stream()
+                .filter(invocation -> invocation.effect() == ToolEffect.READ_ONLY)
+                .filter(invocation -> !ApprovalPolicy.requiresApproval(
+                        invocation.invocation().name(), approvalPolicy))
+                .toList();
+        executeBatch(parallelReads, context, approvalPolicy, outcomes);
+
+        for (PreparedInvocation invocation : prepared) {
+            if (!parallelReads.contains(invocation)) {
+                executeBatch(List.of(invocation), context, approvalPolicy, outcomes);
+            }
+        }
+    }
+
+    private List<PreparedInvocation> rejectDuplicateWrites(List<PreparedInvocation> prepared,
+                                                           AgentRunContext context,
+                                                           List<ToolOutcome> outcomes) {
+        Map<String, List<PreparedInvocation>> writesByTarget = new LinkedHashMap<>();
+        for (PreparedInvocation invocation : prepared) {
+            if (!"write_file".equals(invocation.invocation().name())) {
+                continue;
+            }
+            invocation.resourceKeys().stream()
+                    .filter(key -> key.scope() == ResourceScope.FILE)
+                    .findFirst()
+                    .ifPresent(key -> writesByTarget
+                            .computeIfAbsent(key.name(), ignored -> new ArrayList<>())
+                            .add(invocation));
+        }
+
+        List<PreparedInvocation> accepted = new ArrayList<>(prepared);
+        for (Map.Entry<String, List<PreparedInvocation>> entry : writesByTarget.entrySet()) {
+            if (entry.getValue().size() < 2) {
+                continue;
+            }
+            for (PreparedInvocation invocation : entry.getValue()) {
+                Map<String, String> metadata = new LinkedHashMap<>(invocation.metadata());
+                metadata.put("conflictTarget", entry.getKey());
+                ToolOutcome outcome = new ToolOutcome(
+                        invocation.invocation().id(), invocation.invocation().name(),
+                        invocation.invocation().argumentsJson(), ToolOutcomeStatus.FAILED,
+                        "同一轮包含多个写入同一文件的调用，已阻止执行；请合并为一次最终写入",
+                        0,
+                        "同一工具批次重复写入目标文件: " + entry.getKey(),
+                        "TOOL_BATCH_CONFLICT", List.of(), metadata);
+                fireTerminalHook(context, invocation.invocation(), outcome);
+                outcomes.set(invocation.index(), outcome);
+                accepted.remove(invocation);
+            }
+        }
+        return List.copyOf(accepted);
     }
 
     private void executeBatch(List<PreparedInvocation> batch, AgentRunContext context,
@@ -403,50 +461,17 @@ public final class ToolDispatcher {
         return metadata;
     }
 
-    private static List<List<PreparedInvocation>> batches(List<PreparedInvocation> prepared,
-                                                          String approvalPolicy) {
-        List<List<PreparedInvocation>> batches = new ArrayList<>();
-        List<PreparedInvocation> current = new ArrayList<>();
-        for (PreparedInvocation invocation : prepared) {
-            if (ApprovalPolicy.requiresApproval(invocation.invocation().name(), approvalPolicy)) {
-                if (!current.isEmpty()) {
-                    batches.add(List.copyOf(current));
-                    current.clear();
-                }
-                batches.add(List.of(invocation));
-                continue;
-            }
-            if (!current.isEmpty() && conflicts(current, invocation)) {
-                batches.add(List.copyOf(current));
-                current.clear();
-            }
-            current.add(invocation);
-        }
-        if (!current.isEmpty()) {
-            batches.add(List.copyOf(current));
-        }
-        return batches;
-    }
-
-    private static boolean conflicts(List<PreparedInvocation> batch, PreparedInvocation candidate) {
-        for (PreparedInvocation existing : batch) {
-            for (ResourceKey left : existing.resourceKeys()) {
-                for (ResourceKey right : candidate.resourceKeys()) {
-                    if (left.conflictsWith(right)) {
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
-    }
-
     private static ToolRegistry.ToolInvocation toInvocation(LlmClient.ToolCall toolCall) {
         LlmClient.ToolCall.Function function = toolCall.function();
         return new ToolRegistry.ToolInvocation(
                 toolCall.id(),
                 function == null ? "" : function.name(),
                 function == null ? "" : function.arguments());
+    }
+
+    private static ToolResourceClassifier classifierFor(ToolRegistry toolRegistry) {
+        ToolRegistry checked = Objects.requireNonNull(toolRegistry, "toolRegistry");
+        return new ToolResourceClassifier(checked::getMcpToolDescriptor);
     }
 
     private static String errorMessage(Throwable error) {
@@ -468,10 +493,12 @@ public final class ToolDispatcher {
             int index,
             ToolRegistry.ToolInvocation invocation,
             List<ResourceKey> resourceKeys,
+            ToolEffect effect,
             Map<String, String> metadata
     ) {
         private PreparedInvocation {
             resourceKeys = resourceKeys == null ? List.of() : List.copyOf(resourceKeys);
+            effect = effect == null ? ToolEffect.UNKNOWN : effect;
             metadata = metadata == null ? Map.of() : Map.copyOf(metadata);
         }
     }

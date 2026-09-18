@@ -36,7 +36,7 @@ java -jar target/mindcli-1.0-SNAPSHOT.jar serve --http --port 8080
 
 同一个 CLI 进程维护轻量的 `SessionContext`，一次会话可以连续执行多个不同模式的 run。每个 run 结束后生成受长度限制的 `RunSummary`，下一次 ReAct、Plan 或 Team 会把最近摘要注入自己的 system prompt，较早摘要合并为历史摘要。`SessionContext` 只负责进程内跨 run 衔接，不改变现有 `~/.mindcli/runs/<runId>/` 账本结构；`/clear` 会同时清空它，长期记忆不受影响。
 
-`/plan` 和 `/team` 保持两套编排模式：前者是单 Agent 的计划审阅、执行、重试与重规划，后者由主代理内部规划，再委派给 explorer / worker profile lease 协作。二者只共享 `DependencyGraph` 的中性 DAG 计算与阻塞依赖诊断，依赖状态语义由各自模式传入。`/plan` 失败恢复按 `critical` / `degradation` 决策：只有 `critical=false + degradation=SKIP` 会跳过，`BLOCK` 直接失败，其余回退为局部重规划。`/team` 内置 `EXPLORER` / `WORKER` 两个子代理，硬编码在源码（`AgentProfile.builtinExplorer` / `builtinWorker`），实例固定为 `explorer#1`、`explorer#2`、`worker#1`，可追加 `.mindcli/agents/*.toml` 自定义子代理，不再读取 `.mindcli/config.toml`；规划职责收编到 orchestrator 内建（直接调 LLM + `TEAM_PLANNER` prompt），无独立 planner 子代理；只读步骤优先由 `explorer` 执行，多个无依赖写入步骤各自使用独立 git worktree 并行执行，完成后先在临时 integration worktree 中统一合并，冲突则整批不更新主工作区并报告冲突文件；执行者随后进入自己的 review->repair 循环，审查失败、输出不可解析或重试耗尽都会 fail closed。
+`/plan` 和 `/team` 保持两套编排模式：前者是单 Agent 的计划审阅、执行、重试与重规划，后者由主代理内部规划，再委派给 explorer / worker profile lease 协作。二者只共享 `DependencyGraph` 的中性 DAG 计算与阻塞依赖诊断，依赖状态语义由各自模式传入。`/plan` 同一 ready wave 只并发明确的文件/代码读取任务，修改、命令、分析、验证和未知任务按原顺序串行；失败恢复按 `critical` / `degradation` 决策：只有 `critical=false + degradation=SKIP` 会跳过，`BLOCK` 直接失败，其余回退为局部重规划。`/team` 内置 `EXPLORER` / `WORKER` 两个子代理，硬编码在源码（`AgentProfile.builtinExplorer` / `builtinWorker`），实例固定为 `explorer#1`、`explorer#2`、`worker#1`，可追加 `.mindcli/agents/*.toml` 自定义子代理，不再读取 `.mindcli/config.toml`；规划职责收编到 orchestrator 内建（直接调 LLM + `TEAM_PLANNER` prompt），无独立 planner 子代理；只读步骤优先由 `explorer` 执行，命令、未知工具和写入步骤按修改型处理，多个无依赖写入步骤各自使用独立 git worktree 并行执行，完成后先在临时 integration worktree 中统一合并，冲突则整批不更新主工作区并报告冲突文件；执行者随后进入自己的 review->repair 循环，审查失败、输出不可解析或重试耗尽都会 fail closed。
 
 ```mermaid
 flowchart LR
@@ -95,7 +95,7 @@ src/main/java/com/mindcli/
 |---|---|
 | 执行模式 | 默认 ReAct；`/plan` 进入计划审阅与执行；`/team` 由 orchestrator 内建规划 + explorer/worker 协作，worker/explorer 自审修复，多个无依赖写入步骤按一 Step 一 worktree 隔离并行，在临时 integration worktree 中合并，冲突不静默覆盖 |
 | Runtime 账本 | `JsonlRunStore` 按 run 写 JSONL 事件，使用 `run.jsonl.lock` 保护跨实例 seq 分配、坏尾修复与状态投影；JVM 内锁按 ledger 路径隔离，不同 run 可并行写入；生成 `run.meta.json` / `run.state.json` 并支持 child run 摘要；`runId` / `parentRunId` 在读写路径解析前统一校验 |
-| 工具调度 | `ToolDispatcher` 统一负责并行、批超时、Hook、资源分类、资源锁、结果顺序与结构化 `ToolOutcome`；`ToolRegistry` 只执行单个工具并返回 `ToolExecution`，文件读写/目录枚举由 `FileToolExecutor`、代码搜索由 `CodeSearchToolExecutor`、项目骨架生成由 `ProjectToolExecutor`、Skill 正文加载由 `SkillToolExecutor`、Web 访问由 `WebToolExecutor`、Memory 访问由 `MemoryToolExecutor`、Shell 进程执行由 `ShellCommandExecutor` 承担，锁跟随实际工具线程生命周期，审批策略显式传播到工具线程，需要 HITL 的调用串行提示 |
+| 工具调度 | `ToolDispatcher` 将同一 LLM turn 的非审批只读工具最多 4 路并发，修改型、未知和 HITL 工具串行，结果按原 `tool_call` 顺序返回；同目标重复 `write_file` 返回 `TOOL_BATCH_CONFLICT`。`ResourceLockManager` 继续保护同 JVM 内跨 dispatcher/task/run 的文件、目录、workspace、memory 和 MCP 资源；官方 MCP annotation 仅在 `readOnlyHint=true && destructiveHint!=true` 时启用只读并发。`ToolRegistry` 只执行单个工具并返回 `ToolExecution` |
 | 代码理解 | `glob_files` / `grep_code` / `read_file` 实时探索，按需逐步缩小范围 |
 | 记忆治理 | `/save` 手动长期记忆；自动提取只生成候选；`/memory approve/reject/export --audit` 管理审计链路 |
 | MCP | 仅使用官方 Model Context Protocol Java SDK 2.0.1，合并用户级 `~/.mindcli/mcp.json` 和项目级 `.mindcli/mcp.json`，支持 stdio 与 Streamable HTTP；server 禁用、重启、重载和关闭会清理旧工具与资源缓存 |

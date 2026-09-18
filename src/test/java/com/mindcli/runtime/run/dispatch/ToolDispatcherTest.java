@@ -14,6 +14,8 @@ import com.mindcli.capability.tool.ToolRegistry;
 import com.mindcli.capability.tool.ToolExecution;
 import com.mindcli.capability.tool.ToolOutput;
 import com.mindcli.platform.hitl.ApprovalPolicy;
+import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
+import io.modelcontextprotocol.spec.McpSchema;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
@@ -159,6 +161,140 @@ class ToolDispatcherTest {
         assertEquals("{\"path\":\"a.txt\"}", seen.get("call_1").argumentsJson());
         assertEquals("{\"query\":\"Agent\"}", seen.get("call_2").argumentsJson());
         assertEquals("ok:grep_code", outcomes.get(1).text());
+    }
+
+    @Test
+    void mutatingCallsRunSeriallyEvenWhenTheyTargetDifferentFiles() throws Exception {
+        CountDownLatch firstWriteEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirstWrite = new CountDownLatch(1);
+        CountDownLatch secondWriteEntered = new CountDownLatch(1);
+        ToolDispatcher dispatcher = new ToolDispatcher(invocation -> {
+            if ("call_1".equals(invocation.id())) {
+                firstWriteEntered.countDown();
+                await(releaseFirstWrite);
+            } else {
+                secondWriteEntered.countDown();
+            }
+            return completed(invocation, "ok");
+        });
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        AgentRunContext context = AgentRunContext.create(
+                AgentMode.REACT, "test", "workspace", Map.of("approvalPolicy", "never"));
+
+        try {
+            Future<List<ToolOutcome>> future = caller.submit(() -> dispatcher.dispatch(List.of(
+                    toolCall("call_1", "write_file", "{\"path\":\"a.txt\",\"content\":\"a\"}"),
+                    toolCall("call_2", "write_file", "{\"path\":\"b.txt\",\"content\":\"b\"}")), context));
+
+            assertTrue(firstWriteEntered.await(1, TimeUnit.SECONDS));
+            assertFalse(secondWriteEntered.await(250, TimeUnit.MILLISECONDS),
+                    "mutating calls from one LLM turn must not overlap");
+            releaseFirstWrite.countDown();
+
+            assertEquals(List.of(ToolOutcomeStatus.COMPLETED, ToolOutcomeStatus.COMPLETED),
+                    future.get(2, TimeUnit.SECONDS).stream().map(ToolOutcome::status).toList());
+            assertTrue(secondWriteEntered.await(1, TimeUnit.SECONDS));
+        } finally {
+            releaseFirstWrite.countDown();
+            caller.shutdownNow();
+        }
+    }
+
+    @Test
+    void mixedBatchCompletesReadOnlyWaveBeforeMutatingCalls() throws Exception {
+        CountDownLatch readEntered = new CountDownLatch(1);
+        CountDownLatch releaseRead = new CountDownLatch(1);
+        CountDownLatch writeEntered = new CountDownLatch(1);
+        ToolDispatcher dispatcher = new ToolDispatcher(invocation -> {
+            if ("read_file".equals(invocation.name())) {
+                readEntered.countDown();
+                await(releaseRead);
+            } else {
+                writeEntered.countDown();
+            }
+            return completed(invocation, "ok");
+        });
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+
+        try {
+            Future<List<ToolOutcome>> future = caller.submit(() -> dispatcher.dispatch(List.of(
+                    toolCall("call_1", "write_file", "{\"path\":\"out.txt\",\"content\":\"x\"}"),
+                    toolCall("call_2", "read_file", "{\"path\":\"input.txt\"}"))));
+
+            assertTrue(readEntered.await(1, TimeUnit.SECONDS));
+            assertFalse(writeEntered.await(250, TimeUnit.MILLISECONDS),
+                    "mutating calls must wait until the read-only wave completes");
+            releaseRead.countDown();
+
+            List<ToolOutcome> outcomes = future.get(2, TimeUnit.SECONDS);
+            assertTrue(writeEntered.await(1, TimeUnit.SECONDS));
+            assertEquals(List.of("call_1", "call_2"), outcomes.stream().map(ToolOutcome::id).toList());
+        } finally {
+            releaseRead.countDown();
+            caller.shutdownNow();
+        }
+    }
+
+    @Test
+    void duplicateWritesToCanonicalTargetFailWithoutExecutingEitherWrite() {
+        List<String> executed = java.util.Collections.synchronizedList(new ArrayList<>());
+        ToolDispatcher dispatcher = new ToolDispatcher(invocation -> {
+            executed.add(invocation.id());
+            return completed(invocation, "ok");
+        });
+
+        List<ToolOutcome> outcomes = dispatcher.dispatch(List.of(
+                toolCall("call_1", "write_file", "{\"path\":\"src/../same.txt\",\"content\":\"first\"}"),
+                toolCall("call_2", "read_file", "{\"path\":\"input.txt\"}"),
+                toolCall("call_3", "write_file", "{\"path\":\"./same.txt\",\"content\":\"second\"}")));
+
+        assertEquals(List.of("call_2"), executed);
+        assertEquals(List.of(ToolOutcomeStatus.FAILED, ToolOutcomeStatus.COMPLETED, ToolOutcomeStatus.FAILED),
+                outcomes.stream().map(ToolOutcome::status).toList());
+        assertEquals("TOOL_BATCH_CONFLICT", outcomes.get(0).errorCategory());
+        assertEquals("TOOL_BATCH_CONFLICT", outcomes.get(2).errorCategory());
+        assertEquals(outcomes.get(0).metadata().get("conflictTarget"),
+                outcomes.get(2).metadata().get("conflictTarget"));
+    }
+
+    @Test
+    void explicitlyReadOnlyMcpToolsCanRunInParallel() throws Exception {
+        CountDownLatch bothEntered = new CountDownLatch(2);
+        CountDownLatch release = new CountDownLatch(1);
+        McpSchema.ToolAnnotations annotations = McpSchema.ToolAnnotations.builder()
+                .readOnlyHint(true)
+                .destructiveHint(false)
+                .build();
+        ToolRegistry registry = new ToolRegistry();
+        for (String name : List.of("first", "second")) {
+            McpToolDescriptor descriptor = new McpToolDescriptor(
+                    "demo", name, McpToolDescriptor.namespaced("demo", name), name,
+                    com.mindcli.platform.serialization.JsonSupport.mapper().createObjectNode(), annotations);
+            registry.registerMcpToolExecution(descriptor, arguments -> {
+                bothEntered.countDown();
+                await(release);
+                return ToolExecution.completed(ToolOutput.text(name), arguments);
+            });
+        }
+        ToolDispatcher dispatcher = new ToolDispatcher(registry);
+        AgentRunContext context = AgentRunContext.create(
+                AgentMode.REACT, "test", "workspace", Map.of("approvalPolicy", "never"));
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+
+        try {
+            Future<List<ToolOutcome>> future = caller.submit(() -> dispatcher.dispatch(List.of(
+                    toolCall("call_1", "mcp__demo__first", "{}"),
+                    toolCall("call_2", "mcp__demo__second", "{}")), context));
+
+            assertTrue(bothEntered.await(1, TimeUnit.SECONDS),
+                    "official readOnlyHint tools should share one MCP server lock");
+            release.countDown();
+            assertEquals(List.of(ToolOutcomeStatus.COMPLETED, ToolOutcomeStatus.COMPLETED),
+                    future.get(2, TimeUnit.SECONDS).stream().map(ToolOutcome::status).toList());
+        } finally {
+            release.countDown();
+            caller.shutdownNow();
+        }
     }
 
     @Test

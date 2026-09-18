@@ -85,6 +85,11 @@ public class McpToolNamespace {
         return tool == null ? null : tool.descriptor().inputSchema();
     }
 
+    public McpToolDescriptor descriptor(String toolName) {
+        RegisteredTool tool = registeredTools.get(toolName);
+        return tool == null ? null : tool.descriptor();
+    }
+
     private static String description(McpToolDescriptor descriptor) {
         String base = descriptor.description() == null || descriptor.description().isBlank()
                 ? "MCP server 提供的外部工具"

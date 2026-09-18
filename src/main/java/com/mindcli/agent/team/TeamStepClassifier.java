@@ -1,7 +1,8 @@
 package com.mindcli.agent.team;
 
+import com.mindcli.runtime.run.dispatch.ToolResourceClassifier;
+
 import java.util.List;
-import java.util.Locale;
 
 /**
  * 写入型步骤判定（package-private 策略 helper）。
@@ -10,24 +11,20 @@ import java.util.Locale;
  * 而是集中到此处，规则变化只改一个地方。</p>
  */
 final class TeamStepClassifier {
-
     private TeamStepClassifier() {
     }
 
     static boolean isMutating(ExecutionStep step) {
         if (step == null) {
-            return false;
-        }
-        List<String> requiredTools = step.requiredTools() == null ? List.of() : step.requiredTools();
-        if (requiredTools.stream().anyMatch(tool -> "write_file".equalsIgnoreCase(tool)
-                || "create_project".equalsIgnoreCase(tool))) {
             return true;
         }
-        boolean usesCommand = requiredTools.stream().anyMatch(tool -> "execute_command".equalsIgnoreCase(tool));
-        if (usesCommand) {
-            String riskLevel = step.riskLevel() == null ? "" : step.riskLevel().trim().toLowerCase(Locale.ROOT);
-            return !"low".equals(riskLevel);
+        List<String> requiredTools = step.requiredTools() == null ? List.of() : step.requiredTools();
+        if (!requiredTools.isEmpty()) {
+            return requiredTools.stream().anyMatch(
+                    tool -> !ToolResourceClassifier.isExplicitReadOnlyToolName(tool));
         }
-        return false;
+        return "FILE_WRITE".equalsIgnoreCase(step.type())
+                || "CREATE_PROJECT".equalsIgnoreCase(step.type())
+                || "COMMAND".equalsIgnoreCase(step.type());
     }
 }

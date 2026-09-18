@@ -586,25 +586,50 @@ public class PlanExecuteAgent {
 
     private List<TaskExecutionResult> executeTaskBatch(ExecutionPlan plan, List<Task> executableTasks,
                                                        StreamState streamState, int planVersion) {
-        if (executableTasks.size() == 1) {
-            Task task = executableTasks.get(0);
-            log.info("Executing single task: {} type={}", task.getId(), task.getType());
-            out.println("▶️ 执行任务 [" + task.getId() + "]: " + task.getDescription());
-            task.markStarted();
-            appendTaskCheckpoint(task, planVersion);
+        PlanTaskScheduler.Schedule schedule = PlanTaskScheduler.schedule(executableTasks);
+        Map<String, TaskExecutionResult> resultsById = new LinkedHashMap<>();
 
-            try {
-                return List.of(TaskExecutionResult.success(task, executeTask(plan.getGoal(), plan, task, streamState, out)));
-            } catch (Exception e) {
-                return List.of(TaskExecutionResult.failure(task, e));
+        List<Task> parallelReadOnly = schedule.parallelReadOnly();
+        if (parallelReadOnly.size() == 1) {
+            TaskExecutionResult result = executeSingleTask(
+                    plan, parallelReadOnly.get(0), streamState, planVersion);
+            resultsById.put(result.task().getId(), result);
+        } else if (!parallelReadOnly.isEmpty()) {
+            for (TaskExecutionResult result : executeParallelReadOnlyTasks(
+                    plan, parallelReadOnly, streamState, planVersion)) {
+                resultsById.put(result.task().getId(), result);
             }
         }
 
+        for (Task task : schedule.serial()) {
+            TaskExecutionResult result = executeSingleTask(plan, task, streamState, planVersion);
+            resultsById.put(result.task().getId(), result);
+        }
+
+        return executableTasks.stream().map(task -> resultsById.get(task.getId())).toList();
+    }
+
+    private TaskExecutionResult executeSingleTask(ExecutionPlan plan, Task task,
+                                                  StreamState streamState, int planVersion) {
+        log.info("Executing single task: {} type={}", task.getId(), task.getType());
+        out.println("▶️ 执行任务 [" + task.getId() + "]: " + task.getDescription());
+        task.markStarted();
+        appendTaskCheckpoint(task, planVersion);
+
+        try {
+            return TaskExecutionResult.success(task, executeTask(plan.getGoal(), plan, task, streamState, out));
+        } catch (Exception e) {
+            return TaskExecutionResult.failure(task, e);
+        }
+    }
+
+    private List<TaskExecutionResult> executeParallelReadOnlyTasks(
+            ExecutionPlan plan, List<Task> executableTasks, StreamState streamState, int planVersion) {
         String parallelTaskIds = executableTasks.stream()
                 .map(Task::getId)
                 .collect(Collectors.joining(", "));
-        log.info("Executing parallel batch: {}", parallelTaskIds);
-        out.println("⚡ 本轮并行执行 " + executableTasks.size() + " 个任务: " + parallelTaskIds);
+        log.info("Executing parallel read-only batch: {}", parallelTaskIds);
+        out.println("⚡ 本轮并行执行 " + executableTasks.size() + " 个只读任务: " + parallelTaskIds);
 
         ExecutorService executor = Executors.newFixedThreadPool(Math.min(executableTasks.size(), 4), r -> {
             Thread t = new Thread(r, "mindcli-plan-executor");

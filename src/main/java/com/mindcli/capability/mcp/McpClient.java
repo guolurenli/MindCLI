@@ -79,7 +79,8 @@ public class McpClient implements AutoCloseable {
                     .map(tool -> new McpToolDescriptor(serverName, tool.name(),
                             McpToolDescriptor.namespaced(serverName, tool.name()),
                             tool.description() == null ? "" : tool.description(),
-                            sanitizeSchema(tool.inputSchema())))
+                            sanitizeSchema(tool.inputSchema()),
+                            tool.annotations()))
                     .toList();
         } catch (RuntimeException e) {
             throw asIoException(e);

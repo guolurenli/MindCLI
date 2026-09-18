@@ -79,4 +79,23 @@ class TeamSchedulerTest {
         assertEquals(List.of("step_r"), wave.readOnly().stream().map(g -> g.leader().id()).toList());
         assertEquals(List.of("step_w"), wave.mutating().stream().map(g -> g.leader().id()).toList());
     }
+
+    @Test
+    void commandAndUnknownToolsDefaultToMutating() {
+        ExecutionStep lowRiskCommand = ExecutionStep.pending(
+                "step_command", "inspect with shell", "COMMAND", List.of(),
+                List.of("execute_command"), "", "low");
+        ExecutionStep unknown = ExecutionStep.pending(
+                "step_unknown", "use extension", "ANALYSIS", List.of(),
+                List.of("custom_tool"), "", "low");
+        ExecutionStep explicitRead = ExecutionStep.pending(
+                "step_read", "inspect source", "FILE_READ", List.of(),
+                List.of("read_file", "grep_code"), "", "low");
+
+        ScheduleWave wave = new TeamScheduler().nextWave(List.of(lowRiskCommand, unknown, explicitRead));
+
+        assertEquals(List.of("step_read"), wave.readOnly().stream().map(g -> g.leader().id()).toList());
+        assertEquals(List.of("step_command", "step_unknown"),
+                wave.mutating().stream().map(g -> g.leader().id()).toList());
+    }
 }

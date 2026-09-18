@@ -517,6 +517,10 @@ public class ToolRegistry {
         mcpToolNamespace.unregisterTool(toolName);
     }
 
+    public McpToolDescriptor getMcpToolDescriptor(String toolName) {
+        return mcpToolNamespace.descriptor(toolName);
+    }
+
     public synchronized void replaceMcpToolsForServer(String serverName, List<McpToolDescriptor> newTools,
                                                       Function<McpToolDescriptor, Function<String, String>> invokerFactory) {
         replaceMcpToolOutputsForServer(serverName, newTools,

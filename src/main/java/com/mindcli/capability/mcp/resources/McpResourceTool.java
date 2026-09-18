@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.mindcli.capability.mcp.McpClient;
 import com.mindcli.capability.mcp.protocol.McpToolDescriptor;
+import io.modelcontextprotocol.spec.McpSchema;
 
 import java.util.List;
 import java.util.function.Function;
@@ -15,6 +16,11 @@ public final class McpResourceTool {
     public static final String READ_RESOURCE = "read_resource";
 
     private static final ObjectMapper MAPPER = com.mindcli.platform.serialization.JsonSupport.mapper();
+    private static final McpSchema.ToolAnnotations READ_ONLY_ANNOTATIONS = McpSchema.ToolAnnotations.builder()
+            .readOnlyHint(true)
+            .destructiveHint(false)
+            .idempotentHint(true)
+            .build();
 
     private McpResourceTool() {
     }
@@ -26,14 +32,16 @@ public final class McpResourceTool {
                         LIST_RESOURCES,
                         McpToolDescriptor.namespaced(serverName, LIST_RESOURCES),
                         "列出 MCP server 暴露的 resources，返回 URI、名称、MIME 类型和描述",
-                        emptyObjectSchema()
+                        emptyObjectSchema(),
+                        READ_ONLY_ANNOTATIONS
                 ),
                 new McpToolDescriptor(
                         serverName,
                         READ_RESOURCE,
                         McpToolDescriptor.namespaced(serverName, READ_RESOURCE),
                         "读取 MCP resource 内容。参数 uri 必须来自 list_resources 或用户明确提供的 resource URI",
-                        readResourceSchema()
+                        readResourceSchema(),
+                        READ_ONLY_ANNOTATIONS
                 )
         );
     }
